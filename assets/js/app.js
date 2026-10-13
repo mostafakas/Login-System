@@ -336,7 +336,12 @@ async function boot() {
   setupCheck();
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
   watchForcedReload();
-  if ('Notification' in window && Notification.permission === 'default') setTimeout(() => { try { Notification.requestPermission(); } catch {} }, 4000);
+  // desktop notifications (calls, rings, messages while the page is in the background). Browsers only show the
+  // permission question after a click, so it is asked on the first click / key press.
+  if ('Notification' in window && Notification.permission === 'default') {
+    const ask = () => { ['pointerdown', 'keydown'].forEach(ev => window.removeEventListener(ev, ask, true)); try { Notification.requestPermission(); } catch {} };
+    ['pointerdown', 'keydown'].forEach(ev => window.addEventListener(ev, ask, true));
+  }
 }
 boot();
 

@@ -1393,3 +1393,10 @@ html[dir="rtl"] .mon-metric.on { box-shadow: inset -3px 0 0 var(--brand); }
 .call-person.waiting { opacity: .55; }
 .call-person.waiting .avatar { animation: ringpulse-soft 1.4s ease-in-out infinite; }
 @keyframes ringpulse-soft { 50% { box-shadow: 0 0 0 4px rgba(255,255,255,.25); } }
+.call-person.declined { opacity: .55; }
+.call-person.declined small { color: #ffb4b4; }
+.call-endmenu { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; padding: 8px; background: rgba(255,255,255,.08); border-radius: 12px; }
+.call-endmenu .btn:not(.btn-danger) { background: rgba(255,255,255,.14); color: #fff; border-color: transparent; }
+.call-hint { display: flex; align-items: center; gap: 8px; width: 100%; text-align: start; font: inherit; font-size: 12px; color: #ffd27a; background: rgba(255,180,0,.12); border: 0; border-radius: 10px; padding: 6px 10px; cursor: pointer; }
+div.call-hint { cursor: default; }
+.cp-note { color: var(--warn) !important; font-weight: 700; }

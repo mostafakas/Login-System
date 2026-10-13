@@ -481,7 +481,7 @@ service cloud.firestore {
       // Someone talking may invite more people (the invite list only grows): from a group chat only its members,
       // from a 1:1 call any colleague — that call then becomes a call of several people.
       allow update: if active() && me() in resource.data.members
-        && onlyChanged(['joined', 'beat', 'status', 'startedAt', 'live', 'liveFor', 'outcome', 'endedAt', 'endedBy', 'members', 'invitedAt', 'invitedBy', 'group'])
+        && onlyChanged(['joined', 'beat', 'status', 'startedAt', 'live', 'liveFor', 'outcome', 'endedAt', 'endedBy', 'members', 'invitedAt', 'invitedBy', 'group', 'declinedAt', 'leftAt'])
         && (nc().members == resource.data.members || (me() in resource.data.joined && resource.data.live == true
             && nc().members.hasAll(resource.data.members) && nc().members.size() <= 30
             && (chatDoc(resource.data.chatId).get('type', '') != 'group' || chatDoc(resource.data.chatId).members.hasAll(nc().members))))

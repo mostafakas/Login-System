@@ -4,7 +4,7 @@
 // No time limit. Without a TURN relay a few strict networks may not connect; a relay can be added later in
 // settings/public.iceServers without code changes.
 import { db, doc, col, watch, query, where, updateDoc, setDoc, deleteDoc, runTransaction, serverTimestamp } from '../core/fb.js';
-import { session } from '../core/session.js';
+import { session, now } from '../core/session.js';   // now(): server-corrected clock — devices with a wrong clock agree
 import { L } from '../core/utils.js';
 import { userError } from '../core/ui.js';
 import { publicConfig } from './authsvc.js';
@@ -27,7 +27,7 @@ export const currentCall = () => cur;
 const touched = new Set();   // calls this page started or joined (so a fresh snapshot is never taken for a left-over)
 export const touchedHere = (id) => touched.has(id);
 
-export const isLiveDoc = (c) => !!c && c.live === true && Object.values(c.beat || {}).some(ms => Date.now() - Number(ms || 0) < STALE);
+export const isLiveDoc = (c) => !!c && c.live === true && Object.values(c.beat || {}).some(ms => now() - Number(ms || 0) < STALE);
 export const fmtDur = (s) => { s = Math.max(0, Math.round(s || 0)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60; return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(x).padStart(2, '0'); };
 
 async function iceServers() {
@@ -57,8 +57,8 @@ export async function startCall(chat, people = null) {
   const me = session.email;
   const data = {
     chatId: chat.id, group: isGroup(chat), chatName: isGroup(chat) ? String(chat.name || '').slice(0, 80) : '',
-    from: me, fromName: nameOf(me), members, liveFor: members, joined: [me], ...(isGroup(chat) ? {} : { chatMembers: members.slice() }), beat: { [ek(me)]: Date.now() },
-    status: 'ringing', live: true, at: serverTimestamp(), atMs: Date.now(), startedAt: 0
+    from: me, fromName: nameOf(me), members, liveFor: members, joined: [me], ...(isGroup(chat) ? {} : { chatMembers: members.slice() }), beat: { [ek(me)]: now() },
+    status: 'ringing', live: true, at: serverTimestamp(), atMs: now(), startedAt: 0
   };
   try { await setDoc(ref, data); } catch (e) { stream.getTracks().forEach(t => t.stop()); throw e; }
   track('call.start', { target: isGroup(chat) ? chat.name : members.filter(m => m !== me).map(nameOf).join(''), detail: isGroup(chat) ? members.filter(m => m !== me).map(nameOf).join('، ') : '' });
@@ -82,14 +82,16 @@ export async function addToCall(people) {
     if (!(d.joined || []).includes(session.email)) throw userError('ادخل المكالمة الأول.', 'Join the call first.');
     const cs = await tx.get(doc(db, 'chats', d.chatId)); const chat = cs.exists() ? cs.data() : null;
     const fromGroup = !!chat && chat.type === 'group';
+    // new people, and people asked before who declined or left (they ring again)
     added = [...new Set((people || []).map(e => String(e || '').toLowerCase()))]
-      .filter(e => e && e !== session.email && !(d.members || []).includes(e) && (!fromGroup || (chat.members || []).includes(e)));
+      .filter(e => e && e !== session.email && !(d.joined || []).includes(e) && (!fromGroup || (chat.members || []).includes(e)));
     if (!added.length) return;
-    const members = [...(d.members || []), ...added];
+    const members = [...(d.members || []), ...added.filter(e => !(d.members || []).includes(e))];
     if (members.length > MAX_INVITED) throw userError(`المكالمة فيها ${MAX_INVITED} مدعوين — ده الحد.`, `The call already has ${MAX_INVITED} invited — that is the limit.`);
     const invitedAt = { ...(d.invitedAt || {}) }, invitedBy = { ...(d.invitedBy || {}) };
-    added.forEach(e => { invitedAt[ek(e)] = Date.now(); invitedBy[ek(e)] = session.email; });
-    tx.update(ref, { members, liveFor: members, invitedAt, invitedBy, ...(d.group ? {} : { group: true }) });
+    added.forEach(e => { invitedAt[ek(e)] = now(); invitedBy[ek(e)] = session.email; });
+    const grows = members.length > (d.members || []).length;
+    tx.update(ref, { invitedAt, invitedBy, ...(grows ? { members, liveFor: members } : {}), ...(d.group || !grows ? {} : { group: true }) });
   });
   if (added.length) track('call.add', { target: cur.call.chatName || '', detail: added.map(nameOf).join('، ') });
   return added.length;
@@ -112,12 +114,12 @@ export async function joinCall(callId) {
       const c = s.exists() ? s.data() : null;
       if (!c || !c.live) throw userError('المكالمة خلصت.', 'The call has ended.');
       const beat = { ...(c.beat || {}) };
-      const alive = (c.joined || []).filter(e => e !== me && Date.now() - Number(beat[ek(e)] || 0) < STALE);
+      const alive = (c.joined || []).filter(e => e !== me && now() - Number(beat[ek(e)] || 0) < STALE);
       if (!alive.length) throw userError('المكالمة خلصت.', 'The call has ended.');
       if (alive.length >= MAX_IN_CALL) throw userError(`المكالمة فيها ${MAX_IN_CALL} أشخاص — ده الحد.`, `The call already has ${MAX_IN_CALL} people — that is the limit.`);
       before = alive;
-      beat[ek(me)] = Date.now();
-      const upd = { joined: [...alive, me], beat, status: 'active', ...(c.startedAt ? {} : { startedAt: Date.now() }) };
+      beat[ek(me)] = now();
+      const upd = { joined: [...alive, me], beat, status: 'active', ...(c.startedAt ? {} : { startedAt: now() }) };
       tx.update(ref, upd);
       call = { ...c, ...upd, id: callId };
     });
@@ -128,13 +130,16 @@ export async function joinCall(callId) {
 
 /** Decline a 1:1 call (a group call is just ignored on this device) */
 export async function declineCall(call) {
-  if (call.group) return;
+  if (call.group) {   // a call of several people: just say "no" (the one who asked sees it)
+    await updateDoc(doc(db, 'calls', call.id), { [`declinedAt.${ek(session.email)}`]: now() }).catch(() => {});
+    return;
+  }
   let ended = false;
   await runTransaction(db, async (tx) => {
     const ref = doc(db, 'calls', call.id);
     const s = await tx.get(ref); const c = s.exists() ? s.data() : null;
     if (!c || !c.live || c.startedAt) return;
-    tx.update(ref, { live: false, liveFor: [], status: 'ended', outcome: 'declined', endedAt: Date.now(), endedBy: session.email });
+    tx.update(ref, { live: false, liveFor: [], status: 'ended', outcome: 'declined', endedAt: now(), endedBy: session.email });
     ended = true;
   }).catch(e => console.warn('decline', e && e.message));
   if (ended) postCallLog(call.chatId, { id: call.id, outcome: 'declined', dur: 0, group: false }).catch(() => {});
@@ -151,20 +156,38 @@ export async function hangUp(reason = '') {
     const s = await tx.get(ref); const d = s.exists() ? s.data() : null;
     if (!d || !d.live) return;
     const beat = { ...(d.beat || {}) }; delete beat[ek(me)];
-    const left = (d.joined || []).filter(e => e !== me && Date.now() - Number(beat[ek(e)] || 0) < STALE);
+    const left = (d.joined || []).filter(e => e !== me && now() - Number(beat[ek(e)] || 0) < STALE);
     const end = !d.group || !left.length;
     if (end) {
       const outcome = d.startedAt ? 'done' : (reason === 'missed' ? 'missed' : 'cancelled');
-      tx.update(ref, { live: false, liveFor: [], status: 'ended', outcome, joined: left, beat, endedAt: Date.now(), endedBy: me });
-      log = { id: c.id, outcome: outcome === 'cancelled' ? 'missed' : outcome, dur: d.startedAt ? Math.round((Date.now() - d.startedAt) / 1000) : 0, group: !!d.group, with: d.group ? (d.members || []) : [] };
-    } else tx.update(ref, { joined: left, beat });
+      tx.update(ref, { live: false, liveFor: [], status: 'ended', outcome, joined: left, beat, endedAt: now(), endedBy: me });
+      log = { id: c.id, outcome: outcome === 'cancelled' ? 'missed' : outcome, dur: d.startedAt ? Math.round((now() - d.startedAt) / 1000) : 0, group: !!d.group, with: d.group ? (d.members || []) : [] };
+    } else tx.update(ref, { joined: left, beat, [`leftAt.${ek(me)}`]: now() });
   }).catch(e => console.warn('hang up', e && e.message));
   if (log) postCallLog(c.call.chatId, log).catch(e => console.warn('call log', e && e.message));
 }
 
+/** The one who started the call ends it for everybody */
+export async function endForAll() {
+  const c = cur; if (!c) return;
+  teardown();
+  let log = null;
+  await runTransaction(db, async (tx) => {
+    const ref = doc(db, 'calls', c.id);
+    const s = await tx.get(ref); const d = s.exists() ? s.data() : null;
+    if (!d || !d.live) return;
+    const outcome = d.startedAt ? 'done' : 'missed';
+    tx.update(ref, { live: false, liveFor: [], status: 'ended', outcome, joined: [], endedAt: now(), endedBy: session.email });
+    log = { id: c.id, outcome, dur: d.startedAt ? Math.round((now() - d.startedAt) / 1000) : 0, group: !!d.group, with: d.group ? (d.members || []) : [] };
+  }).catch(e => console.warn('end for all', e && e.message));
+  if (log) postCallLog(c.call.chatId, log).catch(e => console.warn('call log', e && e.message));
+}
+/** my own heartbeat in that call is old: no page of mine is in it any more (another tab of mine may well be) */
+export const myBeatStale = (c) => now() - Number(((c && c.beat) || {})[ek(session.email)] || 0) > STALE;
+
 // ---------------------------------------------------------------- the running call
 function enter(id, call, stream, offerTo) {
-  cur = { id, call, stream, peers: new Map(), muted: false, enteredAt: Date.now(), unsubs: [], timers: [], ringTimer: 0, meters: new Map(), seen: new Set(), sent: [] };
+  cur = { id, call, stream, peers: new Map(), muted: false, enteredAt: now(), unsubs: [], timers: [], ringTimer: 0, meters: new Map(), seen: new Set(), sent: [] };
   const me = session.email;
   // the handshake messages addressed to me
   cur.unsubs.push(watch(query(col(`calls/${id}/signals`), where('to', '==', me)), rows => {
@@ -182,7 +205,7 @@ function enter(id, call, stream, offerTo) {
     if (!d || !d.live) { if (d) cur.call = { ...d, id }; teardown(true); return; }
     cur.call = { ...d, id };
     if (d.startedAt && cur.ringTimer) { clearTimeout(cur.ringTimer); cur.ringTimer = 0; }
-    const alive = (d.joined || []).filter(e => Date.now() - Number((d.beat || {})[ek(e)] || 0) < STALE);
+    const alive = (d.joined || []).filter(e => now() - Number((d.beat || {})[ek(e)] || 0) < STALE);
     [...cur.peers.keys()].forEach(e => { if (!alive.includes(e)) closePeer(e); });   // left / dropped
     if (!d.group && d.startedAt && !alive.some(e => e !== me)) { hangUp(); return; }   // the other side is gone
     emit();
@@ -191,8 +214,8 @@ function enter(id, call, stream, offerTo) {
   const beat = () => {
     if (!cur || cur.id !== id) return;
     const c = cur.call || {};
-    const upd = { [`beat.${ek(me)}`]: Date.now() };
-    const dead = (c.joined || []).filter(e => e !== me && Date.now() - Number((c.beat || {})[ek(e)] || 0) > STALE);
+    const upd = { [`beat.${ek(me)}`]: now() };
+    const dead = (c.joined || []).filter(e => e !== me && now() - Number((c.beat || {})[ek(e)] || 0) > STALE);
     if (dead.length) upd.joined = (c.joined || []).filter(e => !dead.includes(e));
     updateDoc(doc(db, 'calls', id), upd).catch(() => {});
   };
@@ -203,7 +226,7 @@ function enter(id, call, stream, offerTo) {
     if (!cur || cur.id !== id) return;
     cur.peers.forEach((p, email) => {
       if (!p.initiator || p.state === 'connected' || p.tries >= 4) return;
-      if (Date.now() - Math.max(p.born, p.changed || 0) < (p.state === 'failed' ? 4000 : 12000)) return;
+      if (now() - Math.max(p.born, p.changed || 0) < (p.state === 'failed' ? 4000 : 12000)) return;
       closePeerOf(cur, email);
       call1(email, p.tries + 1).catch(err => console.warn('re-offer', err && err.message));
     });
@@ -227,7 +250,7 @@ function teardown(remoteEnded = false) {
   setTimeout(() => c.sent.forEach(sid => deleteDoc(doc(db, `calls/${c.id}/signals`, sid)).catch(() => {})), 1500);
   try { c.actx && c.actx.close(); } catch {}
   window.removeEventListener('pagehide', onPageHide);
-  lastEnded = { id: c.id, call: c.call, remoteEnded, at: Date.now() };
+  lastEnded = { id: c.id, call: c.call, remoteEnded, at: now() };
   emit();
 }
 let lastEnded = null;
@@ -239,7 +262,7 @@ async function newPeer(email) {
   const audio = document.createElement('audio');
   audio.autoplay = true; audio.setAttribute('playsinline', '');
   (document.getElementById('call-audio') || document.body.appendChild(Object.assign(document.createElement('div'), { id: 'call-audio', hidden: true }))).appendChild(audio);
-  const p = { pc, audio, state: 'connecting', iceQ: [], iceOut: [], iceTimer: 0, remoteSet: false, born: Date.now(), initiator: false, tries: 0 };
+  const p = { pc, audio, state: 'connecting', iceQ: [], iceOut: [], iceTimer: 0, remoteSet: false, born: now(), initiator: false, tries: 0 };
   cur.stream.getTracks().forEach(t => pc.addTrack(t, cur.stream));
   pc.ontrack = (ev) => { audio.srcObject = ev.streams[0]; audio.play().catch(() => {}); addMeter(email, ev.streams[0]); };
   pc.onicecandidate = (ev) => {
@@ -250,7 +273,7 @@ async function newPeer(email) {
   };
   pc.onconnectionstatechange = () => {
     const s = pc.connectionState;
-    p.changed = Date.now();
+    p.changed = now();
     p.state = s === 'connected' ? 'connected' : (s === 'failed' ? 'failed' : (s === 'disconnected' ? 'unstable' : (s === 'closed' ? 'closed' : 'connecting')));
     if (s === 'failed' && cur) { try { pc.restartIce(); } catch {} }
     emit();
@@ -272,7 +295,7 @@ async function send(to, kind, data) {
   if (!cur) return;
   const ref = doc(col(`calls/${cur.id}/signals`));
   cur.sent.push(ref.id);
-  await setDoc(ref, { from: session.email, to, kind, data: JSON.stringify(data), atMs: Date.now(), at: serverTimestamp() });
+  await setDoc(ref, { from: session.email, to, kind, data: JSON.stringify(data), atMs: now(), at: serverTimestamp() });
 }
 async function call1(email, tries = 0) {
   const p = await newPeer(email);
@@ -343,13 +366,13 @@ export const watchMyCalls = (cb) => watch(query(col('calls'), where('liveFor', '
 /** A call whose people all went quiet (closed tabs, crashes): close it so it stops showing */
 const zombies = new Set();
 function endZombie(c) {
-  if (zombies.has(c.id) || Date.now() - (c.atMs || 0) < STALE) return;
+  if (zombies.has(c.id) || now() - (c.atMs || 0) < STALE) return;
   zombies.add(c.id);
   runTransaction(db, async (tx) => {
     const ref = doc(db, 'calls', c.id);
     const s = await tx.get(ref); const d = s.exists() ? s.data() : null;
-    if (!d || !d.live || isLiveDoc(d)) return;
-    tx.update(ref, { live: false, liveFor: [], status: 'ended', outcome: d.startedAt ? 'done' : 'missed', endedAt: Date.now(), endedBy: session.email });
+    if (!d || !d.live || Object.values(d.beat || {}).some(ms => now() - Number(ms || 0) < 2 * STALE)) return;   // be sure: quiet for a good while
+    tx.update(ref, { live: false, liveFor: [], status: 'ended', outcome: d.startedAt ? 'done' : 'missed', endedAt: now(), endedBy: session.email });
   }).catch(() => {});
 }
 /** Remove me from a call I was in before this page loaded (a reload or a crash) */
@@ -361,7 +384,7 @@ export async function dropStale(call) {
     if (!d || !d.live || !(d.joined || []).includes(me)) return;
     const beat = { ...(d.beat || {}) }; delete beat[ek(me)];
     const left = (d.joined || []).filter(e => e !== me);
-    if (!d.group || !left.length) tx.update(ref, { live: false, liveFor: [], status: 'ended', outcome: d.startedAt ? 'done' : 'missed', joined: left, beat, endedAt: Date.now(), endedBy: me });
-    else tx.update(ref, { joined: left, beat });
+    if (!d.group || !left.length) tx.update(ref, { live: false, liveFor: [], status: 'ended', outcome: d.startedAt ? 'done' : 'missed', joined: left, beat, endedAt: now(), endedBy: me });
+    else tx.update(ref, { joined: left, beat, [`leftAt.${ek(me)}`]: now() });
   }).catch(() => {});
 }

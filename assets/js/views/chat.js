@@ -10,7 +10,7 @@ import { activePeople, person, nameOf, onDirectory, departments, meetingLine, me
 import { play } from '../core/sounds.js';
 import {
   ensureChat, watchMyChats, watchAllChats, watchMessages, sendText, sendFile, sendVoice, loadFile, markRead, archiveChat, listArchive,
-  otherOf, othersOf, unreadOf, ek, MAX_FILE, isGroup, canManageGroup, isMuted, seenBy, canEditMessage, createGroup, updateGroup, setMuted,
+  otherOf, othersOf, unreadOf, ek, MAX_FILE, isGroup, canManageGroup, isMuted, seenBy, canEditMessage, canEditText, createGroup, updateGroup, setMuted,
   editMessage, deleteMessage, mentionedMe, sendRing, ringWait, snippetOf, replyRefOf, callLine,
   REACTIONS, MORE_REACTIONS, reactionsOf, myReaction, react
 } from '../services/chat.js';
@@ -178,7 +178,7 @@ export default async function render(root, { params }) {
       title: chat.name, icon: 'fa-users', size: 'narrow',
       body: `<div class="col gap-16">
         ${member ? `<div class="row between"><div><b>${L('إشعارات الجروب ده', 'Notifications for this group')}</b><div class="xs muted">${L('لو قفلتها مفيش بوب أب ولا صوت — العدّاد بيفضل يعدّ.', 'Off = no popup or sound; the unread counter still counts.')}</div></div><label class="switch"><input type="checkbox" id="gmute" ${isMuted(chat) ? '' : 'checked'}><span></span></label></div>` : ''}
-        ${admin ? `<div class="row between"><div><b>${L('السماح بتعديل وحذف الرسايل', 'Allow editing and deleting messages')}</b><div class="xs muted">${L('كل عضو يقدر يعدّل أو يحذف رسايله هو في الجروب ده.', 'Each member may edit or delete their own messages in this group.')}</div></div><label class="switch"><input type="checkbox" id="gedit" ${chat.allowEdit ? 'checked' : ''}><span></span></label></div>` : ''}
+        ${admin ? `<div class="row between"><div><b>${L('السماح بحذف الرسايل', 'Allow deleting messages')}</b><div class="xs muted">${L('كل عضو يقدر يحذف رسايله هو في الجروب ده. (تعديل رسايلك متاح دايماً.)', 'Each member may delete their own messages in this group. (Editing your own messages is always on.)')}</div></div><label class="switch"><input type="checkbox" id="gedit" ${chat.allowEdit ? 'checked' : ''}><span></span></label></div>` : ''}
         <div><div class="label mb-8">${L('الأعضاء', 'Members')} (${(chat.members || []).length})</div>
           <div class="chat-members">${(chat.members || []).map(e => who(e)).sort((a, b) => ((chat.admins || []).includes(b.email) - (chat.admins || []).includes(a.email)) || (a.name || '').localeCompare(b.name || '', 'ar'))
             .map(p => `<div class="chat-member"><span class="avatar-wrap">${avatar(p, 'sm')}${dotFor(person(p.email))}</span><span class="grow min0"><b class="truncate">${esc(p.name || p.email)}${p.email === session.email ? ` <span class="muted">(${L('أنت', 'you')})</span>` : ''}</b><small class="truncate">${esc(p.title || '')}</small></span>${statusPill(person(p.email))}${(chat.admins || []).includes(p.email) ? `<span class="badge brand">${L('مشرف', 'Admin')}</span>` : ''}</div>`).join('')}</div></div>
@@ -186,7 +186,7 @@ export default async function render(root, { params }) {
       foot: `${canManageGroup(chat) ? `<button class="btn" id="gedit-btn"><i class="fas fa-user-gear"></i> ${L('تعديل الأعضاء والاسم', 'Edit members & name')}</button>` : ''}<button class="btn btn-primary" data-close>${L('تمام', 'Done')}</button>`
     });
     const mu = m.$('#gmute'); if (mu) mu.onchange = async () => { try { await setMuted(chat, !mu.checked); toast(mu.checked ? L('الإشعارات شغالة', 'Notifications on') : L('الإشعارات اتقفلت للجروب ده', 'Notifications off for this group')); } catch (ex) { toastErr(ex); } };
-    const ed = m.$('#gedit'); if (ed) ed.onchange = async () => { try { await updateGroup(chat, { allowEdit: ed.checked }); toast(ed.checked ? L('التعديل والحذف اتفعّلوا', 'Editing and deleting enabled') : L('التعديل والحذف اتقفلوا', 'Editing and deleting disabled')); } catch (ex) { toastErr(ex); } };
+    const ed = m.$('#gedit'); if (ed) ed.onchange = async () => { try { await updateGroup(chat, { allowEdit: ed.checked }); toast(ed.checked ? L('الحذف اتفعّل', 'Deleting enabled') : L('الحذف اتقفل', 'Deleting disabled')); } catch (ex) { toastErr(ex); } };
     const eb = m.$('#gedit-btn'); if (eb) eb.onclick = () => { m.close(); groupEditor(chat); };
   }
 
@@ -236,7 +236,7 @@ export default async function render(root, { params }) {
   function headHTML() {
     const member = openChat.members.includes(session.email);
     if (isGroup(openChat)) {
-      return `<button class="chat-head-btn" id="ginfo">${groupPic(openChat)}<div class="grow min0"><b class="truncate">${esc(openChat.name)}</b><div class="small muted truncate">${L(`${openChat.members.length} عضو`, `${openChat.members.length} members`)}${['Online', 'Break', 'Meeting'].map(s => { const n = openChat.members.filter(e => liveStatus(person(e)) === s).length; return n ? ` · <span class="chat-st-n" style="--c:${STATUS_META[s].color}"><i class="fas ${STATUS_META[s].icon}"></i> ${n}</span>` : ''; }).join('')}${member ? '' : ` · <i class="fas fa-eye"></i> ${L('بتشوفه كأدمن', 'Viewing as admin')}`}${openChat.allowEdit ? ` · <i class="fas fa-pen"></i> ${L('التعديل والحذف مفعّلين', 'Edit & delete on')}` : ''}</div></div></button>`;
+      return `<button class="chat-head-btn" id="ginfo">${groupPic(openChat)}<div class="grow min0"><b class="truncate">${esc(openChat.name)}</b><div class="small muted truncate">${L(`${openChat.members.length} عضو`, `${openChat.members.length} members`)}${['Online', 'Break', 'Meeting'].map(s => { const n = openChat.members.filter(e => liveStatus(person(e)) === s).length; return n ? ` · <span class="chat-st-n" style="--c:${STATUS_META[s].color}"><i class="fas ${STATUS_META[s].icon}"></i> ${n}</span>` : ''; }).join('')}${member ? '' : ` · <i class="fas fa-eye"></i> ${L('بتشوفه كأدمن', 'Viewing as admin')}`}${openChat.allowEdit ? ` · <i class="fas fa-trash"></i> ${L('الحذف مفعّل', 'Delete on')}` : ''}</div></div></button>`;
     }
     const o = member ? person(otherOf(openChat)) : null;
     return member
@@ -371,8 +371,9 @@ export default async function render(root, { params }) {
       else { const seenAt = toMs((openChat.lastRead || {})[ek(otherOf(openChat))]) || 0; tick = `<i class="fas ${seenAt && at && at <= seenAt ? 'fa-check-double seen' : (at ? 'fa-check' : 'fa-clock')}"></i>`; }
     }
     const canReply = member && at && !m.deleted && !m.archivedAt;
-    const canEdit = canEditMessage(openChat, m) && at;
-    const tools = canReply || canEdit ? `<span class="chat-tools">${canReply ? `<button data-react="${esc(m.id)}" title="${L('رياكت (أو ضغطة طويلة / كليك يمين)', 'React (or long-press / right-click)')}"><i class="fas fa-face-smile"></i></button>` : ''}${canReply ? `<button data-reply="${esc(m.id)}" title="${L('رد (أو دبل كليك على الرسالة)', 'Reply (or double-click the message)')}"><i class="fas fa-reply"></i></button>` : ''}${canEdit && m.by === session.email && m.text && m.type === 'text' ? `<button data-edit="${esc(m.id)}" title="${L('تعديل', 'Edit')}"><i class="fas fa-pen"></i></button>` : ''}${canEdit ? `<button data-del="${esc(m.id)}" title="${L('حذف', 'Delete')}"><i class="fas fa-trash"></i></button>` : ''}</span>` : '';
+    const canEdit = canEditMessage(openChat, m) && at;            // delete (group switch / admin)
+    const canFix = member && at && canEditText(openChat, m);       // edit my own text — always, any number of times
+    const tools = canReply || canEdit || canFix ? `<span class="chat-tools">${canReply ? `<button data-react="${esc(m.id)}" title="${L('رياكت (أو ضغطة طويلة / كليك يمين)', 'React (or long-press / right-click)')}"><i class="fas fa-face-smile"></i></button>` : ''}${canReply ? `<button data-reply="${esc(m.id)}" title="${L('رد (أو دبل كليك على الرسالة)', 'Reply (or double-click the message)')}"><i class="fas fa-reply"></i></button>` : ''}${canFix ? `<button data-edit="${esc(m.id)}" title="${L('تعديل', 'Edit')}"><i class="fas fa-pen"></i></button>` : ''}${canEdit ? `<button data-del="${esc(m.id)}" title="${L('حذف', 'Delete')}"><i class="fas fa-trash"></i></button>` : ''}</span>` : '';
     const tagged = !mine && !m.deleted && ((m.mentions || []).includes(session.email) || (g && m.replyTo && m.replyTo.by === session.email));
     // reactions under the bubble: one chip per emoji, mine highlighted; hover shows who
     const rx = m.deleted ? [] : reactionsOf(m), myRx = myReaction(m);
@@ -438,8 +439,7 @@ export default async function render(root, { params }) {
     const ed = e.target.closest('[data-edit]');
     if (ed) {
       const m = find(ed.dataset.edit); if (!m) return;
-      const dlg = modal({ title: L('تعديل الرسالة', 'Edit message'), icon: 'fa-pen', size: 'narrow', body: `<textarea class="textarea" id="et" maxlength="4000" style="min-height:120px">${esc(m.text)}</textarea>`, foot: `<button class="btn" data-close>${L('إلغاء', 'Cancel')}</button><button class="btn btn-primary" id="es">${L('حفظ', 'Save')}</button>` });
-      dlg.$('#es').onclick = (ev) => busy(ev.currentTarget, async () => { try { await editMessage(openChat, m, dlg.$('#et').value); dlg.close(); } catch (ex) { toastErr(ex); } });
+      editDialog(m);
       return;
     }
     const del = e.target.closest('[data-del]');
@@ -484,6 +484,17 @@ export default async function render(root, { params }) {
     const ta = $('#text'); if (ta && !recorder) ta.focus();
   }
   const takeReply = () => { const r = replyRefOf(replyTo); setReply(null); return r; };
+
+  // ---------- edit my message (pen button, or ↑ in an empty box for the last one) ----------
+  function editDialog(m) {
+    if (!m || !canEditText(openChat, m)) return;
+    const dlg = modal({ title: L('تعديل الرسالة', 'Edit message'), icon: 'fa-pen', size: 'narrow', body: `<textarea class="textarea" id="et" maxlength="4000" style="min-height:120px">${esc(m.text)}</textarea><p class="xs muted mt-8">${L('Enter للحفظ · Shift+Enter لسطر جديد', 'Enter to save · Shift+Enter for a new line')}</p>`, foot: `<button class="btn" data-close>${L('إلغاء', 'Cancel')}</button><button class="btn btn-primary" id="es">${L('حفظ', 'Save')}</button>` });
+    const ta = dlg.$('#et'); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+    const save = () => busy(dlg.$('#es'), async () => { try { await editMessage(openChat, m, ta.value); dlg.close(); } catch (ex) { toastErr(ex); } });
+    dlg.$('#es').onclick = save;
+    ta.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); save(); } };
+  }
+  const lastMine = () => [...msgs].reverse().find(x => canEditText(openChat, x) && toMs(x.at));
 
   // ---------- reactions: the smiley button, a long press (phone) or a right-click open the picker ----------
   let picker = null;
@@ -605,6 +616,7 @@ export default async function render(root, { params }) {
     ta.onkeydown = (e) => {
       if (suggest.open && suggest.key(e)) return;
       if (e.key === 'Escape' && replyTo) { e.preventDefault(); setReply(null); return; }
+      if (e.key === 'ArrowUp' && !ta.value) { const m = lastMine(); if (m) { e.preventDefault(); editDialog(m); } return; }
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); f.requestSubmit(); }
     };
     f.onsubmit = async (e) => {

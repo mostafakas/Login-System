@@ -403,6 +403,12 @@ service cloud.firestore {
           && request.resource.data.text is string && request.resource.data.text.size() <= 4000
           && (!('file' in request.resource.data) || (request.resource.data.file is map && request.resource.data.file.get('thumb', '').size() < 150000));
         // edit / delete your own message — only in a group where the system admin switched it on
+        // edit the text of your own message — private chats and groups, as many times as you like
+        allow update: if inChat(id) && resource.data.by == me() && resource.data.get('deleted', false) != true
+          && resource.data.get('type', 'text') in ['text', 'image', 'file']
+          && onlyChanged(['text', 'edited', 'editedAt'])
+          && request.resource.data.text is string && request.resource.data.text.size() > 0 && request.resource.data.text.size() <= 4000
+          && request.resource.data.edited == true && request.resource.data.editedAt == request.time;
         // anyone in the chat: their own reaction on a message (one emoji, or none)
         allow update: if inChat(id) && resource.data.get('deleted', false) != true && onlyChanged(['reactions'])
           && request.resource.data.reactions is map

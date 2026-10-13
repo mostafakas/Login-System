@@ -7,6 +7,9 @@ p = seed_payload({'settings/migration': {'done': True}})
 gid = 'grp1'
 p['fs'][f'chats/{gid}'] = {'type': 'group', 'name': 'فريق البرمجيات', 'members': ['emp1@almaster.tech', 'emp2@almaster.tech', 'leader@almaster.tech'], 'admins': [],
                           'createdAt': ts(now), 'updatedAt': ts(now), 'createdBy': 'admin@almaster.tech', 'lastMessage': None, 'unread': {}, 'lastRead': {}}
+dm = 'emp1@almaster.tech__emp2@almaster.tech'
+p['fs'][f'chats/{dm}'] = {'members': ['emp1@almaster.tech', 'emp2@almaster.tech'], 'createdAt': ts(now), 'updatedAt': ts(now), 'createdBy': 'emp1@almaster.tech',
+                         'lastMessage': None, 'unread': {'emp1_almaster_tech': 0, 'emp2_almaster_tech': 0}, 'lastRead': {}}
 a = App(); pg = a.page
 fails = []
 def ok(c, m): print(('OK ' if c else 'FAIL ') + m); (None if c else fails.append(m))
@@ -65,5 +68,25 @@ ok(rx == {'emp2_almaster_tech': '🔥', 'emp1_almaster_tech': '🔥'} and '2' in
 pg.locator('.chat-react').first.click(); pg.wait_for_timeout(600)
 ok(a.db(f'chats/{gid}/messages/{ms[0]["id"]}')['reactions'] == {'emp2_almaster_tech': '🔥'}, 'clicking it again removes mine')
 a.shot('f11-reply')
+
+# editing my own messages: private chat and group, more than once
+a.go(f'#/chat/{dm}'); pg.wait_for_timeout(1000)
+pg.fill('#text', 'الاجتماع الساعة 2'); pg.keyboard.press('Enter'); pg.wait_for_timeout(700)
+mine = pg.locator('.chat-row.me').last
+mine.hover(); mine.locator('[data-edit]').click(); pg.wait_for_timeout(200)
+pg.fill('#et', 'الاجتماع الساعة 3'); pg.keyboard.press('Enter'); pg.wait_for_timeout(700)
+pg.click('#text'); pg.keyboard.press('ArrowUp'); pg.wait_for_timeout(300)
+ok(pg.locator('#et').count() == 1 and pg.input_value('#et') == 'الاجتماع الساعة 3', '↑ in an empty box edits my last message')
+pg.fill('#et', 'الاجتماع الساعة 4'); pg.click('#es'); pg.wait_for_timeout(700)
+dmm = [v for k, v in a.db().items() if k.startswith(f'chats/{dm}/messages/')]
+ok(len(dmm) == 1 and dmm[0]['text'] == 'الاجتماع الساعة 4' and dmm[0].get('edited'), 'private message edited twice')
+ok('اتعدلت' in pg.locator('.chat-row.me').last.inner_text() and a.db(f'chats/{dm}')['lastMessage']['text'] == 'الاجتماع الساعة 4', 'shows "edited" and the chat list follows')
+a.go(f'#/chat/{gid}'); pg.wait_for_timeout(1000)
+ok(pg.locator('.chat-row.them [data-edit]').count() == 0, "no pen on other people's messages")
+own = pg.locator('.chat-row.me').first
+own.hover(); own.locator('[data-edit]').click(); pg.wait_for_timeout(200)
+pg.fill('#et', 'مين خلّص تقرير الشهر؟'); pg.keyboard.press('Enter'); pg.wait_for_timeout(700)
+ok(a.db(f'chats/{gid}/messages/{ms[0]["id"]}')['text'] == 'مين خلّص تقرير الشهر؟', 'group message edited (no admin switch needed)')
+ok(pg.locator('.chat-row.me [data-del]').count() == 0, 'deleting still follows the group switch')
 a.dump_errors('flow11'); a.close()
 print('FAILS:', len(fails))

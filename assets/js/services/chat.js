@@ -28,6 +28,10 @@ export const isMuted = (chat, me = session.email) => !!((chat && chat.muted) || 
 /** members (other than the sender) whose last visit is after the message */
 export const seenBy = (chat, atMs, by = session.email) => othersOf(chat, by).filter(m => atMs && (toMs((chat.lastRead || {})[ek(m)]) || 0) >= atMs);
 /** sender may edit / delete only when the admin switched it on for this group (admins always may delete) */
+/** Your own message's text can always be edited, as often as you like — private chats and groups */
+export const canEditText = (chat, m) => !!m && !!chat && !m.deleted && !m.archivedAt && m.by === session.email && !!m.text
+  && ['text', 'image', 'file'].includes(m.type || 'text') && (chat.members || []).includes(session.email);
+/** deleting: in a group where the system admin switched it on (or the admin) */
 export const canEditMessage = (chat, m) => !!m && !m.deleted && !m.archivedAt && ((m.by === session.email && isGroup(chat) && !!chat.allowEdit && (chat.members || []).includes(session.email)) || isAdmin());
 const uniq = (arr) => [...new Set((arr || []).map(x => String(x).toLowerCase()).filter(Boolean))];
 
@@ -262,10 +266,11 @@ export async function react(chat, m, emoji) {
 // ---------- edit / delete (only where the admin enabled it) ----------
 const isLast = (chat, m) => !!chat.lastMessage && (chat.lastMessage.id ? chat.lastMessage.id === m.id : chat.lastMessage.by === m.by && toMs(chat.lastMessage.at) === toMs(m.at));
 export async function editMessage(chat, m, text) {
-  if (!canEditMessage(chat, m) || m.by !== session.email) throw userError('تعديل الرسايل مش مفعّل في الجروب ده.', 'Editing messages is not enabled in this group.');
+  if (!canEditText(chat, m)) throw userError('تقدر تعدّل رسايلك إنت بس.', 'You can only edit your own messages.');
   const t = String(text || '').trim();
   if (!t) throw userError('الرسالة فاضية.', 'The message is empty.');
   if (t.length > 4000) throw userError('الرسالة طويلة جداً.', 'The message is too long.');
+  if (t === m.text) return;
   await updateDoc(doc(db, `chats/${chat.id}/messages`, m.id), { text: t, edited: true, editedAt: serverTimestamp() });
   if (isLast(chat, m)) updateDoc(doc(db, 'chats', chat.id), { 'lastMessage.text': t.slice(0, 140) }).catch(() => {});
 }

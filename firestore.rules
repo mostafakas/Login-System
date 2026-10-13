@@ -389,7 +389,7 @@ service cloud.firestore {
           && request.resource.data.keys().hasOnly(['by', 'type', 'text', 'file', 'at', 'mentions', 'tasks', 'replyTo', 'call'])
           // a voice call written into the chat when it ends
           && (!('call' in request.resource.data) || (request.resource.data.type == 'call' && request.resource.data.call is map
-              && request.resource.data.call.keys().hasOnly(['id', 'outcome', 'dur', 'group'])
+              && request.resource.data.call.keys().hasOnly(['id', 'outcome', 'dur', 'group', 'with'])
               && request.resource.data.call.outcome in ['done', 'missed', 'declined']))
           // a reply keeps a short quote of the message it answers
           && (!('replyTo' in request.resource.data) || (request.resource.data.replyTo is map
@@ -403,6 +403,12 @@ service cloud.firestore {
           && request.resource.data.text is string && request.resource.data.text.size() <= 4000
           && (!('file' in request.resource.data) || (request.resource.data.file is map && request.resource.data.file.get('thumb', '').size() < 150000));
         // edit / delete your own message — only in a group where the system admin switched it on
+        // anyone in the chat: their own reaction on a message (one emoji, or none)
+        allow update: if inChat(id) && resource.data.get('deleted', false) != true && onlyChanged(['reactions'])
+          && request.resource.data.reactions is map
+          && request.resource.data.reactions.diff(resource.data.get('reactions', {})).affectedKeys().hasOnly([me().replace('[^a-z0-9]', '_')])
+          && (!(me().replace('[^a-z0-9]', '_') in request.resource.data.reactions)
+              || (request.resource.data.reactions[me().replace('[^a-z0-9]', '_')] is string && request.resource.data.reactions[me().replace('[^a-z0-9]', '_')].size() <= 16));
         allow update: if isAdmin() || (inChat(id) && resource.data.by == me()
           && chatDoc(id).get('allowEdit', false) == true
           && onlyChanged(['text', 'type', 'file', 'edited', 'editedAt', 'deleted', 'deletedAt'])
@@ -469,11 +475,14 @@ service cloud.firestore {
       allow create: if active() && nc().from == me() && nc().members is list && nc().members.size() >= 2 && nc().members.size() <= 300
         && me() in nc().members && chatDoc(nc().chatId).members.hasAll(nc().members)
         && nc().joined == [me()] && nc().live == true && nc().status == 'ringing' && nc().liveFor == nc().members
-        && nc().keys().hasOnly(['chatId', 'group', 'chatName', 'from', 'fromName', 'members', 'liveFor', 'joined', 'beat', 'status', 'live', 'at', 'atMs', 'startedAt']);
-      // people in the call: join / leave / heartbeat / end. Nobody can add someone else, change who is invited or reopen it.
+        && nc().keys().hasOnly(['chatId', 'group', 'chatName', 'from', 'fromName', 'members', 'liveFor', 'joined', 'beat', 'status', 'live', 'at', 'atMs', 'startedAt', 'invitedAt']);
+      // people in the call: join / leave / heartbeat / end. Nobody can put someone else in the call or reopen it.
+      // In a group call, someone already talking may invite more people from that group (the invite list only grows).
       allow update: if active() && me() in resource.data.members
-        && onlyChanged(['joined', 'beat', 'status', 'startedAt', 'live', 'liveFor', 'outcome', 'endedAt', 'endedBy'])
-        && (nc().liveFor == resource.data.liveFor || (nc().liveFor.size() == 0 && nc().live == false))
+        && onlyChanged(['joined', 'beat', 'status', 'startedAt', 'live', 'liveFor', 'outcome', 'endedAt', 'endedBy', 'members', 'invitedAt'])
+        && (nc().members == resource.data.members || (resource.data.group == true && me() in resource.data.joined && resource.data.live == true
+            && nc().members.hasAll(resource.data.members) && nc().members.size() <= 30 && chatDoc(resource.data.chatId).members.hasAll(nc().members)))
+        && (nc().liveFor == nc().members || (nc().liveFor.size() == 0 && nc().live == false))
         && nc().joined is list && nc().joined.size() <= 12
         && nc().joined.toSet().difference(resource.data.joined.toSet()).hasOnly([me()])
         && (resource.data.live == true || nc().live == false)

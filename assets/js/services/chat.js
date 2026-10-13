@@ -105,7 +105,7 @@ async function post(chat, msg, preview) {
   const m = doc(col(`chats/${chat.id}/messages`));
   b.set(m, { by: session.email, type: 'text', text: '', ...msg, at: serverTimestamp() });
   const upd = {
-    lastMessage: { id: m.id, by: session.email, text: preview.slice(0, 140), type: msg.type || 'text', at: serverTimestamp(), ...(msg.call ? { callOutcome: msg.call.outcome } : {}) },
+    lastMessage: { id: m.id, by: session.email, text: preview.slice(0, 140), type: msg.type || 'text', at: serverTimestamp(), ...(msg.call ? { callOutcome: msg.call.outcome, ...(msg.call.with ? { callFor: msg.call.with } : {}) } : {}) },
     updatedAt: serverTimestamp(), [`unread.${ek(session.email)}`]: 0
   };
   othersOf(chat).forEach(o => { upd[`unread.${ek(o)}`] = increment(1); }); // one counter per member
@@ -147,7 +147,9 @@ export async function postCallLog(chatId, call) {
   const chat = await read('chats', chatId);
   if (!chat || !(chat.members || []).includes(session.email)) return;
   const c = { id: String(call.id), outcome: call.outcome, dur: Math.max(0, Math.round(call.dur || 0)), group: !!call.group };
-  return post(chat, { type: 'call', text: '', call: c }, callLine(c));
+  if (call.group && Array.isArray(call.with) && call.with.length) c.with = call.with.slice(0, 12);   // who was called (a group call is for some members only)
+  const names = c.with ? ' — ' + c.with.filter(e => e !== session.email).map(e => String(nameOf(e)).split(' ')[0]).join('، ') : '';
+  return post(chat, { type: 'call', text: '', call: c }, (callLine(c) + names).slice(0, 140));
 }
 
 /** 1:1 only: "ring" the other person — an alert with a ringing sound, no voice call. One ring per 20 s. */
@@ -233,6 +235,28 @@ export async function loadFile(meta) {
   const url = URL.createObjectURL(new Blob([arr], { type: info.mime || meta.mime }));
   fileCache.set(meta.id, url);
   return url;
+}
+
+// ---------- reactions (one emoji per person per message, like WhatsApp) ----------
+export const REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+export const MORE_REACTIONS = ['🔥', '👏', '🎉', '✅', '💯', '😍', '🤝', '👌', '😅', '🤔', '🙌', '💪', '👀', '⭐', '😡', '❌', '☕', '🚀'];
+/** emoji → [emails], most used first */
+export function reactionsOf(m) {
+  const by = {};
+  Object.entries((m && m.reactions) || {}).forEach(([k, e]) => { if (e) (by[e] = by[e] || []).push(k); });
+  return Object.entries(by).sort((a, b) => b[1].length - a[1].length);
+}
+export const myReaction = (m) => ((m && m.reactions) || {})[ek(session.email)] || '';
+/** Set my reaction (the same emoji again, or '' removes it). The author gets a notification. */
+export async function react(chat, m, emoji) {
+  if (!chat || !m || m.deleted || m.archivedAt) return;
+  const me = ek(session.email);
+  const remove = !emoji || myReaction(m) === emoji;
+  await updateDoc(doc(db, `chats/${chat.id}/messages`, m.id), { [`reactions.${me}`]: remove ? deleteField() : emoji });
+  if (!remove && m.by !== session.email && (chat.members || []).includes(m.by)) {
+    const where = isGroup(chat) ? L(` في ${chat.name}`, ` in ${chat.name}`) : '';
+    notifyMany([m.by], L(`${nameOf(session.email)} عمل ${emoji} على رسالتك${where}`, `${nameOf(session.email)} reacted ${emoji} to your message${where}`), snippetOf(m).slice(0, 140), `#/chat/${encodeURIComponent(chat.id)}`, 'info');
+  }
 }
 
 // ---------- edit / delete (only where the admin enabled it) ----------

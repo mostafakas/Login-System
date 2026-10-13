@@ -42,9 +42,28 @@ pg.locator('.chat-row.them .chat-text').first.dblclick(); pg.wait_for_timeout(20
 pg.set_input_files('#file', files=[{'name': 'r.pdf', 'mimeType': 'application/pdf', 'buffer': b'%PDF-1.4 x' * 100}]); pg.wait_for_timeout(1500)
 ok(msgs(gid)[-1]['type'] == 'file' and msgs(gid)[-1].get('replyTo', {}).get('id') == ms[0]['id'], 'a file sent as a reply keeps the quote')
 
+# reactions: emp2 reacts 👍 from the smiley button, then switches to ❤️ by right-click
+first = pg.locator('.chat-row.them').first
+first.hover(); first.locator('[data-react]').click(); pg.wait_for_timeout(200)
+ok(pg.locator('.react-pick').count() == 1, 'reaction picker opens')
+pg.locator('.react-pick [data-pick="👍"]').click(); pg.wait_for_timeout(600)
+ok(a.db(f'chats/{gid}/messages/{ms[0]["id"]}').get('reactions', {}).get('emp2_almaster_tech') == '👍', 'reaction stored')
+ok(pg.locator('.chat-row.them').first.locator('.chat-react.mine').inner_text().startswith('👍'), 'reaction chip shown, marked mine')
+pg.locator('.chat-row.them .chat-bubble').first.click(button='right'); pg.wait_for_timeout(200)
+pg.locator('.react-pick [data-more]').click(); pg.locator('.react-pick [data-pick="🔥"]').click(); pg.wait_for_timeout(600)
+ok(a.db(f'chats/{gid}/messages/{ms[0]["id"]}')['reactions'] == {'emp2_almaster_tech': '🔥'}, 'one reaction per person (switched to 🔥)')
+ok(any(v.get('to') == 'emp1@almaster.tech' and '🔥' in v.get('title', '') for k, v in a.db().items() if k.startswith('notifications/')), 'author notified of the reaction')
+a.shot('f11-react')
+
 # emp1 sees the reply highlighted
 a.login('emp1@almaster.tech'); a.go(f'#/chat/{gid}'); pg.wait_for_timeout(1200)
 ok(pg.locator('.chat-bubble.mentioned .chat-quote').count() >= 1, 'author sees the reply highlighted with the quote')
+ok(pg.locator('.chat-react').first.inner_text().startswith('🔥'), 'author sees the reaction')
+pg.locator('.chat-react').first.click(); pg.wait_for_timeout(600)
+rx = a.db(f'chats/{gid}/messages/{ms[0]["id"]}')['reactions']
+ok(rx == {'emp2_almaster_tech': '🔥', 'emp1_almaster_tech': '🔥'} and '2' in pg.locator('.chat-react').first.inner_text(), 'clicking a chip adds the same reaction (count 2)')
+pg.locator('.chat-react').first.click(); pg.wait_for_timeout(600)
+ok(a.db(f'chats/{gid}/messages/{ms[0]["id"]}')['reactions'] == {'emp2_almaster_tech': '🔥'}, 'clicking it again removes mine')
 a.shot('f11-reply')
 a.dump_errors('flow11'); a.close()
 print('FAILS:', len(fails))

@@ -40,26 +40,59 @@ async function getMic() {
 }
 
 // ---------------------------------------------------------------- start / answer / leave
-/** Call everyone in this chat (1:1, or a group) */
-export async function startCall(chat) {
+/** Call the other person of a 1:1 chat, or the people picked from a group (only they ring and can join) */
+export async function startCall(chat, people = null) {
   if (cur) throw userError('إنت في مكالمة دلوقتي. اقفلها الأول.', 'You are already in a call. Hang up first.');
   if (!chat || !(chat.members || []).includes(session.email)) throw userError('المحادثة مش متاحة.', 'Conversation not available.');
+  let members = chat.members.slice(0, 300);
+  if (isGroup(chat)) {
+    const picked = [...new Set(people || [])].filter(e => e !== session.email && chat.members.includes(e));
+    if (!picked.length) throw userError('اختار مين هتكلّمه من الجروب.', 'Pick who to call from the group.');
+    if (picked.length > MAX_IN_CALL - 1) throw userError(`تقدر تختار لحد ${MAX_IN_CALL - 1} أشخاص.`, `You can pick up to ${MAX_IN_CALL - 1} people.`);
+    members = [session.email, ...picked];
+  }
   const stream = await getMic();
   const ref = doc(col('calls'));
   touched.add(ref.id);
   const me = session.email;
   const data = {
     chatId: chat.id, group: isGroup(chat), chatName: isGroup(chat) ? String(chat.name || '').slice(0, 80) : '',
-    from: me, fromName: nameOf(me), members: chat.members.slice(0, 300), liveFor: chat.members.slice(0, 300), joined: [me], beat: { [ek(me)]: Date.now() },
+    from: me, fromName: nameOf(me), members, liveFor: members, joined: [me], beat: { [ek(me)]: Date.now() },
     status: 'ringing', live: true, at: serverTimestamp(), atMs: Date.now(), startedAt: 0
   };
   try { await setDoc(ref, data); } catch (e) { stream.getTracks().forEach(t => t.stop()); throw e; }
-  track('call.start', { target: isGroup(chat) ? chat.name : (chat.members || []).filter(m => m !== me).map(nameOf).join(''), detail: isGroup(chat) ? L('جماعية', 'group') : '' });
+  track('call.start', { target: isGroup(chat) ? chat.name : members.filter(m => m !== me).map(nameOf).join(''), detail: isGroup(chat) ? members.filter(m => m !== me).map(nameOf).join('، ') : '' });
   enter(ref.id, { ...data, id: ref.id }, stream, []);
   // nobody answered → missed
   cur.ringTimer = setTimeout(() => { if (cur && cur.id === ref.id && !cur.call.startedAt) hangUp('missed'); }, RING_FOR);
   return ref.id;
 }
+
+/** During a group call: invite more people from the group (they ring now, and can join) */
+export const MAX_INVITED = 30;
+export async function addToCall(people) {
+  if (!cur) return 0;
+  const id = cur.id;
+  let added = [];
+  await runTransaction(db, async (tx) => {
+    const ref = doc(db, 'calls', id);
+    const s = await tx.get(ref); const d = s.exists() ? s.data() : null;
+    if (!d || !d.live) throw userError('المكالمة خلصت.', 'The call has ended.');
+    if (!d.group) throw userError('الإضافة في مكالمات الجروب بس.', 'Adding people works in group calls only.');
+    const cs = await tx.get(doc(db, 'chats', d.chatId)); const chat = cs.exists() ? cs.data() : null;
+    added = [...new Set(people || [])].filter(e => e !== session.email && chat && (chat.members || []).includes(e) && !(d.members || []).includes(e));
+    if (!added.length) return;
+    const members = [...(d.members || []), ...added];
+    if (members.length > MAX_INVITED) throw userError(`المكالمة فيها ${MAX_INVITED} مدعوين — ده الحد.`, `The call already has ${MAX_INVITED} invited — that is the limit.`);
+    const invitedAt = { ...(d.invitedAt || {}) };
+    added.forEach(e => { invitedAt[ek(e)] = Date.now(); });
+    tx.update(ref, { members, liveFor: members, invitedAt });
+  });
+  if (added.length) track('call.add', { target: cur.call.chatName || '', detail: added.map(nameOf).join('، ') });
+  return added.length;
+}
+/** When this person was asked to the call (the call start, or when they were added) */
+export const invitedAtOf = (c, email) => Number(((c && c.invitedAt) || {})[ek(email)] || (c && c.atMs) || 0);
 
 /** Answer / join a call */
 export async function joinCall(callId) {
@@ -120,7 +153,7 @@ export async function hangUp(reason = '') {
     if (end) {
       const outcome = d.startedAt ? 'done' : (reason === 'missed' ? 'missed' : 'cancelled');
       tx.update(ref, { live: false, liveFor: [], status: 'ended', outcome, joined: left, beat, endedAt: Date.now(), endedBy: me });
-      log = { id: c.id, outcome: outcome === 'cancelled' ? 'missed' : outcome, dur: d.startedAt ? Math.round((Date.now() - d.startedAt) / 1000) : 0, group: !!d.group };
+      log = { id: c.id, outcome: outcome === 'cancelled' ? 'missed' : outcome, dur: d.startedAt ? Math.round((Date.now() - d.startedAt) / 1000) : 0, group: !!d.group, with: d.group ? (d.members || []) : [] };
     } else tx.update(ref, { joined: left, beat });
   }).catch(e => console.warn('hang up', e && e.message));
   if (log) postCallLog(c.call.chatId, log).catch(e => console.warn('call log', e && e.message));

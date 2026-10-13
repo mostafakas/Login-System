@@ -11,7 +11,8 @@ import { play } from '../core/sounds.js';
 import {
   ensureChat, watchMyChats, watchAllChats, watchMessages, sendText, sendFile, sendVoice, loadFile, markRead, archiveChat, listArchive,
   otherOf, othersOf, unreadOf, ek, MAX_FILE, isGroup, canManageGroup, isMuted, seenBy, canEditMessage, createGroup, updateGroup, setMuted,
-  editMessage, deleteMessage, mentionedMe, sendRing, ringWait, snippetOf, replyRefOf, callLine
+  editMessage, deleteMessage, mentionedMe, sendRing, ringWait, snippetOf, replyRefOf, callLine,
+  REACTIONS, MORE_REACTIONS, reactionsOf, myReaction, react
 } from '../services/chat.js';
 import { startTasks, allTasks, taskById, taskLink } from '../services/tasks.js';
 import { setTabLabel } from '../tabs.js';
@@ -353,7 +354,7 @@ export default async function render(root, { params }) {
       if (m.type === 'image' && m.file) body += `<button class="chat-img" data-file="${esc(m.file.id)}" title="${esc(m.file.name)}"><img src="${esc(m.file.thumb || '')}" alt="${esc(m.file.name)}" loading="lazy"></button>`;
       if (m.type === 'file' && m.file) body += `<button class="chat-file" data-file="${esc(m.file.id)}"><i class="fas ${fileIcon(m.file.mime, m.file.name)}"></i><span class="min0 grow"><b class="truncate">${esc(m.file.name)}</b><small>${esc(fmtSize(m.file.size || 0))}</small></span><i class="fas fa-download"></i></button>`;
       if (m.type === 'voice' && m.file) body += `<div class="chat-voice" data-voice="${esc(m.file.id)}"><button class="btn btn-icon chat-voice-play" data-play="${esc(m.file.id)}" aria-label="${L('تشغيل', 'Play')}"><i class="fas fa-play"></i></button><span class="chat-voice-wave"></span><span class="num small">${esc(fmtLen(m.file.dur))}</span></div>`;
-      if (m.type === 'call' && m.call) body += `<div class="chat-callmsg ${esc(m.call.outcome || '')}"><i class="fas ${m.call.outcome === 'done' ? 'fa-phone' : 'fa-phone-slash'}"></i><span>${esc(callLine(m.call))}</span>${member && !m.archivedAt ? `<button type="button" class="btn btn-sm btn-ghost" data-callback title="${L('اتصل تاني', 'Call back')}"><i class="fas fa-phone"></i></button>` : ''}</div>`;
+      if (m.type === 'call' && m.call) body += `<div class="chat-callmsg ${esc(m.call.outcome || '')}"><i class="fas ${m.call.outcome === 'done' ? 'fa-phone' : 'fa-phone-slash'}"></i><span>${esc(callLine(m.call))}${m.call.with ? `<small class="chat-callwith">${esc(m.call.with.map(e => e === session.email ? L('إنت', 'you') : String(nameOf(e)).split(' ')[0]).join('، '))}</small>` : ''}</span>${member && !m.archivedAt ? `<button type="button" class="btn btn-sm btn-ghost" data-callback title="${L('اتصل تاني', 'Call back')}"><i class="fas fa-phone"></i></button>` : ''}</div>`;
       if (m.type === 'ring') body += `<div class="chat-ringmsg"><i class="fas fa-phone-volume"></i> ${mine ? L('رنّيت', 'You rang') : L(`${esc(String(nameOf(m.by)).split(' ')[0])} رنّ عليك`, `${esc(String(nameOf(m.by)).split(' ')[0])} rang you`)}</div>`;
       if (m.text) body += `<div class="chat-text">${richText(m)}</div>`;
     }
@@ -371,9 +372,15 @@ export default async function render(root, { params }) {
     }
     const canReply = member && at && !m.deleted && !m.archivedAt;
     const canEdit = canEditMessage(openChat, m) && at;
-    const tools = canReply || canEdit ? `<span class="chat-tools">${canReply ? `<button data-reply="${esc(m.id)}" title="${L('رد (أو دبل كليك على الرسالة)', 'Reply (or double-click the message)')}"><i class="fas fa-reply"></i></button>` : ''}${canEdit && m.by === session.email && m.text && m.type === 'text' ? `<button data-edit="${esc(m.id)}" title="${L('تعديل', 'Edit')}"><i class="fas fa-pen"></i></button>` : ''}${canEdit ? `<button data-del="${esc(m.id)}" title="${L('حذف', 'Delete')}"><i class="fas fa-trash"></i></button>` : ''}</span>` : '';
+    const tools = canReply || canEdit ? `<span class="chat-tools">${canReply ? `<button data-react="${esc(m.id)}" title="${L('رياكت (أو ضغطة طويلة / كليك يمين)', 'React (or long-press / right-click)')}"><i class="fas fa-face-smile"></i></button>` : ''}${canReply ? `<button data-reply="${esc(m.id)}" title="${L('رد (أو دبل كليك على الرسالة)', 'Reply (or double-click the message)')}"><i class="fas fa-reply"></i></button>` : ''}${canEdit && m.by === session.email && m.text && m.type === 'text' ? `<button data-edit="${esc(m.id)}" title="${L('تعديل', 'Edit')}"><i class="fas fa-pen"></i></button>` : ''}${canEdit ? `<button data-del="${esc(m.id)}" title="${L('حذف', 'Delete')}"><i class="fas fa-trash"></i></button>` : ''}</span>` : '';
     const tagged = !mine && !m.deleted && ((m.mentions || []).includes(session.email) || (g && m.replyTo && m.replyTo.by === session.email));
-    return `<div class="chat-row ${side} ${grouped ? 'grouped' : ''}" data-mid="${esc(m.id)}">${av}<div class="chat-col">${label}<div class="chat-bubble ${m.archivedAt ? 'archived' : ''} ${tagged ? 'mentioned' : ''}">${body}<span class="chat-meta num">${tools}${m.edited && !m.deleted ? `<span>${L('اتعدلت', 'edited')}</span>` : ''}${at ? esc(fmtTime(at)) : ''} ${tick}</span></div></div></div>`;
+    // reactions under the bubble: one chip per emoji, mine highlighted; hover shows who
+    const rx = m.deleted ? [] : reactionsOf(m), myRx = myReaction(m);
+    const reacts = rx.length ? `<div class="chat-reacts">${rx.map(([e, ks]) => {
+      const names = ks.map(k => { const em = (openChat.members || []).find(x => ek(x) === k); return em === session.email ? L('إنت', 'You') : (em ? nameOf(em) : k); }).join('، ');
+      return `<button type="button" class="chat-react ${e === myRx ? 'mine' : ''}" ${canReply ? `data-rxchip="${esc(m.id)}" data-emoji="${esc(e)}"` : 'disabled'} title="${esc(names)}">${esc(e)}${ks.length > 1 ? `<span class="num">${ks.length}</span>` : ''}</button>`;
+    }).join('')}</div>` : '';
+    return `<div class="chat-row ${side} ${grouped ? 'grouped' : ''}" data-mid="${esc(m.id)}">${av}<div class="chat-col">${label}<div class="chat-bubble ${m.archivedAt ? 'archived' : ''} ${tagged ? 'mentioned' : ''}">${body}<span class="chat-meta num">${tools}${m.edited && !m.deleted ? `<span>${L('اتعدلت', 'edited')}</span>` : ''}${at ? esc(fmtTime(at)) : ''} ${tick}</span></div>${reacts}</div></div>`;
   }
   function drawMsgs() {
     const el = $('#msgs'); if (!el || !openChat) return;
@@ -420,6 +427,8 @@ export default async function render(root, { params }) {
       else toast(tr.title || L('تاسك', 'Task'), L('التاسك ده مش مسند ليك — بتشوف عنوانه بس.', 'This task is not assigned to you — you only see its title.'), 'info');
       return;
     }
+    const rxb = e.target.closest('[data-react]'); if (rxb) { openReactPicker(find(rxb.dataset.react), rxb); return; }
+    const rxc = e.target.closest('[data-rxchip]'); if (rxc) { const m = find(rxc.dataset.rxchip); if (m) react(openChat, m, rxc.dataset.emoji).catch(toastErr); return; }
     if (e.target.closest('[data-callback]')) { startCallFor(openChat); return; }
     const jc = e.target.closest('[data-joincall]'); if (jc) { joinLive(jc.dataset.joincall); return; }
     const rp = e.target.closest('[data-reply]'); if (rp) { setReply(find(rp.dataset.reply)); return; }
@@ -475,6 +484,49 @@ export default async function render(root, { params }) {
     const ta = $('#text'); if (ta && !recorder) ta.focus();
   }
   const takeReply = () => { const r = replyRefOf(replyTo); setReply(null); return r; };
+
+  // ---------- reactions: the smiley button, a long press (phone) or a right-click open the picker ----------
+  let picker = null;
+  function closeReactPicker() { if (picker) { picker.remove(); picker = null; document.removeEventListener('mousedown', outside, true); document.removeEventListener('keydown', onEsc, true); } }
+  const outside = (e) => { if (picker && !picker.contains(e.target)) closeReactPicker(); };
+  const onEsc = (e) => { if (e.key === 'Escape') { e.stopPropagation(); closeReactPicker(); } };
+  function openReactPicker(m, anchor) {
+    closeReactPicker();
+    if (!m || m.deleted || m.archivedAt || !toMs(m.at) || !openChat || !openChat.members.includes(session.email)) return;
+    const mine = myReaction(m);
+    picker = document.createElement('div');
+    picker.className = 'react-pick'; picker.setAttribute('role', 'menu');
+    const btn = (e) => `<button type="button" data-pick="${esc(e)}" class="${e === mine ? 'mine' : ''}" aria-label="${esc(e)}">${esc(e)}</button>`;
+    picker.innerHTML = `<div class="react-row">${REACTIONS.map(btn).join('')}<button type="button" class="react-more" data-more aria-label="${L('المزيد', 'More')}"><i class="fas fa-plus"></i></button></div>
+      <div class="react-grid hidden">${MORE_REACTIONS.map(btn).join('')}</div>`;
+    document.body.appendChild(picker);
+    const r = (anchor || document.body).getBoundingClientRect(), w = picker.offsetWidth, h = picker.offsetHeight;
+    picker.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2)) + 'px';
+    picker.style.top = (r.top - h - 8 > 8 ? r.top - h - 8 : r.bottom + 8) + 'px';
+    picker.addEventListener('click', (e) => {
+      if (e.target.closest('[data-more]')) { picker.querySelector('.react-grid').classList.toggle('hidden'); return; }
+      const b = e.target.closest('[data-pick]'); if (!b) return;
+      closeReactPicker();
+      react(openChat, m, b.dataset.pick).catch(toastErr);
+    });
+    setTimeout(() => { document.addEventListener('mousedown', outside, true); document.addEventListener('keydown', onEsc, true); }, 0);
+  }
+  $('#thread').addEventListener('contextmenu', (e) => {
+    const bub = e.target.closest('.chat-bubble'); const row = e.target.closest('.chat-row[data-mid]');
+    if (!bub || !row || e.target.closest('a, audio')) return;
+    const m = [...msgs, ...archived].find(x => x.id === row.dataset.mid);
+    if (!m || m.deleted || !openChat || !openChat.members.includes(session.email)) return;
+    e.preventDefault(); openReactPicker(m, bub);
+  });
+  $('#thread').addEventListener('scroll', closeReactPicker, { passive: true, capture: true });   // scrolling the messages closes it
+  let press = 0;
+  $('#thread').addEventListener('touchstart', (e) => {
+    clearTimeout(press);
+    const bub = e.target.closest('.chat-bubble'); const row = e.target.closest('.chat-row[data-mid]');
+    if (!bub || !row || e.touches.length !== 1 || e.target.closest('button, a, audio')) return;
+    press = setTimeout(() => { const m = [...msgs, ...archived].find(x => x.id === row.dataset.mid); if (m) { try { navigator.vibrate && navigator.vibrate(20); } catch {} openReactPicker(m, bub); } }, 480);
+  }, { passive: true });
+  ['touchmove', 'touchend', 'touchcancel'].forEach(ev => $('#thread').addEventListener(ev, () => clearTimeout(press), { passive: true }));
   $('#thread').addEventListener('dblclick', (e) => {
     if (e.target.closest('button, a, audio, input, textarea, .chat-tools')) return;
     const row = e.target.closest('.chat-row[data-mid]'); if (!row || !e.target.closest('.chat-bubble')) return;
@@ -705,7 +757,7 @@ export default async function render(root, { params }) {
   } else emptyThread();
 
   return () => {
-    gone = true; openSeq++;
+    gone = true; openSeq++; closeReactPicker();
     stopRecording(true);
     unChats && unChats(); unAll && unAll(); unMsgs && unMsgs(); offDir && offDir(); offCalls && offCalls();
     document.removeEventListener('click', closePicker); document.removeEventListener('visibilitychange', onVis);

@@ -177,7 +177,7 @@ async function startChatWatcher() {
       const at = toMs(lm.at) || 0; if (at <= seen) return;
       newest = Math.max(newest, at);
       if (lm.type === 'ring' && !isGroup(c)) { ringPop(c, lm); return; }
-      if (lm.type === 'call' && lm.callOutcome !== 'missed') return;   // a call that took place / was declined: nothing to pop
+      if (lm.type === 'call' && (lm.callOutcome !== 'missed' || (lm.callFor && !lm.callFor.includes(session.email)))) return;   // pop only a call I missed
       if (window.__amOpenChat === c.id && !document.hidden) return;
       if (isMuted(c)) return; // notifications switched off for this chat: the counter still counts
       popup(c, lm);

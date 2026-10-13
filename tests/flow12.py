@@ -9,7 +9,7 @@ dm = 'emp1@almaster.tech__emp2@almaster.tech'
 p['fs'][f'chats/{dm}'] = {'members': ['emp1@almaster.tech', 'emp2@almaster.tech'], 'createdAt': ts(now), 'updatedAt': ts(now), 'createdBy': 'emp1@almaster.tech',
                          'lastMessage': None, 'unread': {'emp1_almaster_tech': 0, 'emp2_almaster_tech': 0}, 'lastRead': {}}
 gid = 'grp1'
-p['fs'][f'chats/{gid}'] = {'type': 'group', 'name': 'فريق البرمجيات', 'members': ['emp1@almaster.tech', 'emp2@almaster.tech', 'leader@almaster.tech'], 'admins': [],
+p['fs'][f'chats/{gid}'] = {'type': 'group', 'name': 'فريق البرمجيات', 'members': ['emp1@almaster.tech', 'emp2@almaster.tech', 'leader@almaster.tech', 'hr@almaster.tech'], 'admins': [],
                           'createdAt': ts(now), 'updatedAt': ts(now), 'createdBy': 'admin@almaster.tech', 'lastMessage': None, 'unread': {}, 'lastRead': {}}
 fails = []
 def ok(c, m): print(('OK ' if c else 'FAIL ') + m); (None if c else fails.append(m))
@@ -73,26 +73,49 @@ ok(any(m['type'] == 'call' and m['call']['outcome'] == 'declined' for m in msgs)
 
 # 3) group call with three people
 C = page(); login(C, 'leader@almaster.tech')
+D = page(); login(D, 'hr@almaster.tech')
 A.evaluate("h => location.hash = h", f'#/chat/{gid}'); A.wait_for_timeout(1200)
-A.click('#call'); A.wait_for_timeout(1500)
-B.wait_for_timeout(1000); C.wait_for_timeout(500)
-ok(B.locator('.call-in').count() == 1 and C.locator('.call-in').count() == 1, 'everyone in the group is called')
+A.click('#call'); A.wait_for_timeout(600)
+ok(A.locator('#cp-list [data-p]').count() == 3 and A.locator('#cp-go').is_disabled(), 'group call asks who to call')
+A.locator('#cp-list [data-p="emp2@almaster.tech"]').check(); A.locator('#cp-list [data-p="leader@almaster.tech"]').check()
+A.screenshot(path='shots/f12-pick.png')
+A.click('#cp-go'); A.wait_for_timeout(1500)
+B.wait_for_timeout(1000); C.wait_for_timeout(500); D.wait_for_timeout(300)
+ok(B.locator('.call-in').count() == 1 and C.locator('.call-in').count() == 1, 'the two picked people are called')
+ok(D.locator('.call-in').count() == 0, 'the one not picked is not called')
+D.evaluate("h => location.hash = h", f'#/chat/{gid}'); D.wait_for_timeout(1000)
+ok(D.locator('#callbar [data-joincall]').count() == 0, 'someone not picked does not see "Join"')
+D.evaluate("h => location.hash = h", '#/home'); D.wait_for_timeout(500)
 B.locator('.call-in [data-a=yes]').click(); B.wait_for_timeout(3500)
 C.locator('.call-in [data-a=yes]').click(); C.wait_for_timeout(6000)
 sa, sb, sc = state(A), state(B), state(C)
 print('group', sa, sb, sc)
 conn = lambda s: sum(1 for x in (s or {}).get('peers', []) if x[1] == 'connected')
 ok(conn(sa) == 2 and conn(sb) == 2 and conn(sc) == 2, 'each of the three is connected to the other two')
+# add the fourth one while the call is going
+A.locator('.call-panel [data-c=add]').click(); A.wait_for_timeout(500)
+ok(A.locator('#cp-list [data-p]').count() == 1 and A.locator('#cp-list [data-p="hr@almaster.tech"]').count() == 1, 'add lists only who is not invited yet')
+A.locator('#cp-list [data-p="hr@almaster.tech"]').check(); A.click('#cp-go'); A.wait_for_timeout(1500)
+D.wait_for_timeout(800)
+ok(D.locator('.call-in').count() == 1, 'the added person rings')
+ok(A.locator('.call-person.waiting').count() == 1, 'the call bar shows them ringing')
+D.locator('.call-in [data-a=yes]').click(); D.wait_for_timeout(5000)
+for _ in range(8):   # a lost handshake is retried by the side that called (the mock store can drop one with 4 pages writing)
+    if conn(state(D)) == 3: break
+    D.wait_for_timeout(2500)
+sd = state(D); print('D', sd)
+ok(conn(sd) == 3 and conn(state(A)) == 3, f'the added person talks with everyone ({conn(sd)})')
 C.screenshot(path='shots/f12-group.png')
 C.locator('.call-panel [data-c=end]').click(); A.wait_for_timeout(2500)
 sa = state(A)
-ok(sa and conn(sa) == 1, 'one leaves, the others keep talking')
+ok(sa and conn(sa) == 2, 'one leaves, the others keep talking')
 B.evaluate("h => location.hash = h", f'#/chat/{gid}'); B.wait_for_timeout(300)
 C.evaluate("h => location.hash = h", f'#/chat/{gid}'); C.wait_for_timeout(1500)
 ok(C.locator('#callbar [data-joincall]').count() == 1, 'the group chat shows "Join" while the call is on')
-A.locator('.call-panel [data-c=end]').click(); B.locator('.call-panel [data-c=end]').click(); A.wait_for_timeout(2500)
+A.locator('.call-panel [data-c=end]').click(); B.locator('.call-panel [data-c=end]').click(); D.locator('.call-panel [data-c=end]').click(); A.wait_for_timeout(2500)
 gm = [v for k, v in db(A).items() if k.startswith(f'chats/{gid}/messages/') and v['type'] == 'call']
-ok(len(gm) == 1 and gm[0]['call']['group'] and gm[0]['call']['outcome'] == 'done', 'group call written once when the last one leaves')
+ok(len(gm) == 1 and gm[0]['call']['group'] and gm[0]['call']['outcome'] == 'done' and sorted(gm[0]['call'].get('with', [])) == sorted(['emp1@almaster.tech', 'emp2@almaster.tech', 'leader@almaster.tech', 'hr@almaster.tech']), 'group call written once, with who was in it')
+
 live = [v for k, v in db(A).items() if k.startswith('calls/') and '/signals/' not in k and v.get('live')]
 ok(not live, 'no call left open')
 sig = [k for k in db(A) if '/signals/' in k]

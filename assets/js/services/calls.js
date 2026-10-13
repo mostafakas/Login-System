@@ -57,7 +57,7 @@ export async function startCall(chat, people = null) {
   const me = session.email;
   const data = {
     chatId: chat.id, group: isGroup(chat), chatName: isGroup(chat) ? String(chat.name || '').slice(0, 80) : '',
-    from: me, fromName: nameOf(me), members, liveFor: members, joined: [me], beat: { [ek(me)]: Date.now() },
+    from: me, fromName: nameOf(me), members, liveFor: members, joined: [me], ...(isGroup(chat) ? {} : { chatMembers: members.slice() }), beat: { [ek(me)]: Date.now() },
     status: 'ringing', live: true, at: serverTimestamp(), atMs: Date.now(), startedAt: 0
   };
   try { await setDoc(ref, data); } catch (e) { stream.getTracks().forEach(t => t.stop()); throw e; }
@@ -68,7 +68,8 @@ export async function startCall(chat, people = null) {
   return ref.id;
 }
 
-/** During a group call: invite more people from the group (they ring now, and can join) */
+/** During a call: invite more people (they ring now, and can join). From a group: its members. From a 1:1 call: any
+ *  colleague — the call then becomes a call of several people (it no longer ends when one of the two leaves). */
 export const MAX_INVITED = 30;
 export async function addToCall(people) {
   if (!cur) return 0;
@@ -78,15 +79,17 @@ export async function addToCall(people) {
     const ref = doc(db, 'calls', id);
     const s = await tx.get(ref); const d = s.exists() ? s.data() : null;
     if (!d || !d.live) throw userError('المكالمة خلصت.', 'The call has ended.');
-    if (!d.group) throw userError('الإضافة في مكالمات الجروب بس.', 'Adding people works in group calls only.');
+    if (!(d.joined || []).includes(session.email)) throw userError('ادخل المكالمة الأول.', 'Join the call first.');
     const cs = await tx.get(doc(db, 'chats', d.chatId)); const chat = cs.exists() ? cs.data() : null;
-    added = [...new Set(people || [])].filter(e => e !== session.email && chat && (chat.members || []).includes(e) && !(d.members || []).includes(e));
+    const fromGroup = !!chat && chat.type === 'group';
+    added = [...new Set((people || []).map(e => String(e || '').toLowerCase()))]
+      .filter(e => e && e !== session.email && !(d.members || []).includes(e) && (!fromGroup || (chat.members || []).includes(e)));
     if (!added.length) return;
     const members = [...(d.members || []), ...added];
     if (members.length > MAX_INVITED) throw userError(`المكالمة فيها ${MAX_INVITED} مدعوين — ده الحد.`, `The call already has ${MAX_INVITED} invited — that is the limit.`);
-    const invitedAt = { ...(d.invitedAt || {}) };
-    added.forEach(e => { invitedAt[ek(e)] = Date.now(); });
-    tx.update(ref, { members, liveFor: members, invitedAt });
+    const invitedAt = { ...(d.invitedAt || {}) }, invitedBy = { ...(d.invitedBy || {}) };
+    added.forEach(e => { invitedAt[ek(e)] = Date.now(); invitedBy[ek(e)] = session.email; });
+    tx.update(ref, { members, liveFor: members, invitedAt, invitedBy, ...(d.group ? {} : { group: true }) });
   });
   if (added.length) track('call.add', { target: cur.call.chatName || '', detail: added.map(nameOf).join('، ') });
   return added.length;
@@ -161,7 +164,7 @@ export async function hangUp(reason = '') {
 
 // ---------------------------------------------------------------- the running call
 function enter(id, call, stream, offerTo) {
-  cur = { id, call, stream, peers: new Map(), muted: false, enteredAt: Date.now(), unsubs: [], timers: [], ringTimer: 0, meters: new Map(), seen: new Set() };
+  cur = { id, call, stream, peers: new Map(), muted: false, enteredAt: Date.now(), unsubs: [], timers: [], ringTimer: 0, meters: new Map(), seen: new Set(), sent: [] };
   const me = session.email;
   // the handshake messages addressed to me
   cur.unsubs.push(watch(query(col(`calls/${id}/signals`), where('to', '==', me)), rows => {
@@ -220,6 +223,8 @@ function teardown(remoteEnded = false) {
   c.unsubs.forEach(u => { try { u(); } catch {} });
   c.peers.forEach((_, e) => closePeerOf(c, e));
   c.stream.getTracks().forEach(t => t.stop());
+  // handshake messages nobody picked up (they left first): don't leave them behind
+  setTimeout(() => c.sent.forEach(sid => deleteDoc(doc(db, `calls/${c.id}/signals`, sid)).catch(() => {})), 1500);
   try { c.actx && c.actx.close(); } catch {}
   window.removeEventListener('pagehide', onPageHide);
   lastEnded = { id: c.id, call: c.call, remoteEnded, at: Date.now() };
@@ -266,6 +271,7 @@ const closePeer = (email) => { if (cur) { closePeerOf(cur, email); emit(); } };
 async function send(to, kind, data) {
   if (!cur) return;
   const ref = doc(col(`calls/${cur.id}/signals`));
+  cur.sent.push(ref.id);
   await setDoc(ref, { from: session.email, to, kind, data: JSON.stringify(data), atMs: Date.now(), at: serverTimestamp() });
 }
 async function call1(email, tries = 0) {

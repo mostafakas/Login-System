@@ -4,10 +4,10 @@ import { L, esc } from '../core/utils.js';
 import { avatar, toast, toastErr, modal, STATUS_META } from '../core/ui.js';
 import { now } from '../core/session.js';
 import { dayKey } from '../core/policy.js';
-import { isGroup } from '../services/chat.js';
+import { isGroup, ek } from '../services/chat.js';
 import { read } from '../core/fb.js';
 import { session } from '../core/session.js';
-import { person, nameOf } from '../services/directory.js';
+import { person, nameOf, activePeople } from '../services/directory.js';
 import { play } from '../core/sounds.js';
 import {
   startCall, joinCall, declineCall, hangUp, setMuted, currentCall, onCallState, watchMyCalls, dropStale, isTalking,
@@ -33,7 +33,7 @@ export async function startCallFor(chat) {
 }
 
 /** Group call: who to call from the group (only they ring, and only they can join) */
-function pickCallees(chat, { exclude = [], max: maxPick = MAX_IN_CALL - 1, adding = false } = {}) {
+function pickCallees(chat, { exclude = [], max: maxPick = MAX_IN_CALL - 1, adding = false, anyone = false } = {}) {
   const live = (p) => (p && STATUS_META[p.status] && p.status !== 'Offline' && p.dayKey === dayKey(now()) ? p.status : 'Offline');
   const others = (chat.members || []).filter(e => e !== session.email && !exclude.includes(e)).map(who)
     .sort((a, b) => ((live(b) === 'Online') - (live(a) === 'Online')) || String(a.name || '').localeCompare(String(b.name || ''), 'ar'));
@@ -43,8 +43,8 @@ function pickCallees(chat, { exclude = [], max: maxPick = MAX_IN_CALL - 1, addin
     let done = false;
     const m = modal({
       title: adding ? L('إضافة للمكالمة', 'Add to the call') : L('مكالمة مع مين؟', 'Call whom?'), icon: adding ? 'fa-user-plus' : 'fa-phone', size: 'narrow',
-      body: `<p class="small muted mb-8">${adding ? L(`اختار من «${chat.name}» مين تضيفه (لحد ${max}). هيرن عندهم دلوقتي ويقدروا يدخلوا.`, `Pick who to add from "${chat.name}" (up to ${max}). They ring now and can join.`) : L(`اختار من «${chat.name}» اللي هتكلّمهم (لحد ${max}). هيرن عندهم هم بس، وهم بس اللي يقدروا يدخلوا المكالمة.`, `Pick who to call from "${chat.name}" (up to ${max}). Only they ring and only they can join.`)}</p>
-        ${others.length > 8 ? `<div class="search mb-8"><i class="fas fa-search"></i><input class="input" id="cp-q" placeholder="${L('ابحث بالاسم', 'Search by name')}"></div>` : ''}
+      body: `<p class="small muted mb-8">${adding ? (anyone ? L(`اختار مين تضيفه للمكالمة من الزملاء (لحد ${max}). هيرن عندهم دلوقتي ويقدروا يدخلوا.`, `Pick colleagues to add (up to ${max}). They ring now and can join.`) : L(`اختار من «${chat.name}» مين تضيفه (لحد ${max}). هيرن عندهم دلوقتي ويقدروا يدخلوا.`, `Pick who to add from "${chat.name}" (up to ${max}). They ring now and can join.`)) : L(`اختار من «${chat.name}» اللي هتكلّمهم (لحد ${max}). هيرن عندهم هم بس، وهم بس اللي يقدروا يدخلوا المكالمة.`, `Pick who to call from "${chat.name}" (up to ${max}). Only they ring and only they can join.`)}</p>
+        ${others.length > 8 || anyone ? `<div class="search mb-8"><i class="fas fa-search"></i><input class="input" id="cp-q" placeholder="${L('ابحث بالاسم', 'Search by name')}"></div>` : ''}
         <div class="chat-members" id="cp-list" style="max-height:320px"></div>`,
       foot: `<button class="btn" data-close>${L('إلغاء', 'Cancel')}</button><button class="btn btn-ok" id="cp-go" disabled><i class="fas fa-phone"></i> <span>${L('اتصال', 'Call')}</span></button>`,
       onClose: () => { if (!done) resolve(null); }
@@ -84,9 +84,11 @@ function hideIncoming(id) {
 }
 function showIncoming(c) {
   if (incoming.has(c.id)) return;
-  const from = who(c.from);
-  const title = c.group ? L(`مكالمة جماعية في ${c.chatName}`, `Group call in ${c.chatName}`) : L(`${from.name || from.email} بيكلّمك`, `${from.name || from.email} is calling you`);
-  const sub = c.group ? L(`${from.name || from.email} بدأها · ${(c.joined || []).length} جوّه: ${(c.joined || []).map(e => String(nameOf(e)).split(' ')[0]).join('، ')}`, `Started by ${from.name || from.email} · ${(c.joined || []).length} in`) : L('📞 مكالمة صوتية', '📞 Voice call');
+  const from = who(((c.invitedBy || {})[ek(session.email)]) || c.from);   // whoever added me, else who started it
+  const inNames = (c.joined || []).filter(e => e !== session.email).map(e => String(nameOf(e)).split(' ')[0]).join('، ');
+  const title = c.group && !c.chatName ? L(`${from.name || from.email} بيضيفك لمكالمة`, `${from.name || from.email} adds you to a call`)
+    : c.group ? L(`مكالمة جماعية في ${c.chatName}`, `Group call in ${c.chatName}`) : L(`${from.name || from.email} بيكلّمك`, `${from.name || from.email} is calling you`);
+  const sub = c.group && !c.chatName ? L(`جوّه: ${inNames}`, `In the call: ${inNames}`) : c.group ? L(`${from.name || from.email} بدأها · ${(c.joined || []).length} جوّه: ${(c.joined || []).map(e => String(nameOf(e)).split(' ')[0]).join('، ')}`, `Started by ${from.name || from.email} · ${(c.joined || []).length} in`) : L('📞 مكالمة صوتية', '📞 Voice call');
   const el = document.createElement('div');
   el.className = 'ring-pop call-in'; el.setAttribute('role', 'alertdialog');
   el.innerHTML = `<span class="ring-av">${avatar(from)}</span><div class="grow min0"><b class="truncate">${esc(title)}</b><small class="truncate">${esc(sub)}</small></div>
@@ -146,7 +148,9 @@ function drawPanel() {
   const others = (call.joined || []).filter(e => e !== me);
   const ringing = !call.startedAt;
   const otherOne = call.group ? null : who((call.members || []).find(e => e !== me));
-  const title = call.group ? call.chatName : (otherOne.name || otherOne.email);
+  const firstNames = (list) => list.map(e => String(nameOf(e)).split(' ')[0]).join('، ');
+  const title = call.group ? (call.chatName || L(`مكالمة مع ${firstNames(others) || '…'}`, `Call with ${firstNames(others) || '…'}`)) : (otherOne.name || otherOne.email);
+  const canOpenChat = !call.chatMembers || call.chatMembers.includes(me);
   const STATE = { connecting: L('بيتوصل…', 'connecting…'), unstable: L('الشبكة ضعيفة', 'weak network'), failed: L('مش قادر يتوصل', 'cannot connect'), closed: '' };
   const people = [me, ...others].map(e => {
     const p = c.peers.get(e); const st = e === me ? '' : (p ? (p.state === 'connected' ? '' : STATE[p.state] || '') : STATE.connecting);
@@ -160,13 +164,13 @@ function drawPanel() {
   panel.innerHTML = `
     <div class="call-top"><span class="call-dot ${ringing ? 'ringing' : ''}"></span><div class="grow min0"><b class="truncate">${esc(title || '')}</b>
       <small class="num" id="call-clock">${ringing ? L('بيرن…', 'Ringing…') : fmtDur((Date.now() - call.startedAt) / 1000)}${call.group ? ` · ${others.length + 1}/${MAX_IN_CALL}` : ''}</small></div>
-      <button class="btn btn-ghost btn-icon btn-sm" data-c="chat" title="${L('الشات', 'Chat')}"><i class="fas fa-comment-dots"></i></button>
+      ${canOpenChat ? `<button class="btn btn-ghost btn-icon btn-sm" data-c="chat" title="${L('الشات', 'Chat')}"><i class="fas fa-comment-dots"></i></button>` : ''}
       <button class="btn btn-ghost btn-icon btn-sm" data-c="min" title="${minimized ? L('كبّر', 'Expand') : L('صغّر', 'Minimize')}"><i class="fas ${minimized ? 'fa-up-right-and-down-left-from-center' : 'fa-down-left-and-up-right-to-center'}"></i></button></div>
     ${minimized ? '' : `<div class="call-people">${people}${ringingPpl}</div>
       ${failed ? `<div class="call-warn"><i class="fas fa-triangle-exclamation"></i> ${L('الاتصال مش راضي يتوصل — غالباً شبكة الشركة أو النت بيمنعه. جرّب نت تاني.', 'The connection fails — the network probably blocks it. Try another connection.')}</div>` : ''}`}
     <div class="call-actions">
       <button class="btn btn-icon call-btn ${c.muted ? 'on' : ''}" data-c="mute" title="${c.muted ? L('افتح المايك', 'Unmute') : L('اقفل المايك', 'Mute')}"><i class="fas ${c.muted ? 'fa-microphone-slash' : 'fa-microphone'}"></i></button>
-      ${call.group ? `<button class="btn btn-icon call-btn" data-c="add" title="${L('إضافة حد للمكالمة', 'Add someone to the call')}"><i class="fas fa-user-plus"></i></button>` : ''}
+      ${(call.joined || []).includes(me) ? `<button class="btn btn-icon call-btn" data-c="add" title="${L('إضافة حد للمكالمة', 'Add someone to the call')}"><i class="fas fa-user-plus"></i></button>` : ''}
       <button class="btn btn-icon call-btn end" data-c="end" title="${L('إنهاء المكالمة', 'Hang up')}"><i class="fas fa-phone-slash"></i></button>
     </div>`;
   if (!clock) clock = setInterval(() => { const cc = currentCall(); const el = document.getElementById('call-clock'); if (cc && el && cc.call.startedAt) el.textContent = fmtDur((Date.now() - cc.call.startedAt) / 1000) + (cc.call.group ? ` · ${(cc.call.joined || []).length}/${MAX_IN_CALL}` : ''); }, 1000);
@@ -177,11 +181,13 @@ function drawPanel() {
 
 /** "Add" in the call bar: pick more people from the group */
 async function addPeople() {
-  const c = currentCall(); if (!c || !c.call.group) return;
+  const c = currentCall(); if (!c) return;
   try {
-    const chat = await read('chats', c.call.chatId);
-    if (!chat) return;
-    const people = await pickCallees({ id: chat.id || c.call.chatId, ...chat }, { exclude: c.call.members || [], max: MAX_IN_CALL - (c.call.joined || []).length, adding: true });
+    const chat = await read('chats', c.call.chatId).catch(() => null);
+    const fromGroup = !!chat && chat.type === 'group';
+    // a group: its members · a 1:1 call (or a call that grew from one): any colleague
+    const pool = fromGroup ? { id: c.call.chatId, ...chat } : { id: c.call.chatId, name: '', members: activePeople().map(p => p.email) };
+    const people = await pickCallees(pool, { exclude: c.call.members || [], max: MAX_IN_CALL - (c.call.joined || []).length, adding: true, anyone: !fromGroup });
     if (!people || !people.length) return;
     const n = await addToCall(people);
     if (n) toast(L('اتضافوا وبيرن عندهم', 'Added — ringing now'), people.map(e => nameOf(e)).join('، '));

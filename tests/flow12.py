@@ -26,6 +26,7 @@ def login(pg, email):
     pg.evaluate("() => localStorage.removeItem('mockauth_current')")
     pg.goto(BASE + '/index.html'); pg.fill('#email', email); pg.fill('#password', 'Passw0rd!'); pg.click('#login-btn')
     pg.wait_for_url('**/app.html**', timeout=8000); pg.wait_for_selector('#splash', state='detached', timeout=8000)
+conn = lambda s: sum(1 for x in (s or {}).get('peers', []) if x[1] == 'connected')
 db = lambda pg: pg.evaluate("() => JSON.parse(localStorage.getItem('mockfs') || '{}')")
 state = lambda pg: pg.evaluate("async () => { const m = await import('/assets/js/services/calls.js'); const c = m.currentCall(); return c ? { id: c.id, muted: c.muted, started: !!c.call.startedAt, peers: [...c.peers].map(([e, p]) => [e, p.state, !!(p.audio.srcObject && p.audio.srcObject.getAudioTracks().length)]) } : null; }")
 
@@ -71,8 +72,28 @@ ok(state(A) is None, 'declined → caller call ends')
 msgs = [v for k, v in db(A).items() if k.startswith(f'chats/{dm}/messages/')]
 ok(any(m['type'] == 'call' and m['call']['outcome'] == 'declined' for m in msgs), 'declined call written')
 
-# 3) group call with three people
+# 3) a 1:1 call grows: emp1 adds the leader (not in that chat) while talking
 C = page(); login(C, 'leader@almaster.tech')
+A.wait_for_timeout(500); A.click('#call'); B.wait_for_timeout(2000)
+B.locator('.call-in [data-a=yes]').click(); B.wait_for_timeout(4000)
+A.locator('.call-panel [data-c=add]').click(); A.wait_for_timeout(500)
+ok(A.locator('#cp-list [data-p="leader@almaster.tech"]').count() == 1 and A.locator('#cp-list [data-p="emp2@almaster.tech"]').count() == 0, 'adding from a 1:1 call lists colleagues outside the chat')
+A.fill('#cp-q', 'كريم'); A.wait_for_timeout(200)
+A.locator('#cp-list [data-p="leader@almaster.tech"]').check(); A.click('#cp-go'); A.wait_for_timeout(1500)
+C.wait_for_timeout(800)
+ok(C.locator('.call-in').count() == 1 and 'بيضيفك' in C.locator('.call-in').inner_text(), 'the added colleague rings ("… adds you to a call")')
+C.locator('.call-in [data-a=yes]').click(); C.wait_for_timeout(5000)
+for _ in range(8):
+    if conn(state(C)) == 2: break
+    C.wait_for_timeout(2500)
+ok(conn(state(C)) == 2 and conn(state(A)) == 2 and conn(state(B)) == 2, 'three people in what started as a 1:1 call')
+ok(C.locator('.call-panel [data-c=chat]').count() == 0, 'the added person has no link to a chat that is not theirs')
+B.locator('.call-panel [data-c=end]').click(); A.wait_for_timeout(2500)
+ok(state(A) and conn(state(A)) == 1 and state(C), 'one of the two leaves, the call goes on')
+A.locator('.call-panel [data-c=end]').click(); C.locator('.call-panel [data-c=end]').click(); A.wait_for_timeout(2500)
+ok(state(A) is None and state(C) is None, 'ended')
+
+# 4) group call
 D = page(); login(D, 'hr@almaster.tech')
 A.evaluate("h => location.hash = h", f'#/chat/{gid}'); A.wait_for_timeout(1200)
 A.click('#call'); A.wait_for_timeout(600)
@@ -90,7 +111,6 @@ B.locator('.call-in [data-a=yes]').click(); B.wait_for_timeout(3500)
 C.locator('.call-in [data-a=yes]').click(); C.wait_for_timeout(6000)
 sa, sb, sc = state(A), state(B), state(C)
 print('group', sa, sb, sc)
-conn = lambda s: sum(1 for x in (s or {}).get('peers', []) if x[1] == 'connected')
 ok(conn(sa) == 2 and conn(sb) == 2 and conn(sc) == 2, 'each of the three is connected to the other two')
 # add the fourth one while the call is going
 A.locator('.call-panel [data-c=add]').click(); A.wait_for_timeout(500)

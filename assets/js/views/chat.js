@@ -722,7 +722,7 @@ export default async function render(root, { params }) {
     const bar = $('#callbar'); if (!bar || !openChat) return;
     const c = liveCallIn(openChat.id), mine = currentCall();
     const inIt = c && mine && mine.id === c.id;
-    if (!c || !(c.joined || []).length || (!isGroup(openChat) && !inIt)) { bar.classList.add('hidden'); bar.innerHTML = ''; return; }
+    if (!c || !(c.joined || []).length || (!isGroup(openChat) && !c.group && !inIt)) { bar.classList.add('hidden'); bar.innerHTML = ''; return; }   // a 1:1 call shows here once it has more people
     const people = (c.joined || []).map(e => avatar(who(e), 'xs')).join('');
     bar.innerHTML = `<i class="fas fa-phone-volume"></i><span class="grow min0 truncate">${inIt ? L('إنت في المكالمة دي', 'You are in this call') : L(`مكالمة صوتية شغالة · ${(c.joined || []).length} جوّه`, `Voice call on · ${(c.joined || []).length} in`)}</span><span class="chat-callbar-ppl">${people}</span>
       ${inIt ? '' : `<button type="button" class="btn btn-sm btn-ok" data-joincall="${esc(c.id)}"><i class="fas fa-phone"></i> ${L('انضم', 'Join')}</button>`}`;

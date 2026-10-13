@@ -8,6 +8,7 @@ import {
 } from '../core/fb.js';
 import { session, now, isAdmin, isPM, isHR } from '../core/session.js';
 import { userError } from '../core/ui.js';
+import { driveUpload, driveDownload } from './files.js';
 import { L, ymd } from '../core/utils.js';
 import { dayKey } from '../core/policy.js';
 import { person, nameOf, activePeople, supervisorOf } from './directory.js';
@@ -232,9 +233,18 @@ export async function uploadFile(t, file, onProgress) {
   if (file.size > MAX_FILE) throw userError('الملف أكبر من 5 ميجا.', 'The file is larger than 5 MB.');
   const dataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
   const b64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
-  const chunks = Math.ceil(b64.length / CHUNK) || 1;
   const ref = doc(col('task_files'));
-  const meta = { taskId: t.id, by: session.email, name: String(file.name || 'file').slice(0, 180), mime: file.type || 'application/octet-stream', size: file.size, chunks, at: serverTimestamp() };
+  const name = String(file.name || 'file').slice(0, 180), mime = file.type || 'application/octet-stream';
+  // Google Drive first (keeps Firebase's free quota); Firestore chunks only when the service can't be used
+  onProgress && onProgress(0.15);
+  const driveId = await driveUpload('task', t.id, { b64, name, mime });
+  if (driveId) {
+    await setDoc(ref, { taskId: t.id, by: session.email, name, mime, size: file.size, chunks: 0, driveId, at: serverTimestamp() });
+    onProgress && onProgress(1);
+    return { id: ref.id, name, mime, size: file.size, drive: true };
+  }
+  const chunks = Math.ceil(b64.length / CHUNK) || 1;
+  const meta = { taskId: t.id, by: session.email, name, mime, size: file.size, chunks, at: serverTimestamp() };
   await setDoc(ref, meta);
   for (let i = 0; i < chunks; i++) { await setDoc(doc(db, `task_files/${ref.id}/chunks`, String(i)), { i, data: b64.slice(i * CHUNK, (i + 1) * CHUNK) }); onProgress && onProgress((i + 1) / chunks); }
   return { id: ref.id, name: meta.name, mime: meta.mime, size: meta.size };
@@ -242,6 +252,7 @@ export async function uploadFile(t, file, onProgress) {
 const fileCache = new Map();
 export async function loadFile(meta) {
   if (fileCache.has(meta.id)) return fileCache.get(meta.id);
+  if (meta.drive) { const u = await driveDownload('task', meta.id, meta.mime); fileCache.set(meta.id, u); return u; }
   const parts = await list(col(`task_files/${meta.id}/chunks`));
   const b64 = parts.sort((a, b) => Number(a.i ?? a.id) - Number(b.i ?? b.id)).map(p => p.data).join('');
   const bin = atob(b64); const arr = new Uint8Array(bin.length);

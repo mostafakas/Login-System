@@ -7,6 +7,8 @@
  *   • welcome — emails a new employee their username + temporary password
  *   • renameCheck / rename — admin changes an account's username (login email); the site moves the data first
  *   • ping    — health check used by Settings → System
+ *   • fileUp / fileGet — chat files, task attachments and payroll receipts are kept in this account's Google Drive
+ *               (free 15 GB) instead of Firestore, so they no longer eat Firebase's free daily quota
  *
  * Setup: see README.md in this folder. Secrets live in Script Properties, never in this file:
  *   SERVICE_ACCOUNT = the whole JSON key from Firebase Console → Project settings → Service accounts
@@ -37,12 +39,14 @@ function doPost(e) {
       case 'welcome': return json_(welcome_(body));
       case 'renameCheck': return json_(renameCheck_(body));
       case 'rename': return json_(rename_(body));
+      case 'fileUp': return json_(fileUp_(body));
+      case 'fileGet': return json_(fileGet_(body));
       default: return json_({ ok: false, error: 'unknown-action' });
     }
   } catch (err) {
     const msg = String((err && err.message) || err);
     console.error(body.action, msg);
-    const known = ['unauthenticated', 'forbidden', 'not-found', 'no-login', 'no-recovery-email', 'not-configured', 'bad-request', 'email-taken'];
+    const known = ['unauthenticated', 'forbidden', 'not-found', 'no-login', 'no-recovery-email', 'not-configured', 'bad-request', 'email-taken', 'too-large', 'drive-error'];
     const code = msg.split(':')[0];
     if (known.indexOf(code) >= 0) return json_({ ok: false, error: code, detail: msg.slice(code.length + 1, 300) });
     return json_({ ok: false, error: 'server-error', detail: msg.slice(0, 300) });
@@ -58,7 +62,8 @@ function setupCheck() {
 
 // ---------------------------------------------------------------- actions
 function ping_() {
-  const out = { ok: true, configured: !!prop_('SERVICE_ACCOUNT'), mailQuota: MailApp.getRemainingDailyQuota(), firebase: false };
+  const out = { ok: true, configured: !!prop_('SERVICE_ACCOUNT'), mailQuota: MailApp.getRemainingDailyQuota(), firebase: false, files: false };
+  try { filesRoot_(); out.files = true; } catch (e) { out.filesDetail = String(e.message || e).slice(0, 200); }
   if (out.configured) { try { getDoc_('settings/public'); out.firebase = true; } catch (e) { out.detail = String(e.message || e).slice(0, 200); } }
   return out;
 }
@@ -165,6 +170,89 @@ function rename_(b) {
   return { ok: true };
 }
 
+// ---------------------------------------------------------------- files in Google Drive
+// kind → the Firestore collection that holds the file's details, and the field that links it to its place
+const FILE_KINDS = {
+  chat: { coll: 'chat_files', key: 'chatId' },
+  task: { coll: 'task_files', key: 'taskId' },
+  payroll: { coll: 'payroll_proofs', key: 'itemId' }
+};
+const MAX_FILE_BYTES = 5300000;
+
+/** "AL MASTER HR files" in this account's Drive (made once), with a folder per kind */
+function filesRoot_() {
+  const props = PropertiesService.getScriptProperties();
+  const id = props.getProperty('FILES_FOLDER');
+  if (id) { try { return DriveApp.getFolderById(id); } catch (e) { /* deleted → make a new one */ } }
+  const f = DriveApp.createFolder('AL MASTER HR files (do not share)');
+  props.setProperty('FILES_FOLDER', f.getId());
+  return f;
+}
+function kindFolder_(kind) {
+  const root = filesRoot_();
+  const it = root.getFoldersByName(kind);
+  return it.hasNext() ? it.next() : root.createFolder(kind);
+}
+const isAdmin_ = (me) => me.role === 'admin';
+const isHR_ = (me) => HR_ROLES.indexOf(me.role) >= 0;
+const isFinance_ = (me) => me.role === 'finance' || me.role === 'admin' || !!((me.profile || {}).permissions || {}).payroll;
+
+/** Same access as firestore.rules: chat members · people who see the task · finance (+ the employee once published) */
+function canUse_(me, kind, ref, meta, forRead) {
+  if (kind === 'chat') {
+    const c = getDoc_('chats/' + ref);
+    return !!c && (isAdmin_(me) || (c.members || []).indexOf(me.email) >= 0);
+  }
+  if (kind === 'task') {
+    const t = getDoc_('tasks/' + ref);
+    return !!t && (isAdmin_(me) || me.role === 'pm' || isHR_(me) || t.assignee === me.email || t.leader === me.email || t.supervisor === me.email);
+  }
+  if (kind === 'payroll') {
+    if (isFinance_(me)) return !!getDoc_('payroll_items/' + ref);
+    if (!forRead) return false;
+    if (isHR_(me)) return true;
+    const it = getDoc_('payroll_items/' + ref);
+    return !!it && !!meta && meta.email === me.email && it.published === true;
+  }
+  return false;
+}
+
+/** Save one file (base64, ≤ 5 MB) and return its Drive id. The file's description records where it belongs. */
+function fileUp_(b) {
+  const me = caller_(b.idToken);
+  const kind = String(b.kind || ''), ref = String(b.ref || '');
+  if (!FILE_KINDS[kind] || !ref || ref.length > 200 || !b.data) throw new Error('bad-request');
+  if (!canUse_(me, kind, ref, null, false)) throw new Error('forbidden');
+  const bytes = Utilities.base64Decode(String(b.data));
+  if (bytes.length > MAX_FILE_BYTES) throw new Error('too-large');
+  const name = String(b.name || 'file').replace(/[\\/]/g, '_').slice(0, 180);
+  const mime = String(b.mime || 'application/octet-stream').slice(0, 120);
+  let file;
+  try {
+    file = kindFolder_(kind).createFile(Utilities.newBlob(bytes, mime, name));
+    file.setDescription(kind + ':' + ref + ':' + me.email);
+  } catch (e) { throw new Error('drive-error:' + String(e.message || e).slice(0, 200)); }
+  return { ok: true, driveId: file.getId(), size: bytes.length };
+}
+
+/** Return a file (base64) after checking the caller may see the chat / task / receipt it belongs to. */
+function fileGet_(b) {
+  const me = caller_(b.idToken);
+  const kind = String(b.kind || ''), id = String(b.id || '');
+  const k = FILE_KINDS[kind];
+  if (!k || !id || id.length > 200) throw new Error('bad-request');
+  const meta = getDoc_(k.coll + '/' + id);
+  if (!meta || !meta.driveId) throw new Error('not-found');
+  const ref = String(meta[k.key] || '');
+  if (!canUse_(me, kind, ref, meta, true)) throw new Error('forbidden');
+  let file;
+  try { file = DriveApp.getFileById(String(meta.driveId)); } catch (e) { throw new Error('not-found'); }
+  // the Drive file must be the one saved for this same chat / task / salary (a copied id can't open another one)
+  if (String(file.getDescription() || '').split(':').slice(0, 2).join(':') !== kind + ':' + ref) throw new Error('forbidden');
+  const blob = file.getBlob();
+  return { ok: true, name: meta.name || file.getName(), mime: meta.mime || blob.getContentType(), data: Utilities.base64Encode(blob.getBytes()) };
+}
+
 // ---------------------------------------------------------------- identity & Firestore (service account)
 function caller_(idToken) {
   if (!idToken) throw new Error('unauthenticated:no-token');
@@ -181,7 +269,7 @@ function caller_(idToken) {
   }
   const p = getDoc_('users/' + email);
   if (!p || p.isSuspended === true) throw new Error('forbidden');
-  return { email: email, role: String(p.role || '').toLowerCase() };
+  return { email: email, role: String(p.role || '').toLowerCase(), profile: p };
 }
 
 // ---- Firebase ID token verification (RS256 against Google's public keys) — no API key needed

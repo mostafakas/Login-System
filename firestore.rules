@@ -63,6 +63,13 @@ service cloud.firestore {
       return (own is number ? own : (exists(settingsPath()) ? get(settingsPath()).data.get('graceMinutes', 15) : 15)) * 60000 + 120000;
     }
     function tbSum(m) { return m.get('Online', 0) + m.get('Break', 0) + m.get('Meeting', 0); }
+    // who a meeting is with (users/{email}.meetingWith …): at most 20 colleagues + a short outside party / topic
+    function meetingOk() {
+      return (!('meetingWith' in affected()) || (request.resource.data.meetingWith is list && request.resource.data.meetingWith.size() <= 20))
+        && (!('meetingExternal' in affected()) || (request.resource.data.meetingExternal is string && request.resource.data.meetingExternal.size() <= 80))
+        && (!('meetingTopic' in affected()) || (request.resource.data.meetingTopic is string && request.resource.data.meetingTopic.size() <= 120))
+        && (!('meetingId' in affected()) || (request.resource.data.meetingId is string && request.resource.data.meetingId.size() <= 160));
+    }
     function timeBankOk() {
       return !('timeBank' in affected())
         || ('lastChange' in affected() && (
@@ -112,16 +119,18 @@ service cloud.firestore {
       // Same limits as self-service: server clock, and counters grow at most by the real elapsed time.
       allow update: if active() && email != me() && resource.data.get('leaderEmail', '') == me()
         && resource.data.get('isSuspended', false) != true
-        && onlyChanged(['status', 'lastChange', 'lastChangeClient', 'timeBank', 'checkedOut'])
+        && onlyChanged(['status', 'lastChange', 'lastChangeClient', 'timeBank', 'checkedOut', 'meetingWith', 'meetingExternal', 'meetingTopic', 'meetingId'])
         && request.resource.data.status in ['Online', 'Break', 'Meeting', 'Offline']
         && request.resource.data.lastChange == request.time
+        && meetingOk()
         && timeBankOk();
 
       // Self-service: live attendance fields only, with server-verified clock and bounded time
       allow update: if signedIn() && email == me()
         && resource.data.get('isSuspended', false) != true
         && onlyChanged(['status', 'lastChange', 'lastChangeClient', 'timeBank', 'firstOnlineAt', 'dayKey', 'workLocation',
-                        'remotePending', 'checkedOut', 'sessionId', 'lastLoginAt', 'photo', 'lang', 'mustChangePassword', 'shift', 'birthday'])
+                        'remotePending', 'checkedOut', 'sessionId', 'lastLoginAt', 'photo', 'lang', 'mustChangePassword', 'shift', 'birthday',
+                        'meetingWith', 'meetingExternal', 'meetingTopic', 'meetingId'])
         && (!('birthday' in affected()) || request.resource.data.birthday == '' || request.resource.data.birthday.matches('^[0-9]{2}-[0-9]{2}$'))
         && (!('status' in affected()) || request.resource.data.status in ['Online', 'Break', 'Meeting', 'Offline'])
         && (!('dayKey' in affected()) || request.resource.data.dayKey.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'))
@@ -136,6 +145,7 @@ service cloud.firestore {
         && (!('shift' in affected()) || (newDay() && request.resource.data.shift in ['', '10']))
         && (!('photo' in affected()) || (request.resource.data.photo is string && request.resource.data.photo.size() < 120000))
         && (!('sessionId' in affected()) || (request.resource.data.sessionId is string && request.resource.data.sessionId.size() < 64))
+        && meetingOk()
         && timeBankOk();
     }
 
@@ -377,7 +387,9 @@ service cloud.firestore {
         allow read: if isAdmin() || inChat(id);
         allow create: if inChat(id) && request.resource.data.by == me() && request.resource.data.at == request.time
           && request.resource.data.keys().hasOnly(['by', 'type', 'text', 'file', 'at', 'mentions', 'tasks'])
-          && request.resource.data.type in ['text', 'image', 'file', 'voice']
+          && request.resource.data.type in ['text', 'image', 'file', 'voice', 'ring']
+          // a "ring" (an alert with a ringing sound, no call) is for 1:1 conversations only
+          && (request.resource.data.type != 'ring' || chatDoc(id).get('type', '') != 'group')
           && (!('mentions' in request.resource.data) || (request.resource.data.mentions is list && request.resource.data.mentions.size() <= 50))
           && (!('tasks' in request.resource.data) || (request.resource.data.tasks is list && request.resource.data.tasks.size() <= 10))
           && request.resource.data.text is string && request.resource.data.text.size() <= 4000
@@ -438,6 +450,28 @@ service cloud.firestore {
         allow create: if active() && fileDoc().by == me() && request.resource.data.data is string && request.resource.data.data.size() <= 700000;
         allow delete: if isAdmin();
       }
+    }
+
+    // ---------- meeting invitations ----------
+    // "from" switched to "In a meeting" with "to"; "to" accepts (their own status then becomes "In a meeting")
+    // or declines. The host can withdraw it and marks the answers as seen.
+    match /meeting_invites/{id} {
+      function inv() { return request.resource.data; }
+      allow read: if active() && (resource.data.from == me() || resource.data.to == me() || isHR() || isPM());
+      allow create: if active() && inv().from == me() && inv().to is string && inv().to != me() && exists(uPath(inv().to))
+        && inv().status == 'pending' && inv().fromSeen == false && inv().at == request.time
+        && inv().keys().hasOnly(['from', 'fromName', 'to', 'with', 'external', 'topic', 'meetingId', 'status', 'fromSeen', 'at', 'atMs'])
+        && inv().meetingId is string && inv().meetingId.size() <= 160
+        && inv().get('with', []) is list && inv().get('with', []).size() <= 20
+        && inv().get('topic', '').size() <= 120 && inv().get('external', '').size() <= 80;
+      // the invited person answers once
+      allow update: if active() && resource.data.to == me() && resource.data.status == 'pending'
+        && onlyChanged(['status', 'answeredAt']) && inv().status in ['accepted', 'declined', 'expired'] && inv().answeredAt == request.time;
+      // the host withdraws a pending one, or marks an answer as seen
+      allow update: if active() && resource.data.from == me()
+        && onlyChanged(['status', 'fromSeen']) && inv().fromSeen == true
+        && (inv().status == resource.data.status || (resource.data.status == 'pending' && inv().status == 'cancelled'));
+      allow delete: if active() && (resource.data.from == me() || isAdmin());
     }
 
     // what each user did (sign-ins, requests, approvals, settings…) — admins only
@@ -605,12 +639,12 @@ service cloud.firestore {
     match /work_mode_requests/{doc} { allow read: if isAdmin(); allow write: if false; }
     match /attendance_records/{doc} { allow read: if isAdmin(); allow write: if false; }
     match /freelancers/{doc} { allow read: if isAdmin(); allow write: if false; }
-    // features no page uses any more (chat, tasks, screenshots, shared-tool queue) — closed.
+    // features no page uses any more (old chat, screenshots, shared-tool queue) — closed.
+    // (the old top-level tasks list is now the live Tasks page — see "tasks, projects, clients" above)
     // They were readable/writable by ANY signed-in user under the old rules.
     match /messages/{doc} { allow read: if isAdmin(); allow write: if false; }
     match /private_messages/{doc} { allow read: if isAdmin(); allow write: if false; }
     match /typing_status/{doc} { allow read, write: if false; }
-    match /tasks/{doc} { allow read: if isAdmin(); allow write: if false; }
     match /screenshot_requests/{doc} { allow read: if isAdmin(); allow write: if false; }
     match /tool_requests/{doc} { allow read: if isAdmin(); allow write: if false; }
     match /_serverTime/{doc} { allow read, write: if false; }

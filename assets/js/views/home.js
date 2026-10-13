@@ -7,6 +7,7 @@ import { toMs, watch, query, col, where } from '../core/fb.js';
 import { startDay, changeStatus, endDay, liveBank, staleDay, closeStaleDay, dayLogs, COUNTED } from '../services/attendance.js';
 import { getSchedule, watchBalance, remaining, watchMyRequests } from '../services/requests.js';
 import { openRequestForm } from './request-form.js';
+import { meetingLine, nameOf } from '../services/directory.js';
 
 export default async function render(root) {
   const unsubs = [];
@@ -65,6 +66,7 @@ export default async function render(root) {
           <div class="muted small">${esc(p.title || '')}</div>
           <div class="row-wrap mt-8">
             ${presenceBadge(st)}
+            ${st === 'Meeting' && meetingLine({ ...p, email: session.email }) ? `<span class="badge info"><i class="fas fa-users"></i>${esc(meetingLine({ ...p, email: session.email }))}</span>` : ''}
             ${p.dayKey === today() && p.workLocation ? `<span class="badge brand"><i class="fas ${p.workLocation === 'remote' ? 'fa-house-laptop' : 'fa-building'}"></i>${esc(modeLabel(p.workLocation))}</span>` : ''}
             ${p.remotePending && p.dayKey === today() ? `<span class="badge warn"><i class="fas fa-hourglass-half"></i>${L('الأونلاين مستني موافقة', 'Remote pending approval')}</span>` : ''}
             ${fo ? `<span class="badge"><i class="fas fa-right-to-bracket"></i>${L('حضور', 'In')} ${esc(fmtTime(fo))}</span>` : ''}
@@ -108,13 +110,17 @@ export default async function render(root) {
           return `<button class="status-btn s-${k} ${p.status === k ? 'active' : ''}" data-st="${k}" ${p.status === k ? 'aria-pressed="true"' : ''}>
             <i class="fas ${s.icon}"></i><span>${esc(L(s.ar, s.en))}</span><span class="num small" data-timer="${k}">00:00:00</span></button>`;
         }).join('')}</div>
+        <div id="meet-box"></div>
         <div id="break-warn" class="alert warn mt-16 hidden"><i class="fas fa-mug-hot"></i><span>${L(`تخطيت وقت الاستراحة المسموح (${policy.breakMaxMinutes} دقيقة).`, `You exceeded the allowed break time (${policy.breakMaxMinutes} min).`)}</span></div>
         <div id="offline-warn" class="alert bad mt-16 hidden"><i class="fas fa-wifi"></i><span>${L('مفيش إنترنت — تغيير الحالة متوقف لحد ما النت يرجع.', 'Offline — status changes are paused until you reconnect.')}</span></div>
       </div>`;
     card.querySelectorAll('[data-st]').forEach(b => b.onclick = () => busy(b, async () => {
       if (!navigator.onLine) { toast(L('مفيش إنترنت', 'No internet'), '', 'bad'); return; }
+      // "In a meeting" always says who it is with (and invites them)
+      if (b.dataset.st === 'Meeting') { const ui = await import('./meeting-ui.js'); await ui.openMeetingPicker(); return; }
       try { await changeStatus(session.email, b.dataset.st); } catch (e) { toastErr(e); }
     }));
+    renderMeeting();
     card.querySelector('#end-btn').onclick = async (e) => {
       const ok = await confirmDialog({ title: L('إنهاء اليوم', 'End day'), message: L('هيتسجل وقت انصرافك دلوقتي. متأكد؟', 'Your check-out will be recorded now. Continue?'), okText: L('إنهاء اليوم', 'End day'), okClass: 'btn-danger' });
       if (!ok) return;
@@ -181,6 +187,32 @@ export default async function render(root) {
       });
       m.$$('[data-shift]').forEach(b => b.onclick = () => { done = true; m.close(); resolve(b.dataset.shift); });
     });
+  }
+
+  // ---- my meeting: who it is with, and (when I started it) who accepted the invitation ----
+  let meetUnsub = null, meetId = '', invites = [];
+  unsubs.push(() => meetUnsub && meetUnsub());
+  function renderMeeting() {
+    const box = root.querySelector('#meet-box'); if (!box) return;
+    const p = { ...u(), email: session.email };
+    const inMeeting = started() && p.status === 'Meeting';
+    const id = inMeeting ? (p.meetingId || '') : '';
+    const host = !!id && id.startsWith(session.email + '_');
+    if ((host ? id : '') !== meetId) {
+      meetUnsub && meetUnsub(); meetUnsub = null; invites = []; meetId = host ? id : '';
+      if (meetId) import('../services/meetings.js').then(m => { if (meetId === id) meetUnsub = m.watchMeetingInvites(id, rows => { invites = rows; renderMeeting(); }); });
+    }
+    if (!inMeeting) { box.innerHTML = ''; return; }
+    const line = meetingLine(p);
+    const ST = { pending: ['warn', 'fa-hourglass-half', L('مستني رده', 'waiting')], accepted: ['ok', 'fa-check', L('قبل', 'accepted')], declined: ['bad', 'fa-xmark', L('اعتذر', 'declined')], expired: ['', 'fa-clock', L('انتهت', 'expired')], cancelled: ['', 'fa-ban', L('اتلغت', 'withdrawn')] };
+    const latest = new Map(); invites.slice().sort((a, b) => (a.atMs || 0) - (b.atMs || 0)).forEach(i => latest.set(i.to, i));
+    const chips = host ? [...latest.values()].filter(i => i.status !== 'cancelled').map(i => { const [c, ic, t] = ST[i.status] || ST.pending; return `<span class="badge ${c}" title="${esc(t)}"><i class="fas ${ic}"></i>${esc(String(nameOf(i.to)).split(' ')[0])} · ${esc(t)}</span>`; }).join('') : '';
+    box.innerHTML = `<div class="meet-box mt-16"><span class="icon-tile info"><i class="fas fa-users"></i></span>
+      <div class="grow min0"><b>${esc(line || L('في ميتنج', 'In a meeting'))}</b>${!host && p.meetingId && (p.meetingWith || []).length ? `<div class="xs muted">${L('الدعوة من', 'Invited by')} ${esc(nameOf((p.meetingWith || [])[0]))}</div>` : ''}
+        ${chips ? `<div class="row-wrap mt-8">${chips}</div>` : ''}</div>
+      ${host || !(p.meetingWith || []).length ? `<button class="btn btn-sm" id="meet-edit"><i class="fas fa-user-plus"></i> ${L('تعديل / إضافة', 'Edit / add')}</button>` : ''}</div>`;
+    const ed = box.querySelector('#meet-edit');
+    if (ed) ed.onclick = async () => { const ui = await import('./meeting-ui.js'); ui.openMeetingPicker(); };
   }
 
   function renderStats() {

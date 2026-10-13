@@ -5,6 +5,7 @@
 - **ريسيت الباسورد من HR:** بيطلّع كلمة مرور مؤقتة، والموظف يختار كلمة جديدة أول ما يدخل.
 - **«نسيت كلمة المرور؟»:** بيبعت لينك تغيير كلمة المرور على إيميل الموظف في Outlook.
 - **إرسال بيانات الدخول لموظف جديد** على إيميله.
+- **تخزين الملفات على Google Drive:** ملفات الشات والرسائل الصوتية ومرفقات التاسكات وإيصالات التحويل بتتحفظ في Drive بتاع الحساب ده (15 جيجا مجاناً) بدل Firestore، فمبقتش بتاكل من الحد اليومي المجاني لـ Firebase.
 
 الخدمة بتشتغل على **Google Apps Script**. مش محتاج كارت ولا خطة Blaze، والحد 100 إيميل في اليوم.
 
@@ -60,6 +61,14 @@ Firebase Console ← **Authentication ← Settings ← Authorized domains ← Ad
 ## تحديث الكود بعدين
 Deploy ← **Manage deployments** ← ✏️ ← Version: **New version** ← Deploy. الرابط مش بيتغير.
 
+## تفعيل تخزين الملفات على Drive (مرة واحدة)
+1. الصق آخر `Code.gs` و`appsscript.json` (فيه صلاحية Drive جديدة).
+2. من المحرر اختار `setupCheck` ← **Run** ← هيطلب صلاحية **Google Drive** ← **Allow**. لازم يظهر في الـ log `"files": true`.
+3. Deploy ← **Manage deployments** ← ✏️ ← **New version** ← Deploy.
+- السيستم بيعمل فولدر في Drive اسمه **AL MASTER HR files (do not share)**. **ما تشيرهوش لحد** وما تمسحش منه، لأن الملفات بتتفتح من خلال الخدمة بعد التأكد إن اللي بيفتحها من حقه يشوفها.
+- الملفات القديمة اللي اتبعتت قبل التفعيل فاضلة في Firestore وبتفتح عادي.
+- لو الخدمة وقفت أو مش متحدثة، السيستم بيرجع يخزن في Firestore تلقائياً عشان الإرسال ما يقفش.
+
 ## لو المفتاح اتسرّب
 Google Cloud Console ← IAM & Admin ← **Service accounts** ← `firebase-adminsdk-…` ← **Keys** ← امسح المفتاح، واعمل واحد جديد من الخطوة 1 وحطه في Script Properties.
 
@@ -71,3 +80,4 @@ Google Cloud Console ← IAM & Admin ← **Service accounts** ← `firebase-admi
 | «تعذّر الوصول لخدمة كلمات المرور» | الرابط غلط أو Who has access مش Anyone. |
 | «الموظف ملوش إيميل استعادة» | ضيف له إيميل Outlook من ملفه. |
 | «ملوش حساب دخول» | الموظف موجود في السيستم بس مش موجود في Firebase Authentication. |
+| `"files": false` في setupCheck | ما وافقتش على صلاحية Drive. شغّل `setupCheck` تاني ووافق، وبعدين New version. |

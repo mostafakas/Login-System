@@ -4,7 +4,7 @@ import { toast, toastErr, avatar, STATUS_META, empty, confirmDialog, bindActions
 import { session, now, isHR, seesAll } from '../core/session.js';
 import { dayKey, planFor, lateness, modeLabel, roleLabel, isWorkingPlan, policy, leaveType, withShift } from '../core/policy.js';
 import { toMs, list, query, col, where } from '../core/fb.js';
-import { onDirectory, supervisedPeople as managedPeople, departments } from '../services/directory.js';
+import { onDirectory, supervisedPeople as managedPeople, departments, meetingLine } from '../services/directory.js';
 import { liveBank, staleDay, closeStaleDay, changeStatus, resetLive, COUNTED } from '../services/attendance.js';
 import { showDayDetails } from './attendance.js';
 import { classifyDay } from '../services/reports.js';
@@ -142,7 +142,8 @@ export default async function render(root) {
     if (i.on && i.since) sub = L(`من ${fmtTime(i.since)}`, `since ${fmtTime(i.since)}`);
     else if (i.state === 'away') sub = i.plan.mode === 'leave' ? (leaveType(i.plan.leaveType) ? L(leaveType(i.plan.leaveType).ar, leaveType(i.plan.leaveType).en) : modeLabel('leave')) : modeLabel(i.plan.mode);
     else if (i.state === 'notstarted') sub = L(`الدوام ${i.plan.start || policy.workStart}`, `Starts ${i.plan.start || policy.workStart}`);
-    return `<span class="badge ${s.cls} ${live}"><span class="dot"></span>${esc(L(s.ar, s.en))}</span>${sub ? `<small class="sub">${esc(sub)}</small>` : ''}`;
+    const meet = i.on ? meetingLine(u) : '';   // "in a meeting with …" so the team knows who it is with
+    return `<span class="badge ${s.cls} ${live}"><span class="dot"></span>${esc(L(s.ar, s.en))}</span>${sub ? `<small class="sub">${esc(sub)}</small>` : ''}${meet ? `<small class="sub meet" title="${esc(meet)}"><i class="fas fa-users"></i> ${esc(meet.replace(/^في ميتنج /, '').replace(/^In a meeting /, ''))}</small>` : ''}`;
   };
   const flags = (i) => [
     i.plan.shift && (i.on || i.fo) ? `<span class="badge info"><i class="fas fa-clock-rotate-left"></i>${L('شيفت 10', '10:00 shift')}</span>` : '',

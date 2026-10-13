@@ -65,9 +65,12 @@ const ACTIONS = {
   'user.update': ['عدّل بيانات موظف', 'Edited an employee', 'fa-user-pen', 'info'],
   'user.rename': ['غيّر اسم مستخدم', 'Changed a username', 'fa-right-left', 'warn'],
   'user.password_reset': ['عمل ريسيت باسورد', 'Reset a password', 'fa-key', 'warn'],
-  'balance.adjust': ['عدّل رصيد', 'Adjusted a balance', 'fa-scale-balanced', 'info']
+  'balance.adjust': ['عدّل رصيد', 'Adjusted a balance', 'fa-scale-balanced', 'info'],
+  'meeting.start': ['بدأ ميتنج', 'Started a meeting', 'fa-users', 'info'],
+  'meeting.accept': ['قبل دعوة ميتنج', 'Accepted a meeting invitation', 'fa-users', 'ok'],
+  'chat.ring': ['رنّ على زميل', 'Rang a colleague', 'fa-phone-volume', 'warn']
 };
-const catOf = (a) => a.startsWith('status') ? 'attendance' : a.startsWith('auth.') || a.startsWith('profile.') ? 'account' : a.startsWith('request.') ? 'requests'
+const catOf = (a) => a.startsWith('status') || a.startsWith('meeting.') ? 'attendance' : a.startsWith('auth.') || a.startsWith('profile.') ? 'account' : a.startsWith('request.') ? 'requests'
   : a.startsWith('user.') || a.startsWith('balance.') ? 'hr' : a.startsWith('settings.') ? 'settings' : a.startsWith('payroll.') ? 'payroll' : a.startsWith('chat.') ? 'chat' : 'hr';
 const statusName = (s) => { const m = STATUS_META[s] || STATUS_META.Offline; return L(m.ar, m.en); };
 
@@ -101,7 +104,7 @@ export default async function render(root, { params }) {
       ]);
       rows = [
         ...acts.map(x => ({ at: toMs(x.at), by: x.by, name: x.name, action: x.action, target: x.target, detail: x.detail })),
-        ...logs.map(x => ({ at: toMs(x.timestamp), by: x.changed_by_email || x.user, subject: x.user, name: x.changed_by_name || x.name, action: 'status', from: x.from_status, to: x.to_status, forced: x.changed_by === 'admin' })),
+        ...logs.map(x => ({ at: toMs(x.timestamp), by: x.changed_by_email || x.user, subject: x.user, name: x.changed_by_name || x.name, action: 'status', from: x.from_status, to: x.to_status, forced: x.changed_by === 'admin', detail: x.to_status === 'Meeting' && ((x.meeting_with || []).length || x.meeting_external) ? L('مع ', 'with ') + [...(x.meeting_with || []).map(nameOf), ...(x.meeting_external ? [x.meeting_external] : [])].join('، ') + (x.meeting_topic ? ` · ${x.meeting_topic}` : '') : '' })),
         ...audits.map(x => ({ at: toMs(x.at), by: x.by, action: x.action, target: x.target || '', detail: x.from ? `${x.from} → ${x.target}` : (x.suspended ? L('إيقاف الحساب', 'suspended') : '') }))
       ].filter(r => r.at).sort((x, y) => y.at - x.at);
       draw();

@@ -115,6 +115,18 @@ async function startChatWatcher() {
       try { const n = new Notification(title, { body: lm.text || '', icon: 'assets/img/icon-192.png', tag: c.id }); n.onclick = () => { window.focus(); location.hash = `#/chat/${encodeURIComponent(c.id)}`; n.close(); }; } catch {}
     }
   };
+  // a "ring" from a 1:1 chat: rings even when that chat is open or muted, so the person notices
+  const ringPop = (c, lm) => {
+    const from = person(lm.by) || { email: lm.by, name: nameOf(lm.by) };
+    const title = L(`${from.name || from.email} بيرن عليك`, `${from.name || from.email} is ringing you`);
+    const el = livePop({ who: from, cls: 'warn ringing', title, text: L('افتح الشات ورد عليه', 'Open the chat to answer'), href: `#/chat/${encodeURIComponent(c.id)}`, action: L('فتح الشات', 'Open chat'), ttl: 25000 });
+    el && el.classList.add('ring-pop');
+    play('ring'); setTimeout(() => { if (el && el.isConnected) play('ring'); }, 2200);
+    if ('vibrate' in navigator) try { navigator.vibrate([300, 150, 300, 150, 300]); } catch {}
+    if ('Notification' in window && Notification.permission === 'granted' && (document.hidden || !document.hasFocus())) {
+      try { const n = new Notification(title, { body: '📞', icon: 'assets/img/icon-192.png', tag: 'ring-' + c.id, requireInteraction: true }); n.onclick = () => { window.focus(); location.hash = `#/chat/${encodeURIComponent(c.id)}`; n.close(); }; } catch {}
+    }
+  };
   watchMyChats(chats => {
     chatCount = chats.reduce((s, c) => s + unreadOf(c), 0);
     setBadges();
@@ -123,6 +135,7 @@ async function startChatWatcher() {
       const lm = c.lastMessage; if (!lm || lm.by === session.email) return;
       const at = toMs(lm.at) || 0; if (at <= seen) return;
       newest = Math.max(newest, at);
+      if (lm.type === 'ring' && !isGroup(c)) { ringPop(c, lm); return; }
       if (window.__amOpenChat === c.id && !document.hidden) return;
       if (isMuted(c)) return; // notifications switched off for this chat: the counter still counts
       popup(c, lm);
@@ -262,6 +275,7 @@ async function boot() {
   window.addEventListener('am:late-error', (e) => toastErr(e.detail, L('ما اتحفظش', 'Not saved')));
   startNotifications();
   startChatWatcher().catch(e => console.warn('chat', e && e.message));
+  import('./views/meeting-ui.js').then(m => m.startMeetingWatchers()).catch(e => console.warn('meetings', e && e.message));
   startAnnouncementWatcher().catch(e => console.warn('announcements', e && e.message));
   import('./services/tasks.js').then(t => { t.startTasks(); t.onTasks(() => { taskCount = t.badgeCount(); setBadges(); if (isAdmin()) t.syncSupervisors().catch(e => console.warn('supervisors', e && e.message)); }); }).catch(e => console.warn('tasks', e && e.message));
   onNotifications(setBadges);

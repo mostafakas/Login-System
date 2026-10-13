@@ -42,7 +42,7 @@ export default async function render(root) {
           ? `<button class="btn btn-sm btn-danger" data-action="reject" data-id="${esc(r.id)}"><i class="fas fa-xmark"></i> ${L('رفض', 'Reject')}</button>
              <button class="btn btn-sm btn-ok" data-action="approve" data-id="${esc(r.id)}"><i class="fas fa-check"></i> ${L('موافقة', 'Approve')}</button>`
           : `<span class="badge">${L('طلبك الشخصي', 'Your own request')}</span>`;
-      } else if (isHR() && r.status === 'approved' && ['leave', 'remote', 'mission'].includes(r.type) && (r.endDate || r.startDate) >= ymd(now())) {
+      } else if (isHR() && r.status === 'approved' && ['leave', 'remote', 'mission', 'excuse'].includes(r.type) && (r.endDate || r.startDate) >= ymd(now())) {
         actions = `<button class="btn btn-sm" data-action="revoke" data-id="${esc(r.id)}"><i class="fas fa-rotate-left"></i> ${L('إلغاء الاعتماد', 'Revoke')}</button>`;
       }
       return `<div data-wrap="${esc(r.id)}">${requestCard(r, { showPerson: true, actions })}</div>`;

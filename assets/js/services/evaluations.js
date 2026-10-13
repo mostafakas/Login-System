@@ -6,7 +6,7 @@
 import { db, doc, col, watch, query, where, setDoc, updateDoc, serverTimestamp, toMs, arrayUnion } from '../core/fb.js';
 import { session, now, isAdmin, isPM, isHR, LEADER_ROLES } from '../core/session.js';
 import { userError } from '../core/ui.js';
-import { L } from '../core/utils.js';
+import { L, ymd, cairoMs, addDays } from '../core/utils.js';
 import { policy, isWorkingPlan, savePolicy } from '../core/policy.js';
 import { summarize } from './reports.js';
 import { inPeriod, doneDay } from './tasks.js';
@@ -136,7 +136,7 @@ export const canView = (email) => email === session.email || viewable().some(p =
 // ---------- the measures ----------
 const HOUR = 3600000;
 const inR = (d, r) => !!d && d >= r.from && d <= r.to;
-const dayOf = (ms) => new Date(ms + 3 * HOUR).toISOString().slice(0, 10);
+const dayOf = (ms) => ymd(ms);   // the Cairo calendar day (follows summer / winter time)
 const createdMs = (k) => toMs(k.createdAt) || ((k.history || [])[0] || {}).at || null;
 const returned = (k) => (k.history || []).some(h => (h.from === 'review' || h.from === 'done') && (h.to === 'in_progress' || h.to === 'new'));
 /** tasks that belong to a period: due in it, or (no due date) finished in it */
@@ -145,7 +145,7 @@ const hrs = (h) => (h < 1 ? L('أقل من ساعة', 'under an hour') : h < 48 
 /** hours to act → score: ≤ 4h 100, 24h 70, 72h+ 30 */
 const speedScore = (h) => clamp(h <= 4 ? 100 : h <= 24 ? 100 - (h - 4) * 1.5 : h <= 72 ? 70 - (h - 24) * 40 / 48 : 30);
 const avg = (xs) => (xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : null);
-const endOf = (range) => Math.min(now(), new Date(`${range.to}T23:59:59+03:00`).getTime());
+const endOf = (range) => Math.min(now(), cairoMs(addDays(range.to, 1), '00:00') - 1);
 
 function completion(ts) {
   if (!ts.length) return null;

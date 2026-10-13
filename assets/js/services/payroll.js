@@ -6,6 +6,7 @@ import { session, now, isAdmin } from '../core/session.js';
 import { policy } from '../core/policy.js';
 import { fmtMonth, ymd, L, imageToDataUrl } from '../core/utils.js';
 import { userError } from '../core/ui.js';
+import { driveUpload, driveDownload } from './files.js';
 import { activePeople, person } from './directory.js';
 import { teamMonth } from './reports.js';
 import { notify } from './notify.js';
@@ -152,7 +153,7 @@ export async function saveManual(month, email, manual) {
   await updateDoc(doc(db, 'payroll_items', itemId(month, email)), { ...next, kpiFromReview: fromReview, updatedAt: serverTimestamp(), editedBy: session.email });
 }
 
-// ---------- transfer receipt (stored in Firestore chunks, like chat files) ----------
+// ---------- transfer receipt (Google Drive through the Apps Script service; Firestore chunks as a fallback) ----------
 export const MAX_PROOF = 5 * 1024 * 1024;
 const CHUNK = 700000;
 const readAsDataUrl = (file) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
@@ -172,9 +173,16 @@ async function uploadProof(item, file, note, onProgress) {
   const b64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
   const size = Math.round(b64.length * 0.75);
   if (size > MAX_PROOF) throw userError('الملف أكبر من 5 ميجا.', 'The file is larger than 5 MB.');
-  const chunks = Math.ceil(b64.length / CHUNK) || 1;
   const pref = doc(col('payroll_proofs'));
   const name = String(file.name || (isImg ? 'receipt.jpg' : 'receipt')).slice(0, 180);
+  onProgress && onProgress(0.15);
+  const driveId = await driveUpload('payroll', item.id, { b64, name, mime });
+  if (driveId) {
+    await setDoc(pref, { itemId: item.id, email: item.email, month: item.month, by: session.email, name, mime, size, chunks: 0, driveId, at: serverTimestamp() });
+    onProgress && onProgress(1);
+    return { id: pref.id, name, mime, size, drive: true, ...(thumb ? { thumb } : {}), note: String(note || '').trim().slice(0, 300) };
+  }
+  const chunks = Math.ceil(b64.length / CHUNK) || 1;
   await setDoc(pref, { itemId: item.id, email: item.email, month: item.month, by: session.email, name, mime, size, chunks, at: serverTimestamp() });
   for (let i = 0; i < chunks; i++) {
     await setDoc(doc(db, `payroll_proofs/${pref.id}/chunks`, String(i)), { i, data: b64.slice(i * CHUNK, (i + 1) * CHUNK) });
@@ -186,8 +194,10 @@ const proofCache = new Map();
 /** The receipt as an object URL */
 export async function loadProof(meta) {
   if (proofCache.has(meta.id)) return proofCache.get(meta.id);
+  if (meta.drive) { const u = await driveDownload('payroll', meta.id, meta.mime); proofCache.set(meta.id, u); return u; }
   const info = await read('payroll_proofs', meta.id);
   if (!info) throw userError('الإيصال مش موجود.', 'Receipt not found.');
+  if (info.driveId) { const u = await driveDownload('payroll', meta.id, info.mime || meta.mime); proofCache.set(meta.id, u); return u; }
   const parts = await list(col(`payroll_proofs/${meta.id}/chunks`));
   const b64 = parts.sort((a, b) => Number(a.i ?? a.id) - Number(b.i ?? b.id)).map(p => p.data).join('');
   const bin = atob(b64); const arr = new Uint8Array(bin.length);

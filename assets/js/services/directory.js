@@ -1,7 +1,8 @@
 // People directory: a single live listener on users, shared by every screen.
 import { col, watch, query, where, orderBy } from '../core/fb.js';
-import { session, isHR, seesAll } from '../core/session.js';
-import { setPersonLookup, policy, DEFAULT_DEPARTMENTS, savePolicy } from '../core/policy.js';
+import { session, isHR, seesAll, now } from '../core/session.js';
+import { setPersonLookup, policy, DEFAULT_DEPARTMENTS, savePolicy, dayKey } from '../core/policy.js';
+import { L } from '../core/utils.js';
 
 let people = [];
 let ready = null;
@@ -62,3 +63,24 @@ export function departments() {
   return [...official, ...[...extra].sort()];
 }
 export const officialDepartments = () => (Array.isArray(policy.departments) && policy.departments.length ? policy.departments : DEFAULT_DEPARTMENTS).slice();
+
+// ---------- meetings: who someone is in a meeting with (users/{email}.meetingWith / meetingExternal / meetingTopic) ----------
+/** { with: [emails], external, topic, id } while the person is in a meeting today, else null */
+export function meetingOf(p) {
+  if (!p || p.status !== 'Meeting' || p.dayKey !== dayKey(now())) return null;
+  return { with: (p.meetingWith || []).filter(e => e && e !== p.email), external: p.meetingExternal || '', topic: p.meetingTopic || '', id: p.meetingId || '' };
+}
+const shortName = (email) => String(nameOf(email) || '').split(' ').slice(0, 2).join(' ');
+/** "أحمد علي، منى" / "a client" — the people in the meeting (the viewer is "you") */
+export function meetingWithText(p, me = session.email) {
+  const m = meetingOf(p); if (!m) return '';
+  const names = m.with.map(e => (e === me ? L('إنت', 'you') : shortName(e)));
+  if (m.external) names.push(m.external);
+  return names.join(L('، ', ', '));
+}
+/** "في ميتنج مع أحمد، منى · مراجعة الحملة" (or just "في ميتنج") — '' when not in a meeting */
+export function meetingLine(p, { topic = true, me = session.email } = {}) {
+  const m = meetingOf(p); if (!m) return '';
+  const w = meetingWithText(p, me);
+  return (w ? L(`في ميتنج مع ${w}`, `In a meeting with ${w}`) : L('في ميتنج', 'In a meeting')) + (topic && m.topic ? ` · ${m.topic}` : '');
+}

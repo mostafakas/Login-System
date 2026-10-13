@@ -376,8 +376,8 @@ table.table { width: 100%; border-collapse: collapse; font-size: 13px; }
 
 /* ---------- tabs / segmented ---------- */
 .tabs { display: inline-flex; gap: 4px; padding: 4px; background: var(--surface-2); border-radius: 12px; border: 1px solid var(--border); flex-wrap: wrap; }
-.tab { border: 0; background: none; font-family: inherit; font-weight: 700; font-size: 12.5px; color: var(--muted); padding: 7px 14px; border-radius: 9px; cursor: pointer; display: inline-flex; gap: 8px; align-items: center; }
-.tab.active { background: var(--surface); color: var(--brand); box-shadow: var(--shadow-sm); }
+.tabs .tab { border: 0; background: none; font-family: inherit; font-weight: 700; font-size: 12.5px; color: var(--muted); padding: 7px 14px; border-radius: 9px; cursor: pointer; display: inline-flex; gap: 8px; align-items: center; height: auto; max-width: none; }
+.tabs .tab.active { background: var(--surface); color: var(--brand); box-shadow: var(--shadow-sm); }
 
 /* ---------- modal ---------- */
 .modal-root { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(7,10,36,.55); backdrop-filter: blur(3px); animation: fade .15s ease; }
@@ -584,7 +584,7 @@ table.table { width: 100%; border-collapse: collapse; font-size: 13px; }
 html[dir="ltr"] [data-flip] { transform: scaleX(-1); display: inline-block; }
 .filters .search { flex: 1 1 220px; }
 .filters .tabs { max-width: 100%; }
-@media (max-width: 640px) { .filters .select, .filters .input { min-width: 0; flex: 1 1 140px; } .filters .tabs { overflow-x: auto; flex-wrap: nowrap; } .tab { white-space: nowrap; } }
+@media (max-width: 640px) { .filters .select, .filters .input { min-width: 0; flex: 1 1 140px; } .filters .tabs { overflow-x: auto; flex-wrap: nowrap; } .tabs .tab { white-space: nowrap; } }
 .hero-timer { text-align: end; }
 @media (max-width: 640px) {
   .hero-timer { flex-basis: 100%; text-align: start; border-top: 1px solid rgba(255,255,255,.12); padding-top: 14px; }
@@ -1286,3 +1286,29 @@ html[dir="rtl"] .mon-metric.on { box-shadow: inset -3px 0 0 var(--brand); }
   .ev-set { grid-template-columns: 1fr; }
   .ev-wrow { flex-wrap: wrap; }
 }
+
+/* ---------- meetings: who it is with, invitations ---------- */
+.mt-picked { display: flex; flex-wrap: wrap; gap: 6px; min-height: 26px; align-items: center; }
+.mt-x { border: 0; background: none; color: inherit; cursor: pointer; padding: 0 2px; font-size: 11px; opacity: .7; }
+.mt-x:hover { opacity: 1; }
+.mt-invite { border-inline-start-color: var(--info); animation: popin .25s ease, mtglow 1.6s ease-in-out 2; }
+@keyframes mtglow { 50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--info) 25%, transparent), var(--shadow-lg); } }
+.meet-box { display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: 12px; background: color-mix(in srgb, var(--info) 8%, var(--surface)); border: 1px solid color-mix(in srgb, var(--info) 25%, transparent); flex-wrap: wrap; }
+.meet-box b { font-size: 13.5px; }
+.mon-status .sub.meet { color: var(--info); font-family: inherit; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-meet { color: var(--info); font-weight: 700; }
+.chat-suggest small.chat-meet { color: var(--info); }
+.chat-mention-meet { font-size: .8em; opacity: .8; }
+.chat-mhint { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.chat-mhint .chat-st { white-space: normal; text-align: start; }
+
+/* ---------- chat "ring" (an alert, not a call) ---------- */
+.chat-ring-btn { color: var(--ok); }
+.chat-ring-btn.cool { opacity: .45; pointer-events: none; }
+.chat-ringmsg { display: inline-flex; align-items: center; gap: 8px; font-weight: 700; font-size: 13px; padding: 2px 0; }
+.chat-ringmsg i { animation: ringshake 1s ease-in-out 2; }
+.chat-pop.ringing { border-inline-start-color: var(--ok); animation: popin .25s ease, popshake .5s ease-in-out .25s 4; }
+@keyframes popshake { 0%, 100% { transform: none; } 25% { transform: translateX(-5px); } 75% { transform: translateX(5px); } }
+.chat-pop.ringing .avatar { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 40%, transparent); }
+@keyframes ringshake { 0%, 100% { transform: rotate(0); } 20% { transform: rotate(-8deg); } 40% { transform: rotate(8deg); } 60% { transform: rotate(-5deg); } 80% { transform: rotate(5deg); } }
+@media (prefers-reduced-motion: reduce) { .chat-pop.ringing, .chat-ringmsg i, .mt-invite { animation: popin .25s ease; } }

@@ -32,6 +32,9 @@ const ERRORS = {
   'no-recovery-email': ['الموظف ملوش إيميل استعادة. ضيفه من ملفه الأول.', 'This employee has no recovery email. Add it in their profile first.'],
   'not-configured': ['خدمة كلمات المرور متركّبة بس ناقصها مفتاح الخدمة (SERVICE_ACCOUNT).', 'The password service is missing its SERVICE_ACCOUNT key.'],
   'email-taken': ['الإيميل ده عليه حساب دخول تاني بالفعل.', 'Another login already uses this email.'],
+  'too-large': ['الملف أكبر من 5 ميجا.', 'The file is larger than 5 MB.'],
+  'drive-error': ['Google Drive رفض حفظ الملف. اتأكد إن الخدمة واخدة صلاحية Drive (README ← تفعيل تخزين الملفات).', 'Google Drive refused the file. Make sure the service was granted Drive access (README → file storage).'],
+  'unknown-action': ['خدمة Apps Script قديمة. انشر آخر Code.gs كـ New version.', 'The Apps Script service is out of date. Deploy the latest Code.gs as a New version.'],
   'server-error': ['حصلت مشكلة في خدمة كلمات المرور.', 'The password service hit an error.']
 };
 

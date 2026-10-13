@@ -35,6 +35,9 @@ const SOUNDS = {
   request: () => tones([[523, 0, 0.12], [784, 0.1, 0.18]], { vol: 0.08, type: 'triangle' }), // new request for me
   approved: () => tones([[523, 0, 0.08], [659, 0.07, 0.08], [784, 0.14, 0.16]], { vol: 0.07 }), // happy arpeggio
   rejected: () => tones([[440, 0, 0.12], [330, 0.1, 0.2]], { vol: 0.07, type: 'triangle' }), // low, falling
+  meeting: () => tones([[587, 0, 0.12], [784, 0.12, 0.12], [988, 0.24, 0.22]], { vol: 0.08, type: 'triangle' }), // invitation to a meeting
+  ring: () => tones([[880, 0, 0.09], [1175, 0.1, 0.09], [880, 0.2, 0.09], [1175, 0.3, 0.09],
+    [880, 0.75, 0.09], [1175, 0.85, 0.09], [880, 0.95, 0.09], [1175, 1.05, 0.09]], { vol: 0.1 }), // phone-like double trill
   info: () => tones([[880, 0, 0.1]], { vol: 0.05 })                                         // neutral tick
 };
 export function play(name) {

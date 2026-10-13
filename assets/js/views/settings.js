@@ -161,7 +161,10 @@ export default async function render(root, { params = [] } = {}) {
         const o = pane.querySelector('#svc-out');
         try {
           const r = await callService('ping', {}, { signedIn: false });
-          o.innerHTML = r.firebase ? `<span class="badge ok">${L('شغالة', 'Working')} · ${L('إيميلات متاحة النهارده', 'emails left today')} ${num(r.mailQuota)}</span>`
+          // files in Google Drive (needs the latest Code.gs + the Drive permission)
+          const files = r.files ? `<span class="badge ok"><i class="fab fa-google-drive"></i> ${L('الملفات بتتخزن على Drive', 'Files are stored in Drive')}</span>`
+            : `<span class="badge warn"><i class="fab fa-google-drive"></i> ${r.files === false ? L('Drive مش متفعّل — شغّل setupCheck ووافق على صلاحية Drive', 'Drive not enabled — run setupCheck and allow Drive') : L('الخدمة قديمة — انشر آخر Code.gs عشان الملفات تتخزن على Drive', 'Old service — deploy the latest Code.gs to store files in Drive')}</span>`;
+          o.innerHTML = r.firebase ? `<span class="badge ok">${L('شغالة', 'Working')} · ${L('إيميلات متاحة النهارده', 'emails left today')} ${num(r.mailQuota)}</span> ${files}`
             : `<span class="badge bad">${L('الخدمة وصلت بس مفتاح Firebase مش شغال', 'Reached, but the Firebase key is not working')}</span> <span class="xs muted" dir="ltr">${esc(r.detail || (r.configured ? '' : 'SERVICE_ACCOUNT missing'))}</span>`;
         } catch (ex) { o.innerHTML = `<span class="badge bad">${esc(ex.userMessage || ex.message)}</span>`; }
       });

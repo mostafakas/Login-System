@@ -6,12 +6,12 @@ import { toast, toastErr, avatar, empty, loader, confirmDialog, modal, busy, STA
 import { session, now, isAdmin } from '../core/session.js';
 import { read, toMs } from '../core/fb.js';
 import { dayKey } from '../core/policy.js';
-import { activePeople, person, nameOf, onDirectory, departments } from '../services/directory.js';
+import { activePeople, person, nameOf, onDirectory, departments, meetingLine, meetingWithText } from '../services/directory.js';
 import { play } from '../core/sounds.js';
 import {
   ensureChat, watchMyChats, watchAllChats, watchMessages, sendText, sendFile, sendVoice, loadFile, markRead, archiveChat, listArchive,
   otherOf, othersOf, unreadOf, ek, MAX_FILE, isGroup, canManageGroup, isMuted, seenBy, canEditMessage, createGroup, updateGroup, setMuted,
-  editMessage, deleteMessage, mentionedMe
+  editMessage, deleteMessage, mentionedMe, sendRing, ringWait
 } from '../services/chat.js';
 import { startTasks, allTasks, taskById, taskLink } from '../services/tasks.js';
 import { setTabLabel } from '../tabs.js';
@@ -29,7 +29,7 @@ const presence = (p) => {
 };
 const dotFor = (p) => { const s = liveStatus(p); return `<span class="status-dot ${s.toLowerCase()}" style="background:${STATUS_META[s].color}" title="${esc(L(STATUS_META[s].ar, STATUS_META[s].en))}"></span>`; };
 /** a coloured status chip (icon + word) next to a name */
-const statusPill = (p, iconOnly = false) => { const s = liveStatus(p), m = STATUS_META[s]; return `<span class="chat-st ${s.toLowerCase()}" style="--c:${m.color}" title="${esc(L(m.ar, m.en))}"><i class="fas ${m.icon}"></i>${iconOnly ? '' : esc(L(m.ar, m.en))}</span>`; };
+const statusPill = (p, iconOnly = false) => { const s = liveStatus(p), m = STATUS_META[s]; return `<span class="chat-st ${s.toLowerCase()}" style="--c:${m.color}" title="${esc(meetingLine(p) || L(m.ar, m.en))}"><i class="fas ${m.icon}"></i>${iconOnly ? '' : esc(L(m.ar, m.en))}</span>`; };
 const who = (email) => person(email) || { email, name: nameOf(email) };
 const groupPic = (c, size = '') => c.photo ? `<span class="avatar ${size}"><img src="${esc(c.photo)}" alt=""></span>` : `<span class="avatar chat-gav ${size}" aria-hidden="true"><i class="fas fa-users"></i></span>`;
 const reEsc = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -48,7 +48,9 @@ function richText(m) {
     if (!(i % 2)) return esc(p);
     if (p[0] === '#') { const t = tasks.find(x => `#${x.num}` === p); return t ? `<button class="chat-taskref" data-task="${esc(t.id)}" title="${esc(t.title)}">#${Number(t.num) || 0} · ${esc(t.title)}</button>` : esc(p); }
     const x = names.find(n => n.n === p);
-    return `<span class="chat-mention ${x && x.e === session.email ? 'me' : ''}">${esc(p)}</span>`;
+    // someone in a meeting right now: a small mark saying with whom (live, not when the message was sent)
+    const ml = x && x.e !== session.email ? meetingLine(person(x.e)) : '';
+    return `<span class="chat-mention ${x && x.e === session.email ? 'me' : ''}" ${ml ? `title="${esc(ml)}"` : ''}>${esc(p)}${ml ? ' <i class="fas fa-users chat-mention-meet"></i>' : ''}</span>`;
   }).join('');
   return String(m.text || '').split(/(https?:\/\/[^\s<]+)/g).map((part, i) => i % 2 ? `<a href="${esc(part)}" target="_blank" rel="noopener">${esc(part)}</a>` : deco(part)).join('');
 }
@@ -233,7 +235,7 @@ export default async function render(root, { params }) {
     }
     const o = member ? person(otherOf(openChat)) : null;
     return member
-      ? `<span class="avatar-wrap">${avatar(o || who(otherOf(openChat)))}${dotFor(o)}</span><div class="grow min0"><b class="truncate">${esc(convTitle(openChat))}</b><div class="small">${o ? (liveStatus(o) === 'Offline' ? presence(o) : statusPill(o)) : ''}${o && o.title ? ` · <span class="muted">${esc(o.title)}</span>` : ''}</div></div>`
+      ? `<span class="avatar-wrap">${avatar(o || who(otherOf(openChat)))}${dotFor(o)}</span><div class="grow min0"><b class="truncate">${esc(convTitle(openChat))}</b><div class="small truncate">${o ? (liveStatus(o) === 'Offline' ? presence(o) : statusPill(o)) : ''}${o && meetingLine(o) ? ` <span class="chat-meet">${esc(meetingLine(o, { topic: false }).replace(/^في ميتنج /, '').replace(/^In a meeting /, ''))}</span>` : (o && o.title ? ` · <span class="muted">${esc(o.title)}</span>` : '')}</div></div>`
       : `<span class="chat-duo">${openChat.members.map(m => avatar(who(m), 'sm')).join('')}</span><div class="grow min0"><b class="truncate">${esc(convTitle(openChat))}</b><div class="small muted"><i class="fas fa-eye"></i> ${L('بتشوفها كأدمن — مش بتظهر للطرفين', 'Viewing as admin — they are not notified')}</div></div>`;
   }
   function drawHead() {
@@ -246,11 +248,12 @@ export default async function render(root, { params }) {
       const o = !isGroup(openChat) && openChat.members.includes(session.email) ? (person(otherOf(openChat)) || null) : null;
       const s = o ? liveStatus(o) : 'Online';
       const first = o ? String(o.name || o.email).split(' ')[0] : '';
-      const txt = { Break: L(`${first} في استراحة دلوقتي — الرد ممكن يتأخر شوية`, `${first} is on a break — the reply may take a while`), Meeting: L(`${first} في اجتماع دلوقتي — هيرد بعد ما يخلص`, `${first} is in a meeting — they will reply afterwards`), Offline: L(`${first} مش شغال دلوقتي — هيشوف رسالتك لما يرجع`, `${first} is not working now — they will see it when back`) }[s];
+      const txt = { Break: L(`${first} في استراحة دلوقتي — الرد ممكن يتأخر شوية`, `${first} is on a break — the reply may take a while`), Meeting: (() => { const w = o ? meetingWithText(o) : ''; const tp = o && o.meetingTopic ? ` (${o.meetingTopic})` : ''; return w ? L(`${first} في ميتنج مع ${w}${tp} دلوقتي — هيرد بعد ما يخلص`, `${first} is in a meeting with ${w}${tp} — they will reply afterwards`) : L(`${first} في اجتماع دلوقتي — هيرد بعد ما يخلص`, `${first} is in a meeting — they will reply afterwards`); })(), Offline: L(`${first} مش شغال دلوقتي — هيشوف رسالتك لما يرجع`, `${first} is not working now — they will see it when back`) }[s];
       away.className = `chat-away ${s.toLowerCase()} ${txt ? '' : 'hidden'}`;
       away.style.setProperty('--c', STATUS_META[s].color);
       away.innerHTML = txt ? `<i class="fas ${STATUS_META[s].icon}"></i><span>${esc(txt)}</span>` : '';
     }
+    drawHint();
   }
   async function openThread(id) {
     if (unMsgs) { unMsgs(); unMsgs = null; }
@@ -268,6 +271,7 @@ export default async function render(root, { params }) {
       <header class="chat-head">
         <a class="btn btn-ghost btn-icon chat-back" href="#/chat" aria-label="${L('رجوع', 'Back')}"><i class="fas fa-arrow-right" data-flip></i></a>
         <div class="row gap-12 grow min0" id="chat-head-main"></div>
+        ${member && !isGroup(openChat) ? `<button class="btn btn-ghost btn-icon chat-ring-btn" id="ring" title="${L('رنّ عليه (تنبيه بس، مش مكالمة)', 'Ring (an alert only, not a call)')}" aria-label="${L('رنّ', 'Ring')}"><i class="fas fa-phone-volume"></i></button>` : ''}
         ${admin ? `<div class="row gap-4"><button class="btn btn-sm btn-ghost" id="arch-view" title="${L('الرسائل المؤرشفة', 'Archived messages')}"><i class="fas fa-box-archive"></i><span class="hide-sm"> ${L('الأرشيف', 'Archive')}</span></button><button class="btn btn-sm btn-ghost" id="arch" title="${L('أرشفة المحادثة', 'Archive conversation')}" style="color:var(--bad)"><i class="fas fa-folder-minus"></i><span class="hide-sm"> ${L('أرشفة', 'Archive now')}</span></button></div>` : ''}
       </header>
       <div class="chat-msgs" id="msgs">${loader()}</div>
@@ -285,10 +289,19 @@ export default async function render(root, { params }) {
           <button class="btn btn-primary btn-icon" type="button" id="rec-ok" title="${L('إرسال', 'Send')}"><i class="fas fa-paper-plane" data-flip></i></button></div>
       </form>` : ''}`;
     drawHead();
+    const rb = $('#ring');
+    if (rb) rb.onclick = () => busy(rb, async () => {
+      try {
+        await sendRing(openChat); play('ring');
+        const o = person(otherOf(openChat));
+        toast(L('رنّيت', 'Ringing'), L(`${String(nameOf(otherOf(openChat))).split(' ')[0]} هيوصله تنبيه بصوت رنّة`, 'They get an alert with a ringing sound') + (o && liveStatus(o) === 'Meeting' ? ' · ' + meetingLine(o) : ''), 'info');
+        rb.classList.add('cool'); setTimeout(() => rb.classList.remove('cool'), ringWait(openChat) || 20000);
+      } catch (ex) { toastErr(ex); }
+    });
     let known = null;
     unMsgs = watchMessages(id, rows => {
       // a new message from someone else while the conversation is open → soft "receive" sound
-      if (known && rows.some(m => !known.has(m.id) && m.by !== session.email) && !isMuted(openChat)) play('receive');
+      if (known && rows.some(m => !known.has(m.id) && m.by !== session.email && m.type !== 'ring') && !isMuted(openChat)) play('receive');
       known = new Set(rows.map(m => m.id));
       msgs = rows; drawMsgs();
       if (member && !document.hidden) markRead(openChat);
@@ -322,6 +335,7 @@ export default async function render(root, { params }) {
       if (m.type === 'image' && m.file) body += `<button class="chat-img" data-file="${esc(m.file.id)}" title="${esc(m.file.name)}"><img src="${esc(m.file.thumb || '')}" alt="${esc(m.file.name)}" loading="lazy"></button>`;
       if (m.type === 'file' && m.file) body += `<button class="chat-file" data-file="${esc(m.file.id)}"><i class="fas ${fileIcon(m.file.mime, m.file.name)}"></i><span class="min0 grow"><b class="truncate">${esc(m.file.name)}</b><small>${esc(fmtSize(m.file.size || 0))}</small></span><i class="fas fa-download"></i></button>`;
       if (m.type === 'voice' && m.file) body += `<div class="chat-voice" data-voice="${esc(m.file.id)}"><button class="btn btn-icon chat-voice-play" data-play="${esc(m.file.id)}" aria-label="${L('تشغيل', 'Play')}"><i class="fas fa-play"></i></button><span class="chat-voice-wave"></span><span class="num small">${esc(fmtLen(m.file.dur))}</span></div>`;
+      if (m.type === 'ring') body += `<div class="chat-ringmsg"><i class="fas fa-phone-volume"></i> ${mine ? L('رنّيت', 'You rang') : L(`${esc(String(nameOf(m.by)).split(' ')[0])} رنّ عليك`, `${esc(String(nameOf(m.by)).split(' ')[0])} rang you`)}</div>`;
       if (m.text) body += `<div class="chat-text">${richText(m)}</div>`;
     }
     const showWho = (g || !member) && side === 'them' && !grouped;
@@ -478,7 +492,7 @@ export default async function render(root, { params }) {
       e.preventDefault();
       const t = ta.value; if (!t.trim()) return;
       const tags = collectTags(t);
-      ta.value = ''; grow(); picked.people.clear(); picked.tasks.clear();
+      ta.value = ''; grow(); picked.people.clear(); picked.tasks.clear(); drawHint();
       play('send');
       try { await sendText(openChat, t, tags); } catch (ex) { ta.value = t; toastErr(ex); }
     };
@@ -521,6 +535,9 @@ export default async function render(root, { params }) {
     if (!isGroup(openChat)) return;
     const box = document.createElement('div'); box.className = 'chat-suggest hidden'; box.id = 'suggest';
     $('#compose').prepend(box);
+    const hint = document.createElement('div'); hint.className = 'chat-mhint hidden'; hint.id = 'mhint';
+    $('#compose').prepend(hint);
+    ta.addEventListener('input', drawHint);
     let token = null; // { kind: '@' | '#', start, q }
     const close = () => { suggest.open = false; box.classList.add('hidden'); token = null; };
     const pick = (i) => {
@@ -530,11 +547,11 @@ export default async function render(root, { params }) {
       ta.value = before + insert + after;
       const pos = (before + insert).length; ta.setSelectionRange(pos, pos);
       if (it.kind === '@') picked.people.add(it.email); else picked.tasks.set(it.id, it.task);
-      close(); grow(); ta.focus();
+      close(); grow(); ta.focus(); drawHint();
     };
     const draw = () => {
       box.innerHTML = suggest.items.map((it, i) => it.kind === '@'
-        ? `<button type="button" data-i="${i}" class="${i === suggest.idx ? 'on' : ''}"><span class="avatar-wrap">${avatar(it.p, 'sm')}${dotFor(person(it.email))}</span><span class="min0 grow"><b class="truncate">${esc(it.name)}</b><small class="truncate">${esc(it.p.title || '')}</small></span>${statusPill(person(it.email), true)}</button>`
+        ? `<button type="button" data-i="${i}" class="${i === suggest.idx ? 'on' : ''}"><span class="avatar-wrap">${avatar(it.p, 'sm')}${dotFor(person(it.email))}</span><span class="min0 grow"><b class="truncate">${esc(it.name)}</b><small class="truncate ${meetingLine(person(it.email)) ? 'chat-meet' : ''}">${esc(meetingLine(person(it.email)) || it.p.title || '')}</small></span>${statusPill(person(it.email), true)}</button>`
         : `<button type="button" data-i="${i}" class="${i === suggest.idx ? 'on' : ''}"><span class="sg-num">#${it.num}</span><span class="min0"><b class="truncate">${esc(it.task.title)}</b><small>${esc(it.status)}</small></span></button>`).join('');
       box.classList.toggle('hidden', !suggest.items.length); suggest.open = !!suggest.items.length;
     };
@@ -564,6 +581,20 @@ export default async function render(root, { params }) {
     ta.addEventListener('click', update);
     ta.addEventListener('blur', () => setTimeout(close, 150));
     box.addEventListener('mousedown', (e) => { e.preventDefault(); const b = e.target.closest('[data-i]'); if (b) pick(Number(b.dataset.i)); });
+  }
+  /** under the box: the people tagged with @ who are in a meeting (and with whom), on a break or not working */
+  function drawHint() {
+    const box = $('#mhint'), ta = $('#text'); if (!box || !ta || !openChat || !isGroup(openChat)) return;
+    const { mentions = [] } = collectTags(ta.value);
+    const rows = mentions.map(e => {
+      const p = person(e); const s = liveStatus(p); if (s === 'Online') return '';
+      const first = String(nameOf(e)).split(' ')[0];
+      const txt = s === 'Meeting' ? (meetingLine(p) ? `${first} ${meetingLine(p)}` : L(`${first} في ميتنج`, `${first} is in a meeting`))
+        : s === 'Break' ? L(`${first} في استراحة`, `${first} is on a break`) : L(`${first} مش شغال دلوقتي`, `${first} is not working now`);
+      return `<span class="chat-st ${s.toLowerCase()}" style="--c:${STATUS_META[s].color}"><i class="fas ${STATUS_META[s].icon}"></i>${esc(txt)}</span>`;
+    }).filter(Boolean);
+    box.innerHTML = rows.join('');
+    box.classList.toggle('hidden', !rows.length);
   }
   /** scroll the chat to a message and flash it */
   function jumpTo(id) {

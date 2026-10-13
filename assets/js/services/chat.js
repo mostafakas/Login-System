@@ -1,5 +1,5 @@
-// Chat: 1:1 conversations and admin-made groups — text, links, images, files and voice notes (stored in Firestore
-// chunks), read receipts, per-chat mute, optional edit/delete, and the admin archive.
+// Chat: 1:1 conversations and admin-made groups — text, links, images, files and voice notes (stored in Google Drive
+// through the Apps Script service; Firestore chunks only as a fallback), read receipts, per-chat mute, optional edit/delete, and the admin archive.
 import { db, doc, col, read, list, watch, query, where, orderBy, limit, writeBatch, setDoc, updateDoc, serverTimestamp, increment, toMs, settle, deleteField } from '../core/fb.js';
 import { session, isAdmin } from '../core/session.js';
 import { userError } from '../core/ui.js';
@@ -7,6 +7,7 @@ import { imageToDataUrl, L } from '../core/utils.js';
 import { track } from './activity.js';
 import { notifyMany } from './notify.js';
 import { nameOf } from './directory.js';
+import { driveUpload, driveDownload } from './files.js';
 
 export const MAX_FILE = 5 * 1024 * 1024;           // 5 MB per file / voice note
 const CHUNK = 700000;                              // base64 characters per Firestore doc (< 1 MB)
@@ -122,16 +123,39 @@ export function sendText(chat, text, { mentions = [], tasks = [] } = {}) {
   return post(chat, msg, t);
 }
 
+/** 1:1 only: "ring" the other person — an alert with a ringing sound, no voice call. One ring per 20 s. */
+export const RING_GAP = 20000;
+const lastRing = new Map();
+export const ringWait = (chat) => Math.max(0, (lastRing.get(chat.id) || 0) + RING_GAP - Date.now());
+export async function sendRing(chat) {
+  if (!chat || isGroup(chat)) throw userError('الرنّة في الشات الفردي بس.', 'Ringing works in 1:1 chats only.');
+  const wait = ringWait(chat);
+  if (wait) throw userError(`استنى ${Math.ceil(wait / 1000)} ثانية قبل ما ترن تاني.`, `Wait ${Math.ceil(wait / 1000)}s before ringing again.`);
+  lastRing.set(chat.id, Date.now());
+  const to = otherOf(chat);
+  try { await post(chat, { type: 'ring', text: '' }, '📞 رنّة'); }
+  catch (e) { lastRing.delete(chat.id); throw e; }
+  track('chat.ring', { target: nameOf(to) });
+}
+
 const readAsDataUrl = (file) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
 
-/** Store a data URL in chat_files (chunked) and return its meta */
+/** Store a data URL (Google Drive, else Firestore chunks in chat_files) and return its meta */
 async function storeFile(chat, dataUrl, name, mime, onProgress) {
   const b64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
   const size = Math.round(b64.length * 0.75);
   if (size > MAX_FILE) throw userError('الملف أكبر من 5 ميجا.', 'The file is larger than 5 MB.');
-  const chunks = Math.ceil(b64.length / CHUNK) || 1;
   const fref = doc(col('chat_files'));
   const safe = String(name || 'file').slice(0, 180);
+  onProgress && onProgress(0.15);
+  const driveId = await driveUpload('chat', chat.id, { b64, name: safe, mime });
+  if (driveId) {
+    // only the small details stay in Firestore; the file itself is in Drive
+    await setDoc(fref, { chatId: chat.id, by: session.email, name: safe, mime, size, chunks: 0, driveId, at: serverTimestamp() });
+    onProgress && onProgress(1);
+    return { id: fref.id, name: safe, mime, size, drive: true };
+  }
+  const chunks = Math.ceil(b64.length / CHUNK) || 1;
   await setDoc(fref, { chatId: chat.id, by: session.email, name: safe, mime, size, chunks, at: serverTimestamp() });
   for (let i = 0; i < chunks; i++) {
     await setDoc(doc(db, `chat_files/${fref.id}/chunks`, String(i)), { i, data: b64.slice(i * CHUNK, (i + 1) * CHUNK) });
@@ -171,8 +195,10 @@ const fileCache = new Map();
 /** Full file as an object URL */
 export async function loadFile(meta) {
   if (fileCache.has(meta.id)) return fileCache.get(meta.id);
+  if (meta.drive) { const u = await driveDownload('chat', meta.id, meta.mime); fileCache.set(meta.id, u); return u; }
   const info = await read('chat_files', meta.id);
   if (!info) throw userError('الملف مش موجود.', 'File not found.');
+  if (info.driveId) { const u = await driveDownload('chat', meta.id, info.mime || meta.mime); fileCache.set(meta.id, u); return u; }
   const parts = await list(col(`chat_files/${meta.id}/chunks`));
   const b64 = parts.sort((a, b) => Number(a.i ?? a.id) - Number(b.i ?? b.id)).map(p => p.data).join('');
   const bin = atob(b64); const arr = new Uint8Array(bin.length);

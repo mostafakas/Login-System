@@ -1,7 +1,7 @@
 // Attendance engine: start day, status changes, end day, and closing days people forgot to end.
 // Live state lives on users/{email}; each work day is archived in attendance_days/{email}_{date}.
 import {
-  db, doc, col, writeBatch, serverTimestamp, toMs, read, list, query, where, addDoc, getDoc, setDoc, listF
+  db, doc, col, writeBatch, serverTimestamp, toMs, read, list, query, where, addDoc, getDoc, setDoc, listF, updateDoc
 } from '../core/fb.js';
 import { session, now, isHR, seesAll, isFinance, syncClock } from '../core/session.js';
 import { policy, dayKey, planFor, withShift, LATE_SHIFT } from '../core/policy.js';
@@ -11,6 +11,8 @@ import { userError } from '../core/ui.js';
 export const COUNTED = ['Online', 'Break', 'Meeting'];
 export const dayDocId = (email, date) => `${email}_${date}`;
 const zeroBank = () => ({ Online: 0, Break: 0, Meeting: 0 });
+/** who someone is in a meeting with (users/{email}): emails, an outside party, a topic and the meeting id */
+export const NO_MEETING = { meetingWith: [], meetingExternal: '', meetingTopic: '', meetingId: '' };
 /** who closed someone else's day: HR, or the employee's direct leader */
 const closerRole = () => (isHR() ? 'hr' : 'leader');
 
@@ -64,7 +66,7 @@ export async function closeStaleDay(email, u, by = session.email) {
   }
   const checkOut = Math.max(last, u.status !== 'Offline' ? endCap : last);
   const b = writeBatch(db);
-  b.update(doc(db, 'users', email), { status: 'Offline', timeBank: bank, lastChange: serverTimestamp(), lastChangeClient: Date.now(), checkedOut: true });
+  b.update(doc(db, 'users', email), { status: 'Offline', timeBank: bank, lastChange: serverTimestamp(), lastChangeClient: Date.now(), checkedOut: true, ...NO_MEETING });
   b.set(doc(db, 'attendance_days', dayDocId(email, key)), {
     email, date: key, workMs: bank.Online, breakMs: bank.Break, meetingMs: bank.Meeting,
     checkOutMs: checkOut, closed: true, closedBy: by === email ? 'auto' : closerRole(), autoClosed: true, updatedAt: serverTimestamp()
@@ -98,14 +100,14 @@ export async function startDay(mode, { remoteApproved = true, shift = '' } = {})
     const b = writeBatch(db);
     if (resuming) {
       // resuming writes only what changes (status + reopened day); counters, place and flags stay as they were
-      b.update(doc(db, 'users', email), { status: 'Online', lastChange: serverTimestamp(), lastChangeClient: Date.now(), checkedOut: false });
+      b.update(doc(db, 'users', email), { status: 'Online', lastChange: serverTimestamp(), lastChangeClient: Date.now(), checkedOut: false, ...NO_MEETING });
       // closedBy goes back to '' — a day ended by HR/the leader must stay resumable by its owner
       b.update(dayRef, { closed: false, closedBy: '', checkOutMs: null, updatedAt: serverTimestamp() });
     } else {
       // the work time counts from the moment the day starts (the grace period only spares the lateness)
       b.update(doc(db, 'users', email), {
         status: 'Online', lastChange: serverTimestamp(), lastChangeClient: Date.now(), timeBank: zeroBank(),
-        dayKey: key, checkedOut: false, workLocation: mode, remotePending: mode === 'remote' && !remoteApproved, firstOnlineAt: serverTimestamp(), shift: sh
+        dayKey: key, checkedOut: false, workLocation: mode, remotePending: mode === 'remote' && !remoteApproved, firstOnlineAt: serverTimestamp(), shift: sh, ...NO_MEETING
       });
       b.set(dayRef, {
         email, name: u.name || email, date: key, leaderEmail: u.leaderEmail || '', department: u.department || '',
@@ -148,13 +150,21 @@ function withDiag(e, u, dayDoc) {
   return e;
 }
 
-/** Change live status for a user (self, or a manager forcing it). */
-export async function changeStatus(email, newStatus, by = session.email) {
+/**
+ * Change live status for a user (self, or a manager forcing it).
+ * meeting = { meetingWith: [emails], meetingExternal, meetingTopic, meetingId } when the new status is Meeting.
+ */
+export async function changeStatus(email, newStatus, by = session.email, meeting = null) {
   window.dispatchEvent(new Event('am:data-changed'));
   const u = await read('users', email);
   if (!u) throw new Error('no user');
   const old = u.status || 'Offline';
-  if (old === newStatus) return;
+  const meet = newStatus === 'Meeting' ? { ...NO_MEETING, ...(meeting || {}) } : NO_MEETING;
+  if (old === newStatus) {
+    // already in a meeting: joining another one only changes who it is with
+    if (newStatus === 'Meeting' && meeting) await updateDoc(doc(db, 'users', email), meet);
+    return;
+  }
   if (by !== email && u.dayKey !== dayKey(now())) throw userError('الموظف مش بادئ يوم النهارده، فمينفعش تغيّر حالته. لو فيه يوم قديم مفتوح اقفله الأول.', 'This employee has not started today, so their status cannot be changed. Close any open previous day first.');
   const at = now();
   const start = toMs(u.lastChange) || u.lastChangeClient || at;
@@ -164,13 +174,19 @@ export async function changeStatus(email, newStatus, by = session.email) {
   const key = u.dayKey || dayKey(at);
   const b = writeBatch(db);
   const upd = { status: newStatus, lastChange: serverTimestamp(), lastChangeClient: Date.now(), timeBank: bank };
+  // the meeting fields change only when entering or leaving a meeting (keeps a manager's write within their rule)
+  if (newStatus === 'Meeting' || old === 'Meeting' || (u.meetingWith || []).length || u.meetingId) Object.assign(upd, meet);
   if (newStatus === 'Offline') upd.checkedOut = true;
   b.update(doc(db, 'users', email), upd);
   const dayUpd = { workMs: bank.Online, breakMs: bank.Break, meetingMs: bank.Meeting, updatedAt: serverTimestamp() };
   if (newStatus === 'Offline') Object.assign(dayUpd, { checkOutMs: at, closed: true, closedBy: by === email ? 'user' : closerRole() });
   b.set(doc(db, 'attendance_days', dayDocId(email, key)), dayUpd, { merge: true });
-  b.set(doc(col('logs')), logEntry(u, email, old, newStatus, dur, by, key));
+  const log = logEntry(u, email, old, newStatus, dur, by, key);
+  if (newStatus === 'Meeting') Object.assign(log, { meeting_with: meet.meetingWith, meeting_external: meet.meetingExternal, meeting_topic: meet.meetingTopic });
+  b.set(doc(col('logs')), log);
   await b.commit();
+  // leaving my own meeting withdraws the invitations nobody answered
+  if (old === 'Meeting' && email === session.email) import('./meetings.js').then(m => m.cancelMyInvites()).catch(() => {});
 }
 export const endDay = () => changeStatus(session.email, 'Offline');
 
@@ -178,7 +194,7 @@ export const endDay = () => changeStatus(session.email, 'Offline');
 export async function resetLive(email) {
   window.dispatchEvent(new Event('am:data-changed'));
   const b = writeBatch(db);
-  b.update(doc(db, 'users', email), { status: 'Offline', timeBank: zeroBank(), lastChange: serverTimestamp(), lastChangeClient: Date.now(), checkedOut: true });
+  b.update(doc(db, 'users', email), { status: 'Offline', timeBank: zeroBank(), lastChange: serverTimestamp(), lastChangeClient: Date.now(), checkedOut: true, ...NO_MEETING });
   await b.commit();
 }
 

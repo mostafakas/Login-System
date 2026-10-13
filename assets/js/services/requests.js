@@ -6,9 +6,9 @@ import {
 } from '../core/fb.js';
 import { session, now, isHR, seesAll, isAdmin } from '../core/session.js';
 import {
-  policy, leaveType, leaveTypes, stagesFor, firstStatus, nextStatus, planFor, typeLabel, statusLabel, REQUEST_TYPES
+  policy, leaveType, leaveTypes, stagesFor, firstStatus, nextStatus, planFor, typeLabel, statusLabel, REQUEST_TYPES, isWorkingPlan
 } from '../core/policy.js';
-import { L, dateRange, normEmail, ymd, cairoMs, uid } from '../core/utils.js';
+import { L, dateRange, normEmail, ymd, cairoMs, uid, hmToMin } from '../core/utils.js';
 import { userError } from '../core/ui.js';
 import { notify, notifyMany } from './notify.js';
 import { activePeople, person, nameOf } from './directory.js';
@@ -307,6 +307,9 @@ export async function applyApproval(id, entry) {
     if (['leave', 'remote', 'mission'].includes(r.type)) {
       for (const m of months) schedSnaps[m] = await tx.get(doc(db, 'schedules', scheduleId(email, m)));
     }
+    // an approved late-arrival / early-leave permission moves that day's start / end to the time in the request
+    const excuseDay = r.type === 'excuse' && ['late', 'early'].includes(r.excuseKind || 'late') && r.startDate ? r.startDate : '';
+    if (excuseDay && !schedSnaps[excuseDay.slice(0, 7)]) schedSnaps[excuseDay.slice(0, 7)] = await tx.get(doc(db, 'schedules', scheduleId(email, excuseDay.slice(0, 7))));
     let balSnap = null;
     const lt = r.type === 'leave' ? leaveType(r.leaveType) : null;
     if (lt) balSnap = await tx.get(doc(db, 'balances', balanceId(email, year)));
@@ -331,6 +334,21 @@ export async function applyApproval(id, entry) {
           if (p.mode === 'off' || p.mode === 'holiday') return;
           days[d] = { mode, requestId: id, ...(r.leaveType ? { leaveType: r.leaveType } : {}), ...(p.start ? { start: p.start, end: p.end } : {}) };
         });
+        tx.set(doc(db, 'schedules', scheduleId(email, m)), { email, month: m, leaderEmail: owner.leaderEmail || r.leaderEmail || '', days, updatedAt: serverTimestamp() });
+      }
+    }
+    if (excuseDay) {
+      const m = excuseDay.slice(0, 7);
+      const snap = schedSnaps[m];
+      const days = { ...((snap.exists() && snap.data().days) || {}) };
+      const p = planFor(excuseDay, { email, days }, email);
+      const kind = r.excuseKind || 'late';
+      const t = kind === 'late' ? r.toTime : r.fromTime;
+      const inside = !!t && !!p.start && !!p.end && hmToMin(t) > hmToMin(p.start) && hmToMin(t) < hmToMin(p.end);
+      if (isWorkingPlan(p) && inside) {
+        const prev = days[excuseDay] || null;
+        days[excuseDay] = { ...(prev || {}), mode: p.mode, start: kind === 'late' ? t : p.start, end: kind === 'early' ? t : p.end,
+          excuseId: id, excuseKind: kind, before: prev ? { start: prev.start || '', end: prev.end || '' } : null };
         tx.set(doc(db, 'schedules', scheduleId(email, m)), { email, month: m, leaderEmail: owner.leaderEmail || r.leaderEmail || '', days, updatedAt: serverTimestamp() });
       }
     }
@@ -366,7 +384,9 @@ export async function applyApproval(id, entry) {
     });
   }
   const fin = r0.type === 'advance' ? await read('requests', id).catch(() => r0) : r0;
-  const body = r0.type === 'advance' ? L(`${fin.amount} ج.م على ${fin.installments} قسط (${fin.perMonth} شهرياً) من ${fin.startMonth} لـ ${fin.endMonth}`, `${fin.amount} EGP in ${fin.installments} installments (${fin.perMonth}/month), ${fin.startMonth} → ${fin.endMonth}`) : (r0.startDate || '');
+  const body = r0.type === 'excuse' && ['late', 'early'].includes(r0.excuseKind || 'late')
+    ? ((r0.excuseKind || 'late') === 'late' ? L(`ميعاد حضورك يوم ${r0.startDate} بقى ${r0.toTime}`, `Your start time on ${r0.startDate} is now ${r0.toTime}`) : L(`ميعاد انصرافك يوم ${r0.startDate} بقى ${r0.fromTime}`, `Your end time on ${r0.startDate} is now ${r0.fromTime}`))
+    : r0.type === 'advance' ? L(`${fin.amount} ج.م على ${fin.installments} قسط (${fin.perMonth} شهرياً) من ${fin.startMonth} لـ ${fin.endMonth}`, `${fin.amount} EGP in ${fin.installments} installments (${fin.perMonth}/month), ${fin.startMonth} → ${fin.endMonth}`) : (r0.startDate || '');
   notify(email, L(`تم اعتماد طلبك: ${typeLabel(r0.type)}`, `Request approved: ${typeLabel(r0.type)}`), body, '#/requests', 'approved');
 }
 
@@ -396,7 +416,14 @@ export async function revokeRequest(id, note = '') {
     for (const m of months) {
       const snap = schedSnaps[m]; if (!snap.exists()) continue;
       const days = { ...(snap.data().days || {}) };
-      Object.keys(days).forEach(d => { if (days[d] && days[d].requestId === id) delete days[d]; });
+      Object.keys(days).forEach(d => {
+        if (days[d] && days[d].requestId === id) delete days[d];
+        else if (days[d] && days[d].excuseId === id) {      // an approved permission: back to the times before it
+          const { excuseId, excuseKind, before, ...rest } = days[d];
+          if (!before) delete days[d];
+          else { rest.start = before.start; rest.end = before.end; if (!rest.start) { delete rest.start; delete rest.end; } days[d] = rest; }
+        }
+      });
       tx.set(doc(db, 'schedules', scheduleId(email, m)), { ...snap.data(), days, updatedAt: serverTimestamp() });
     }
     tx.update(doc(db, 'requests', id), {

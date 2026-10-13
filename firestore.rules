@@ -386,7 +386,11 @@ service cloud.firestore {
       match /messages/{m} {
         allow read: if isAdmin() || inChat(id);
         allow create: if inChat(id) && request.resource.data.by == me() && request.resource.data.at == request.time
-          && request.resource.data.keys().hasOnly(['by', 'type', 'text', 'file', 'at', 'mentions', 'tasks'])
+          && request.resource.data.keys().hasOnly(['by', 'type', 'text', 'file', 'at', 'mentions', 'tasks', 'replyTo'])
+          // a reply keeps a short quote of the message it answers
+          && (!('replyTo' in request.resource.data) || (request.resource.data.replyTo is map
+              && request.resource.data.replyTo.keys().hasOnly(['id', 'by', 'type', 'text'])
+              && request.resource.data.replyTo.id is string && request.resource.data.replyTo.get('text', '').size() <= 200))
           && request.resource.data.type in ['text', 'image', 'file', 'voice', 'ring']
           // a "ring" (an alert with a ringing sound, no call) is for 1:1 conversations only
           && (request.resource.data.type != 'ring' || chatDoc(id).get('type', '') != 'group')

@@ -1312,3 +1312,17 @@ html[dir="rtl"] .mon-metric.on { box-shadow: inset -3px 0 0 var(--brand); }
 .chat-pop.ringing .avatar { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 40%, transparent); }
 @keyframes ringshake { 0%, 100% { transform: rotate(0); } 20% { transform: rotate(-8deg); } 40% { transform: rotate(8deg); } 60% { transform: rotate(-5deg); } 80% { transform: rotate(5deg); } }
 @media (prefers-reduced-motion: reduce) { .chat-pop.ringing, .chat-ringmsg i, .mt-invite { animation: popin .25s ease; } }
+
+/* ---------- reply to a message ---------- */
+.chat-quote { display: flex; flex-direction: column; gap: 1px; text-align: start; border: 0; border-inline-start: 3px solid var(--brand); background: color-mix(in srgb, var(--brand) 8%, transparent); border-radius: 8px; padding: 5px 9px; font: inherit; color: inherit; cursor: pointer; min-width: 0; max-width: 100%; }
+.chat-quote b { font-size: 11.5px; color: var(--brand); }
+.chat-quote span { font-size: 12px; opacity: .8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-quote:hover { background: color-mix(in srgb, var(--brand) 14%, transparent); }
+.chat-replybar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; padding: 6px 8px 6px 12px; border-radius: 12px; background: var(--surface-2); border-inline-start: 3px solid var(--brand); }
+.chat-replybar > i { color: var(--brand); }
+.chat-replybar-txt { display: flex; flex-direction: column; border: 0; background: none; font: inherit; color: inherit; text-align: start; cursor: pointer; padding: 0; }
+.chat-replybar-txt b { font-size: 12.5px; color: var(--brand); }
+.chat-replybar-txt small { font-size: 12px; color: var(--muted); }
+.chat-row { transition: transform .15s ease; }
+.chat-row.swipe-ready .chat-bubble { box-shadow: 0 0 0 2px var(--brand); }
+.chat-bubble { user-select: text; }

@@ -89,7 +89,18 @@ export const watchMessages = (chatId, cb, n = 200) =>
   watch(query(col(`chats/${chatId}/messages`), orderBy('at', 'desc'), limit(n)), rows => cb(rows.slice().reverse()));
 export const listArchive = (chatId) => list(query(col(`chat_archive/${chatId}/messages`), orderBy('at', 'asc'), limit(2000)));
 
+/** A short line for a message: its text, or what it holds (photo, file, voice note, ring) */
+export function snippetOf(m) {
+  if (!m) return '';
+  if (m.deleted) return L('🚫 رسالة اتمسحت', '🚫 Message deleted');
+  if (m.text) return String(m.text).slice(0, 140);
+  return { image: L('📷 صورة', '📷 Photo'), file: `📎 ${(m.file && m.file.name) || L('ملف', 'File')}`, voice: L('🎤 رسالة صوتية', '🎤 Voice note'), ring: L('📞 رنّة', '📞 Ring') }[m.type] || '';
+}
+/** What a reply keeps of the message it answers (enough to show the quote without reading the original) */
+export const replyRefOf = (m) => m && m.id ? { id: String(m.id), by: String(m.by || ''), type: String(m.type || 'text'), text: snippetOf(m).slice(0, 140) } : null;
+
 async function post(chat, msg, preview) {
+  if (!msg.replyTo) delete msg.replyTo;
   const b = writeBatch(db);
   const m = doc(col(`chats/${chat.id}/messages`));
   b.set(m, { by: session.email, type: 'text', text: '', ...msg, at: serverTimestamp() });
@@ -99,19 +110,24 @@ async function post(chat, msg, preview) {
   };
   othersOf(chat).forEach(o => { upd[`unread.${ek(o)}`] = increment(1); }); // one counter per member
   (msg.mentions || []).forEach(o => { upd[`mentioned.${ek(o)}`] = true; });   // the "@" mark on the chat list
+  // a reply in a group marks the chat for the author of the original message and tells them
+  const rto = msg.replyTo && msg.replyTo.by;
+  const tellAuthor = isGroup(chat) && rto && rto !== session.email && (chat.members || []).includes(rto) && !(msg.mentions || []).includes(rto);
+  if (tellAuthor) upd[`mentioned.${ek(rto)}`] = true;
   b.update(doc(db, 'chats', chat.id), upd);
   await settle(b.commit(), 6000);
+  if (tellAuthor) notifyMany([rto], L(`${nameOf(session.email)} ردّ على رسالتك في ${chat.name}`, `${nameOf(session.email)} replied to your message in ${chat.name}`), preview.slice(0, 140), `#/chat/${encodeURIComponent(chat.id)}`, 'info');
   return m.id;
 }
 /**
  * Send a text. In a group it may carry mentions: `mentions` = emails of members tagged with @, `tasks` = tasks
  * tagged with # as {id, num, title} (the title is stored in the message so every member can read it).
  */
-export function sendText(chat, text, { mentions = [], tasks = [] } = {}) {
+export function sendText(chat, text, { mentions = [], tasks = [], replyTo = null } = {}) {
   const t = String(text || '').trim();
   if (!t) return Promise.resolve();
   if (t.length > 4000) throw userError('الرسالة طويلة جداً.', 'The message is too long.');
-  const msg = { type: 'text', text: t };
+  const msg = { type: 'text', text: t, replyTo };
   if (isGroup(chat)) {
     const ms = [...new Set(mentions)].filter(e => e !== session.email && (chat.members || []).includes(e)).slice(0, 50);
     const ts = tasks.filter((x, i, a) => x && x.id && a.findIndex(y => y.id === x.id) === i).slice(0, 10)
@@ -165,7 +181,7 @@ async function storeFile(chat, dataUrl, name, mime, onProgress) {
 }
 
 /** Upload a file (images are compressed first) and post it. onProgress(0..1) */
-export async function sendFile(chat, file, caption = '', onProgress) {
+export async function sendFile(chat, file, caption = '', onProgress, replyTo = null) {
   if (!file) return;
   const isImg = /^image\/(png|jpe?g|webp|gif|bmp)$/i.test(file.type) && file.type !== 'image/gif';
   let dataUrl, mime = file.type || 'application/octet-stream', thumb = '';
@@ -179,16 +195,16 @@ export async function sendFile(chat, file, caption = '', onProgress) {
   }
   const meta = { ...(await storeFile(chat, dataUrl, file.name, mime, onProgress)), ...(thumb ? { thumb } : {}) };
   const text = String(caption || '').trim().slice(0, 4000);
-  return post(chat, { type: isImg ? 'image' : 'file', text, file: meta }, text || (isImg ? '📷 صورة' : `📎 ${meta.name}`));
+  return post(chat, { type: isImg ? 'image' : 'file', text, file: meta, replyTo }, text || (isImg ? '📷 صورة' : `📎 ${meta.name}`));
 }
 
 /** Post a recorded voice note. `seconds` = its length. */
-export async function sendVoice(chat, blob, seconds, onProgress) {
+export async function sendVoice(chat, blob, seconds, onProgress, replyTo = null) {
   if (!blob || !blob.size) return;
   if (blob.size > MAX_FILE) throw userError('التسجيل أكبر من 5 ميجا. سجّل رسالة أقصر.', 'The recording is larger than 5 MB. Record a shorter one.');
   const mime = (blob.type || 'audio/webm').split(';')[0];
   const meta = { ...(await storeFile(chat, await readAsDataUrl(blob), `voice.${mime.includes('mp4') ? 'm4a' : (mime.includes('ogg') ? 'ogg' : 'webm')}`, mime, onProgress)), dur: Math.max(1, Math.round(seconds || 0)) };
-  return post(chat, { type: 'voice', text: '', file: meta }, '🎤 رسالة صوتية');
+  return post(chat, { type: 'voice', text: '', file: meta, replyTo }, '🎤 رسالة صوتية');
 }
 
 const fileCache = new Map();

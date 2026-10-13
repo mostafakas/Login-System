@@ -11,7 +11,7 @@ import { play } from '../core/sounds.js';
 import {
   ensureChat, watchMyChats, watchAllChats, watchMessages, sendText, sendFile, sendVoice, loadFile, markRead, archiveChat, listArchive,
   otherOf, othersOf, unreadOf, ek, MAX_FILE, isGroup, canManageGroup, isMuted, seenBy, canEditMessage, createGroup, updateGroup, setMuted,
-  editMessage, deleteMessage, mentionedMe, sendRing, ringWait
+  editMessage, deleteMessage, mentionedMe, sendRing, ringWait, snippetOf, replyRefOf
 } from '../services/chat.js';
 import { startTasks, allTasks, taskById, taskLink } from '../services/tasks.js';
 import { setTabLabel } from '../tabs.js';
@@ -61,6 +61,7 @@ export default async function render(root, { params }) {
   if (params && params[1]) { location.replace(taskLink(decodeURIComponent(params[1]))); return () => {}; }
   startTasks(); // "#" mentions list my tasks
   let mode = 'mine', chats = [], allChats = [], term = '', openChat = null, msgs = [], showArchive = false, archived = [];
+  let replyTo = null;   // the message being answered (reply button, double-click or a swipe)
   let unChats = null, unAll = null, unMsgs = null, recorder = null;
   const admin = isAdmin();
 
@@ -258,7 +259,7 @@ export default async function render(root, { params }) {
   async function openThread(id) {
     if (unMsgs) { unMsgs(); unMsgs = null; }
     stopRecording(true);
-    openId = id; window.__amOpenChat = id; showArchive = false; archived = [];
+    openId = id; window.__amOpenChat = id; showArchive = false; archived = []; replyTo = null;
     $('#app').classList.toggle('has-open', !!id);
     if (!id) { openChat = null; emptyThread(); drawList(); return; }
     openChat = [...chats, ...allChats].find(c => c.id === id) || await read('chats', id).catch(() => null);
@@ -277,6 +278,7 @@ export default async function render(root, { params }) {
       <div class="chat-msgs" id="msgs">${loader()}</div>
       ${member ? `<form class="chat-compose" id="compose">
         <div class="chat-away hidden" id="away"></div>
+        <div class="chat-replybar hidden" id="replybar"></div>
         <div class="chat-upload hidden" id="up"><div class="progress"><span style="width:0%"></span></div><small id="up-t"></small></div>
         <div class="row gap-8" style="align-items:flex-end" id="compose-row">
           <label class="btn btn-ghost btn-icon" title="${L('إرفاق صورة أو ملف', 'Attach an image or file')}"><i class="fas fa-paperclip"></i><input type="file" id="file" multiple hidden></label>
@@ -332,6 +334,10 @@ export default async function render(root, { params }) {
     let body = '';
     if (m.deleted) body = `<div class="chat-text chat-deleted"><i class="fas fa-ban"></i> ${L('الرسالة دي اتمسحت', 'This message was deleted')}</div>`;
     else {
+      if (m.replyTo && m.replyTo.id) {
+        const q = m.replyTo, qn = q.by === session.email ? L('إنت', 'You') : String(nameOf(q.by)).split(' ').slice(0, 2).join(' ');
+        body += `<button type="button" class="chat-quote" data-jump="${esc(q.id)}" title="${L('اضغط عشان تروح للرسالة', 'Go to the message')}"><b>${esc(qn)}</b><span>${esc(q.text || '…')}</span></button>`;
+      }
       if (m.type === 'image' && m.file) body += `<button class="chat-img" data-file="${esc(m.file.id)}" title="${esc(m.file.name)}"><img src="${esc(m.file.thumb || '')}" alt="${esc(m.file.name)}" loading="lazy"></button>`;
       if (m.type === 'file' && m.file) body += `<button class="chat-file" data-file="${esc(m.file.id)}"><i class="fas ${fileIcon(m.file.mime, m.file.name)}"></i><span class="min0 grow"><b class="truncate">${esc(m.file.name)}</b><small>${esc(fmtSize(m.file.size || 0))}</small></span><i class="fas fa-download"></i></button>`;
       if (m.type === 'voice' && m.file) body += `<div class="chat-voice" data-voice="${esc(m.file.id)}"><button class="btn btn-icon chat-voice-play" data-play="${esc(m.file.id)}" aria-label="${L('تشغيل', 'Play')}"><i class="fas fa-play"></i></button><span class="chat-voice-wave"></span><span class="num small">${esc(fmtLen(m.file.dur))}</span></div>`;
@@ -350,8 +356,10 @@ export default async function render(root, { params }) {
       if (g) { const n = seenBy(openChat, at).length, total = othersOf(openChat).length; tick = at ? `<button class="chat-seen ${n === total && total ? 'all' : ''}" data-seen="${esc(m.id)}" title="${L('مين شاف الرسالة', 'Who saw this')}"><i class="fas ${n ? 'fa-check-double' : 'fa-check'}"></i> ${n}/${total}</button>` : '<i class="fas fa-clock"></i>'; }
       else { const seenAt = toMs((openChat.lastRead || {})[ek(otherOf(openChat))]) || 0; tick = `<i class="fas ${seenAt && at && at <= seenAt ? 'fa-check-double seen' : (at ? 'fa-check' : 'fa-clock')}"></i>`; }
     }
-    const tools = canEditMessage(openChat, m) && at ? `<span class="chat-tools">${m.by === session.email && m.text && m.type === 'text' ? `<button data-edit="${esc(m.id)}" title="${L('تعديل', 'Edit')}"><i class="fas fa-pen"></i></button>` : ''}<button data-del="${esc(m.id)}" title="${L('حذف', 'Delete')}"><i class="fas fa-trash"></i></button></span>` : '';
-    const tagged = !mine && !m.deleted && (m.mentions || []).includes(session.email);
+    const canReply = member && at && !m.deleted && !m.archivedAt;
+    const canEdit = canEditMessage(openChat, m) && at;
+    const tools = canReply || canEdit ? `<span class="chat-tools">${canReply ? `<button data-reply="${esc(m.id)}" title="${L('رد (أو دبل كليك على الرسالة)', 'Reply (or double-click the message)')}"><i class="fas fa-reply"></i></button>` : ''}${canEdit && m.by === session.email && m.text && m.type === 'text' ? `<button data-edit="${esc(m.id)}" title="${L('تعديل', 'Edit')}"><i class="fas fa-pen"></i></button>` : ''}${canEdit ? `<button data-del="${esc(m.id)}" title="${L('حذف', 'Delete')}"><i class="fas fa-trash"></i></button>` : ''}</span>` : '';
+    const tagged = !mine && !m.deleted && ((m.mentions || []).includes(session.email) || (g && m.replyTo && m.replyTo.by === session.email));
     return `<div class="chat-row ${side} ${grouped ? 'grouped' : ''}" data-mid="${esc(m.id)}">${av}<div class="chat-col">${label}<div class="chat-bubble ${m.archivedAt ? 'archived' : ''} ${tagged ? 'mentioned' : ''}">${body}<span class="chat-meta num">${tools}${m.edited && !m.deleted ? `<span>${L('اتعدلت', 'edited')}</span>` : ''}${at ? esc(fmtTime(at)) : ''} ${tick}</span></div></div></div>`;
   }
   function drawMsgs() {
@@ -399,6 +407,9 @@ export default async function render(root, { params }) {
       else toast(tr.title || L('تاسك', 'Task'), L('التاسك ده مش مسند ليك — بتشوف عنوانه بس.', 'This task is not assigned to you — you only see its title.'), 'info');
       return;
     }
+    const rp = e.target.closest('[data-reply]'); if (rp) { setReply(find(rp.dataset.reply)); return; }
+    const jp = e.target.closest('[data-jump]'); if (jp) { jumpTo(jp.dataset.jump); return; }
+    if (e.target.closest('#reply-x')) { setReply(null); return; }
     const seen = e.target.closest('[data-seen]'); if (seen) { const m = find(seen.dataset.seen); if (m) showSeen(m); return; }
     const ed = e.target.closest('[data-edit]');
     if (ed) {
@@ -436,12 +447,52 @@ export default async function render(root, { params }) {
     } catch (ex) { toastErr(ex); } finally { b.classList.remove('loading'); }
   });
 
+  // ---------- reply to a message: the reply button, a double-click on it, or a swipe on a phone ----------
+  function setReply(m) {
+    const bar = $('#replybar');
+    if (!bar) return;
+    if (!m || m.deleted || m.archivedAt || !toMs(m.at)) { replyTo = null; bar.classList.add('hidden'); bar.innerHTML = ''; return; }
+    replyTo = m;
+    const nm = m.by === session.email ? L('نفسك', 'yourself') : nameOf(m.by);
+    bar.innerHTML = `<i class="fas fa-reply"></i><button type="button" class="grow min0 chat-replybar-txt" data-jump="${esc(m.id)}"><b class="truncate">${esc(L(`رد على ${nm}`, `Replying to ${nm}`))}</b><small class="truncate">${esc(snippetOf(m) || '…')}</small></button>
+      <button type="button" class="btn btn-ghost btn-icon btn-sm" id="reply-x" aria-label="${L('إلغاء الرد', 'Cancel reply')}"><i class="fas fa-xmark"></i></button>`;
+    bar.classList.remove('hidden');
+    const ta = $('#text'); if (ta && !recorder) ta.focus();
+  }
+  const takeReply = () => { const r = replyRefOf(replyTo); setReply(null); return r; };
+  $('#thread').addEventListener('dblclick', (e) => {
+    if (e.target.closest('button, a, audio, input, textarea, .chat-tools')) return;
+    const row = e.target.closest('.chat-row[data-mid]'); if (!row || !e.target.closest('.chat-bubble')) return;
+    const m = [...msgs, ...archived].find(x => x.id === row.dataset.mid);
+    if (!m || !openChat || !openChat.members.includes(session.email)) return;
+    try { window.getSelection().removeAllRanges(); } catch {}
+    setReply(m);
+  });
+  let swipe = null;
+  $('#thread').addEventListener('touchstart', (e) => {
+    const row = e.target.closest('.chat-row[data-mid]');
+    swipe = row && e.touches.length === 1 && !e.target.closest('audio') ? { row, x: e.touches[0].clientX, y: e.touches[0].clientY, dx: 0, on: false } : null;
+  }, { passive: true });
+  $('#thread').addEventListener('touchmove', (e) => {
+    if (!swipe) return;
+    const dx = e.touches[0].clientX - swipe.x, dy = e.touches[0].clientY - swipe.y;
+    if (!swipe.on && Math.abs(dy) > 12 && Math.abs(dy) > Math.abs(dx)) { swipe = null; return; }   // scrolling
+    if (dx > 8) { swipe.on = true; swipe.dx = dx; swipe.row.style.transform = `translateX(${Math.min(70, dx)}px)`; swipe.row.classList.toggle('swipe-ready', dx > 60); }
+  }, { passive: true });
+  $('#thread').addEventListener('touchend', () => {
+    if (!swipe) return;
+    const { row, dx, on } = swipe; swipe = null;
+    row.style.transform = ''; row.classList.remove('swipe-ready');
+    if (on && dx > 60) { const m = [...msgs, ...archived].find(x => x.id === row.dataset.mid); if (m && openChat && openChat.members.includes(session.email)) { setReply(m); if ('vibrate' in navigator) try { navigator.vibrate(15); } catch {} } }
+  });
+
   // ---------- voice notes ----------
   function stopRecording(discard) {
     if (!recorder) return;
     const r = recorder; recorder = null;
     clearInterval(r.timer);
     r.discard = !!discard;
+    if (!discard) r.reply = takeReply();   // a voice note can answer a message too
     try { if (r.mr.state !== 'inactive') r.mr.stop(); } catch {}
     r.stream.getTracks().forEach(t => t.stop());
     const rec = $('#rec'), row = $('#compose-row');
@@ -457,7 +508,7 @@ export default async function render(root, { params }) {
     const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'].find(t => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) || '';
     const mr = new MediaRecorder(stream, { ...(mime ? { mimeType: mime } : {}), audioBitsPerSecond: 24000 });
     const parts = []; const t0 = Date.now();
-    const r = recorder = { mr, stream, discard: false, timer: 0 };
+    const r = recorder = { mr, stream, discard: false, timer: 0, reply: null };
     mr.ondataavailable = (ev) => { if (ev.data && ev.data.size) parts.push(ev.data); };
     mr.onstop = async () => {
       if (r.discard) return;
@@ -466,7 +517,7 @@ export default async function render(root, { params }) {
       if (secs < 1 || !blob.size) return;
       const up = $('#up'), bar = up && up.querySelector('span'), label = $('#up-t');
       if (up) { up.classList.remove('hidden'); bar.style.width = '5%'; label.textContent = L('بيرفع الرسالة الصوتية…', 'Uploading voice note…'); }
-      try { await sendVoice(chat, blob, secs, (p) => { if (bar) bar.style.width = Math.round(p * 100) + '%'; }); play('send'); }
+      try { await sendVoice(chat, blob, secs, (p) => { if (bar) bar.style.width = Math.round(p * 100) + '%'; }, r.reply); play('send'); }
       catch (ex) { toastErr(ex); }
       if (up) up.classList.add('hidden');
     };
@@ -486,6 +537,7 @@ export default async function render(root, { params }) {
     ta.oninput = grow;
     ta.onkeydown = (e) => {
       if (suggest.open && suggest.key(e)) return;
+      if (e.key === 'Escape' && replyTo) { e.preventDefault(); setReply(null); return; }
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); f.requestSubmit(); }
     };
     f.onsubmit = async (e) => {
@@ -494,15 +546,17 @@ export default async function render(root, { params }) {
       const tags = collectTags(t);
       ta.value = ''; grow(); picked.people.clear(); picked.tasks.clear(); drawHint();
       play('send');
-      try { await sendText(openChat, t, tags); } catch (ex) { ta.value = t; toastErr(ex); }
+      const rto = replyTo; const ref = takeReply();
+      try { await sendText(openChat, t, { ...tags, replyTo: ref }); } catch (ex) { ta.value = t; setReply(rto); toastErr(ex); }
     };
     wireMentions(ta, grow);
     const upload = async (files) => {
       const up = $('#up'), bar = up.querySelector('span'), label = $('#up-t');
-      for (const file of files) {
+      const ref = takeReply();   // the first file carries the reply
+      for (const [i, file] of files.entries()) {
         if (file.size > MAX_FILE && !/^image\//.test(file.type)) { toast(L('الملف كبير', 'File too large'), L(`${file.name} أكبر من 5 ميجا.`, `${file.name} is larger than 5 MB.`), 'bad'); continue; }
         up.classList.remove('hidden'); bar.style.width = '5%'; label.textContent = file.name;
-        try { await sendFile(openChat, file, '', (p) => { bar.style.width = Math.round(p * 100) + '%'; }); play('send'); }
+        try { await sendFile(openChat, file, '', (p) => { bar.style.width = Math.round(p * 100) + '%'; }, i === 0 ? ref : null); play('send'); }
         catch (ex) { toastErr(ex); }
       }
       up.classList.add('hidden');

@@ -115,21 +115,62 @@ async function startChatWatcher() {
       try { const n = new Notification(title, { body: lm.text || '', icon: 'assets/img/icon-192.png', tag: c.id }); n.onclick = () => { window.focus(); location.hash = `#/chat/${encodeURIComponent(c.id)}`; n.close(); }; } catch {}
     }
   };
-  // a "ring" from a 1:1 chat: rings even when that chat is open or muted, so the person notices
+  // a "ring" from a 1:1 chat keeps ringing (even when the chat is muted) until the person opens that chat,
+  // clicks the notification or presses "Silence" — at most RING_MAX, then it becomes a "missed ring".
+  const RING_MAX = 60000, RING_EVERY = 2600;
+  const ringing = new Map();   // chatId → { el, timer, until, notif }
+  const ringRoot = () => {
+    let r = document.querySelector('.ring-pops');
+    if (!r) { r = document.createElement('div'); r.className = 'ring-pops'; document.body.appendChild(r); }
+    return r;
+  };
+  const stopRing = (id, missed = false) => {
+    const r = ringing.get(id); if (!r) return;
+    ringing.delete(id);
+    clearInterval(r.timer);
+    try { r.notif && r.notif.close(); } catch {}
+    try { navigator.vibrate && navigator.vibrate(0); } catch {}
+    r.el.classList.add('out'); setTimeout(() => r.el.remove(), 250);
+    if (missed) livePop({ who: r.from, cls: 'warn', title: L(`فاتتك رنّة من ${r.from.name || r.from.email}`, `Missed ring from ${r.from.name || r.from.email}`), text: '', href: `#/chat/${encodeURIComponent(id)}`, action: L('فتح الشات', 'Open chat'), ttl: 600000 });
+  };
+  const chatIsOpen = (id) => window.__amOpenChat === id && !document.hidden && decodeURIComponent(location.hash) === `#/chat/${id}`;   // the chat view may stay alive in a background tab
   const ringPop = (c, lm) => {
     const from = person(lm.by) || { email: lm.by, name: nameOf(lm.by) };
+    const href = `#/chat/${encodeURIComponent(c.id)}`;
+    if (chatIsOpen(c.id)) { play('ring'); return; }   // already looking at that chat: one ring is enough
     const title = L(`${from.name || from.email} بيرن عليك`, `${from.name || from.email} is ringing you`);
-    const el = livePop({ who: from, cls: 'warn ringing', title, text: L('افتح الشات ورد عليه', 'Open the chat to answer'), href: `#/chat/${encodeURIComponent(c.id)}`, action: L('فتح الشات', 'Open chat'), ttl: 25000 });
-    el && el.classList.add('ring-pop');
-    play('ring'); setTimeout(() => { if (el && el.isConnected) play('ring'); }, 2200);
-    if ('vibrate' in navigator) try { navigator.vibrate([300, 150, 300, 150, 300]); } catch {}
+    const cur = ringing.get(c.id);
+    if (cur) { cur.until = Date.now() + RING_MAX; return; }   // rang again while ringing: keep going
+    const el = document.createElement('div');
+    el.className = 'ring-pop'; el.setAttribute('role', 'alertdialog');
+    el.innerHTML = `<span class="ring-av">${avatar(from)}</span><div class="grow min0"><b class="truncate">${esc(title)}</b><small>${L('📞 رنّة — افتح الشات عشان توقفها', '📞 Ringing — open the chat to stop it')}</small></div>
+      <a class="btn btn-sm btn-ok" href="${esc(href)}"><i class="fas fa-comment-dots"></i> ${L('فتح الشات', 'Open chat')}</a>
+      <button class="btn btn-sm btn-ghost" data-mute title="${L('إسكات', 'Silence')}"><i class="fas fa-bell-slash"></i></button>`;
+    el.querySelector('a').addEventListener('click', () => stopRing(c.id));
+    el.querySelector('[data-mute]').onclick = () => stopRing(c.id);
+    ringRoot().prepend(el);
+    const r = { el, from, until: Date.now() + RING_MAX, notif: null, timer: 0 };
+    const tick = () => {
+      if (!ringing.has(c.id)) return;
+      if (chatIsOpen(c.id)) { stopRing(c.id); return; }
+      if (Date.now() > r.until) { stopRing(c.id, true); return; }
+      play('ring');
+      try { navigator.vibrate && navigator.vibrate([300, 150, 300]); } catch {}
+    };
+    ringing.set(c.id, r);
     if ('Notification' in window && Notification.permission === 'granted' && (document.hidden || !document.hasFocus())) {
-      try { const n = new Notification(title, { body: '📞', icon: 'assets/img/icon-192.png', tag: 'ring-' + c.id, requireInteraction: true }); n.onclick = () => { window.focus(); location.hash = `#/chat/${encodeURIComponent(c.id)}`; n.close(); }; } catch {}
+      try { r.notif = new Notification(title, { body: L('📞 رنّة — اضغط لفتح الشات', '📞 Ringing — click to open the chat'), icon: 'assets/img/icon-192.png', tag: 'ring-' + c.id, requireInteraction: true, renotify: true });
+        r.notif.onclick = () => { window.focus(); location.hash = href; stopRing(c.id); }; } catch {}
     }
+    tick(); r.timer = setInterval(tick, RING_EVERY);
   };
+  // opening that chat (here or on another device) stops it
+  window.addEventListener('hashchange', () => [...ringing.keys()].forEach(id => { if (chatIsOpen(id) || decodeURIComponent(location.hash) === `#/chat/${id}`) stopRing(id); }));
+  document.addEventListener('visibilitychange', () => [...ringing.keys()].forEach(id => { if (chatIsOpen(id)) stopRing(id); }));
   watchMyChats(chats => {
     chatCount = chats.reduce((s, c) => s + unreadOf(c), 0);
     setBadges();
+    chats.forEach(c => { if (ringing.has(c.id) && !unreadOf(c)) stopRing(c.id); });   // read on another device
     let newest = seen;
     chats.forEach(c => {
       const lm = c.lastMessage; if (!lm || lm.by === session.email) return;

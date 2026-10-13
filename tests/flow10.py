@@ -84,15 +84,34 @@ n_r = [v.get("type") for k, v in a.db().items() if k.startswith(f"chats/{dm}/mes
 a.go(f'#/chat/{gid}'); pg.wait_for_timeout(800)
 ok(pg.locator('#ring').count() == 0, 'no ring button in groups')
 
-# 5) emp1 receives a ring while the chat is open and muted
-a.login('emp1@almaster.tech'); a.go(f'#/chat/{dm}'); pg.wait_for_timeout(1000)
-pg.evaluate("""(cid) => { const fs = JSON.parse(localStorage.getItem('mockfs')); const t = { __ts: Date.now() + 60000 };
-  fs['chats/' + cid + '/messages/rr'] = { by: 'leader@almaster.tech', type: 'ring', text: '', at: t };
-  const c = fs['chats/' + cid]; c.muted = { emp1_almaster_tech: true }; c.lastMessage = { id: 'rr', by: 'leader@almaster.tech', text: '📞 رنّة', type: 'ring', at: t }; c.updatedAt = t;
-  const v = JSON.stringify(fs); localStorage.setItem('mockfs', v); window.dispatchEvent(new StorageEvent('storage', { key: 'mockfs', newValue: v })); }""", dm)
-pg.wait_for_timeout(1000)
-ok(pg.locator('.chat-pop.ringing').count() == 1 and 'بيرن' in pg.locator('.chat-pop.ringing').inner_text(), 'ring popup even though the chat is open and muted')
+# 5) emp1 gets a ring on another page (chat muted): it keeps ringing until the chat is opened
+a.login('emp1@almaster.tech'); a.go('#/requests'); pg.wait_for_timeout(1000)
+ring_js = """([cid, mid, unread]) => { const fs = JSON.parse(localStorage.getItem('mockfs')); const t = { __ts: Date.now() + 60000 };
+  fs['chats/' + cid + '/messages/' + mid] = { by: 'leader@almaster.tech', type: 'ring', text: '', at: t };
+  const c = fs['chats/' + cid]; c.muted = { emp1_almaster_tech: true }; c.lastMessage = { id: mid, by: 'leader@almaster.tech', text: '📞 رنّة', type: 'ring', at: t }; c.updatedAt = t;
+  c.unread = Object.assign({}, c.unread, { emp1_almaster_tech: unread });
+  const v = JSON.stringify(fs); localStorage.setItem('mockfs', v); window.dispatchEvent(new StorageEvent('storage', { key: 'mockfs', newValue: v })); }"""
+pg.evaluate("() => { window.__rings = 0; }")
+pg.evaluate("async () => { const s = await import('/assets/js/core/sounds.js'); }")
+pg.evaluate(ring_js, [dm, 'rr', 1]); pg.wait_for_timeout(800)
+ok(pg.locator('.ring-pop').count() == 1 and 'بيرن' in pg.locator('.ring-pop').inner_text(), 'ring banner while on another page (muted chat)')
+pg.wait_for_timeout(5500)
+ok(pg.locator('.ring-pop').count() == 1, 'still ringing after 6 seconds')
 a.shot('f7-ring')
+pg.locator('.ring-pop a').click(); pg.wait_for_timeout(1000)
+ok(pg.locator('.ring-pop').count() == 0 and f'#/chat/' in pg.url, 'opening the chat stops the ring')
+a.go('#/requests'); pg.wait_for_timeout(500)
+pg.evaluate(ring_js, [dm, 'rr2', 1]); pg.wait_for_timeout(800)
+pg.locator('.ring-pop [data-mute]').click(); pg.wait_for_timeout(500)
+ok(pg.locator('.ring-pop').count() == 0, 'silence button stops it')
+pg.evaluate(ring_js, [dm, 'rr3', 1]); pg.wait_for_timeout(800)
+pg.evaluate("""(cid) => { const fs = JSON.parse(localStorage.getItem('mockfs')); fs['chats/' + cid].unread.emp1_almaster_tech = 0;
+  const v = JSON.stringify(fs); localStorage.setItem('mockfs', v); window.dispatchEvent(new StorageEvent('storage', { key: 'mockfs', newValue: v })); }""", dm); pg.wait_for_timeout(800)   # read on another device
+ok(pg.locator('.ring-pop').count() == 0, 'reading the chat elsewhere stops it')
+a.go(f'#/chat/{dm}'); pg.wait_for_timeout(800)
+pg.evaluate(ring_js, [dm, 'rr5', 1]); pg.wait_for_timeout(800)
+ok(pg.locator('.ring-pop').count() == 0, 'no banner when that chat is already open')
+
 
 # 6) leaving the meeting clears it; changing status again
 a.go('#/home'); pg.wait_for_timeout(800)

@@ -63,6 +63,7 @@ export default async function render(root, { params }) {
   let mode = 'mine', chats = [], allChats = [], term = '', openChat = null, msgs = [], showArchive = false, archived = [];
   let replyTo = null;   // the message being answered (reply button, double-click or a swipe)
   let unChats = null, unAll = null, unMsgs = null, recorder = null;
+  let openSeq = 0, gone = false;   // only the latest openThread() may subscribe; nothing after the page is left
   const admin = isAdmin();
 
   root.innerHTML = `
@@ -257,12 +258,16 @@ export default async function render(root, { params }) {
     drawHint();
   }
   async function openThread(id) {
+    const seq = ++openSeq;
     if (unMsgs) { unMsgs(); unMsgs = null; }
     stopRecording(true);
     openId = id; window.__amOpenChat = id; showArchive = false; archived = []; replyTo = null;
     $('#app').classList.toggle('has-open', !!id);
     if (!id) { openChat = null; emptyThread(); drawList(); return; }
     openChat = [...chats, ...allChats].find(c => c.id === id) || await read('chats', id).catch(() => null);
+    // a newer call (or leaving the page) happened meanwhile: subscribing now would leave a listener that keeps
+    // marking this chat as read in the background
+    if (seq !== openSeq || gone) return;
     if (openChat && !admin && !(openChat.members || []).includes(session.email)) openChat = null; // not (or no longer) a member
     if (!openChat) { $('#thread').innerHTML = `<div class="chat-empty">${empty('fa-lock', L('المحادثة مش متاحة', 'Conversation not available'))}</div>`; return; }
     drawList();
@@ -677,6 +682,7 @@ export default async function render(root, { params }) {
   } else emptyThread();
 
   return () => {
+    gone = true; openSeq++;
     stopRecording(true);
     unChats && unChats(); unAll && unAll(); unMsgs && unMsgs(); offDir && offDir();
     document.removeEventListener('click', closePicker); document.removeEventListener('visibilitychange', onVis);

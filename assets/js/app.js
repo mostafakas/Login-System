@@ -177,6 +177,7 @@ async function startChatWatcher() {
       const at = toMs(lm.at) || 0; if (at <= seen) return;
       newest = Math.max(newest, at);
       if (lm.type === 'ring' && !isGroup(c)) { ringPop(c, lm); return; }
+      if (lm.type === 'call' && lm.callOutcome !== 'missed') return;   // a call that took place / was declined: nothing to pop
       if (window.__amOpenChat === c.id && !document.hidden) return;
       if (isMuted(c)) return; // notifications switched off for this chat: the counter still counts
       popup(c, lm);
@@ -317,6 +318,7 @@ async function boot() {
   startNotifications();
   startChatWatcher().catch(e => console.warn('chat', e && e.message));
   import('./views/meeting-ui.js').then(m => m.startMeetingWatchers()).catch(e => console.warn('meetings', e && e.message));
+  import('./views/call-ui.js').then(m => m.startCallWatchers()).catch(e => console.warn('calls', e && e.message));
   startAnnouncementWatcher().catch(e => console.warn('announcements', e && e.message));
   import('./services/tasks.js').then(t => { t.startTasks(); t.onTasks(() => { taskCount = t.badgeCount(); setBadges(); if (isAdmin()) t.syncSupervisors().catch(e => console.warn('supervisors', e && e.message)); }); }).catch(e => console.warn('tasks', e && e.message));
   onNotifications(setBadges);

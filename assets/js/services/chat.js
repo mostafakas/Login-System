@@ -105,7 +105,7 @@ async function post(chat, msg, preview) {
   const m = doc(col(`chats/${chat.id}/messages`));
   b.set(m, { by: session.email, type: 'text', text: '', ...msg, at: serverTimestamp() });
   const upd = {
-    lastMessage: { id: m.id, by: session.email, text: preview.slice(0, 140), type: msg.type || 'text', at: serverTimestamp() },
+    lastMessage: { id: m.id, by: session.email, text: preview.slice(0, 140), type: msg.type || 'text', at: serverTimestamp(), ...(msg.call ? { callOutcome: msg.call.outcome } : {}) },
     updatedAt: serverTimestamp(), [`unread.${ek(session.email)}`]: 0
   };
   othersOf(chat).forEach(o => { upd[`unread.${ek(o)}`] = increment(1); }); // one counter per member
@@ -137,6 +137,17 @@ export function sendText(chat, text, { mentions = [], tasks = [], replyTo = null
     if (ms.length) notifyMany(ms, L(`${nameOf(session.email)} عملك منشن في ${chat.name}`, `${nameOf(session.email)} mentioned you in ${chat.name}`), t.slice(0, 140), `#/chat/${encodeURIComponent(chat.id)}`, 'info');
   }
   return post(chat, msg, t);
+}
+
+/** A voice call that ended, written into its chat: "📞 Voice call · 4:12" / "📞 Missed call" / "📞 Declined call" */
+export const callLine = (c) => !c ? '' : c.outcome === 'done'
+  ? L(`📞 مكالمة صوتية${c.group ? ' جماعية' : ''} · ${Math.floor((c.dur || 0) / 60)}:${String((c.dur || 0) % 60).padStart(2, '0')}`, `📞 ${c.group ? 'Group voice' : 'Voice'} call · ${Math.floor((c.dur || 0) / 60)}:${String((c.dur || 0) % 60).padStart(2, '0')}`)
+  : c.outcome === 'declined' ? L('📞 مكالمة مرفوضة', '📞 Declined call') : L(`📞 مكالمة ${c.group ? 'جماعية ' : ''}فايتة`, `📞 Missed ${c.group ? 'group ' : ''}call`);
+export async function postCallLog(chatId, call) {
+  const chat = await read('chats', chatId);
+  if (!chat || !(chat.members || []).includes(session.email)) return;
+  const c = { id: String(call.id), outcome: call.outcome, dur: Math.max(0, Math.round(call.dur || 0)), group: !!call.group };
+  return post(chat, { type: 'call', text: '', call: c }, callLine(c));
 }
 
 /** 1:1 only: "ring" the other person — an alert with a ringing sound, no voice call. One ring per 20 s. */

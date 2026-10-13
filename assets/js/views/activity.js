@@ -68,7 +68,9 @@ const ACTIONS = {
   'balance.adjust': ['عدّل رصيد', 'Adjusted a balance', 'fa-scale-balanced', 'info'],
   'meeting.start': ['بدأ ميتنج', 'Started a meeting', 'fa-users', 'info'],
   'meeting.accept': ['قبل دعوة ميتنج', 'Accepted a meeting invitation', 'fa-users', 'ok'],
-  'chat.ring': ['رنّ على زميل', 'Rang a colleague', 'fa-phone-volume', 'warn']
+  'chat.ring': ['رنّ على زميل', 'Rang a colleague', 'fa-phone-volume', 'warn'],
+  'call.start': ['بدأ مكالمة صوتية', 'Started a voice call', 'fa-phone', 'ok'],
+  'call.join': ['دخل مكالمة صوتية', 'Joined a voice call', 'fa-phone', 'ok']
 };
 const catOf = (a) => a.startsWith('status') || a.startsWith('meeting.') ? 'attendance' : a.startsWith('auth.') || a.startsWith('profile.') ? 'account' : a.startsWith('request.') ? 'requests'
   : a.startsWith('user.') || a.startsWith('balance.') ? 'hr' : a.startsWith('settings.') ? 'settings' : a.startsWith('payroll.') ? 'payroll' : a.startsWith('chat.') ? 'chat' : 'hr';

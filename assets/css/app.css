@@ -1338,3 +1338,38 @@ html[dir="rtl"] .mon-metric.on { box-shadow: inset -3px 0 0 var(--brand); }
 .ring-av::after { content: ''; position: absolute; inset: -4px; border-radius: 50%; border: 2px solid var(--ok); animation: ringpulse 1.3s ease-out infinite; }
 @keyframes ringpulse { from { transform: scale(.9); opacity: .9; } to { transform: scale(1.35); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .ring-pop, .ring-av::after { animation: none; } }
+
+/* ---------- voice calls ---------- */
+.call-panel { position: fixed; bottom: 20px; inset-inline-start: calc(var(--rail-w, var(--sidebar-w)) + 24px); z-index: 95; width: min(340px, calc(100vw - 24px)); background: var(--navy, #0b1440); color: #fff; border-radius: 20px; padding: 12px 14px; box-shadow: 0 18px 50px rgba(0,0,0,.35); display: flex; flex-direction: column; gap: 10px; animation: popin .25s ease; }
+.call-panel .btn-ghost { color: #fff; }
+.call-top { display: flex; align-items: center; gap: 10px; }
+.call-top b { display: block; font-size: 14.5px; }
+.call-top small { display: block; font-size: 12px; opacity: .75; }
+.call-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--ok); flex: none; box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 30%, transparent); }
+.call-dot.ringing { background: var(--warn); animation: ringpulse 1.2s ease-out infinite; }
+.call-people { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+.call-person { position: relative; display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.call-person .avatar { box-shadow: 0 0 0 2px rgba(255,255,255,.15); transition: box-shadow .15s; }
+.call-person.talking .avatar { box-shadow: 0 0 0 3px var(--ok), 0 0 14px color-mix(in srgb, var(--ok) 60%, transparent); }
+.call-person > i { position: absolute; top: -2px; inset-inline-end: -4px; font-size: 10px; background: var(--bad); color: #fff; border-radius: 50%; width: 17px; height: 17px; display: grid; place-items: center; }
+.call-person small { font-size: 10.5px; opacity: .8; white-space: nowrap; }
+.call-warn { font-size: 12px; background: rgba(255,180,0,.15); color: #ffd27a; padding: 6px 10px; border-radius: 10px; }
+.call-actions { display: flex; justify-content: center; gap: 18px; }
+.call-btn { width: 46px; height: 46px; border-radius: 50%; background: rgba(255,255,255,.12); color: #fff; border: 0; font-size: 17px; }
+.call-btn.on { background: #fff; color: var(--navy, #0b1440); }
+.call-btn.end { background: var(--bad); color: #fff; }
+.call-btn.end i { transform: rotate(0); }
+.call-panel.min { width: auto; min-width: 260px; flex-direction: row; align-items: center; padding: 8px 10px; }
+.call-panel.min .call-top { flex: 1; min-width: 0; }
+.call-panel.min .call-actions { gap: 8px; }
+.call-panel.min .call-btn { width: 36px; height: 36px; font-size: 14px; }
+@media (max-width: 900px) { .call-panel { bottom: 84px; inset-inline-start: 12px; } }
+.chat-call-btn { color: var(--ok); }
+.chat-callbar { display: flex; align-items: center; gap: 10px; padding: 8px 14px; background: color-mix(in srgb, var(--ok) 10%, var(--surface)); border-bottom: 1px solid color-mix(in srgb, var(--ok) 25%, var(--border)); font-size: 13px; font-weight: 700; color: var(--ok); }
+.chat-callbar-ppl { display: inline-flex; }
+.chat-callbar-ppl .avatar { margin-inline-start: -6px; box-shadow: 0 0 0 2px var(--surface); }
+.chat-callmsg { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 13px; }
+.chat-callmsg.missed i, .chat-callmsg.declined i { color: var(--bad); }
+.chat-callmsg.done i { color: var(--ok); }
+.chat-callmsg .btn { padding: 2px 8px; color: inherit; }
+.call-in .btn-danger { min-width: 38px; }

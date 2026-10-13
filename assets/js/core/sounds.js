@@ -38,6 +38,9 @@ const SOUNDS = {
   meeting: () => tones([[587, 0, 0.12], [784, 0.12, 0.12], [988, 0.24, 0.22]], { vol: 0.08, type: 'triangle' }), // invitation to a meeting
   ring: () => tones([[880, 0, 0.09], [1175, 0.1, 0.09], [880, 0.2, 0.09], [1175, 0.3, 0.09],
     [880, 0.75, 0.09], [1175, 0.85, 0.09], [880, 0.95, 0.09], [1175, 1.05, 0.09]], { vol: 0.1 }), // phone-like double trill
+  ringback: () => tones([[425, 0, 1.0]], { vol: 0.05 }),                                   // the caller's "tuuut" while it rings
+  calljoin: () => tones([[660, 0, 0.08], [990, 0.08, 0.12]], { vol: 0.06 }),               // connected
+  callend: () => tones([[620, 0, 0.12], [420, 0.12, 0.18]], { vol: 0.06, type: 'triangle' }), // hung up
   info: () => tones([[880, 0, 0.1]], { vol: 0.05 })                                         // neutral tick
 };
 export function play(name) {

@@ -11,10 +11,12 @@ import { play } from '../core/sounds.js';
 import {
   ensureChat, watchMyChats, watchAllChats, watchMessages, sendText, sendFile, sendVoice, loadFile, markRead, archiveChat, listArchive,
   otherOf, othersOf, unreadOf, ek, MAX_FILE, isGroup, canManageGroup, isMuted, seenBy, canEditMessage, createGroup, updateGroup, setMuted,
-  editMessage, deleteMessage, mentionedMe, sendRing, ringWait, snippetOf, replyRefOf
+  editMessage, deleteMessage, mentionedMe, sendRing, ringWait, snippetOf, replyRefOf, callLine
 } from '../services/chat.js';
 import { startTasks, allTasks, taskById, taskLink } from '../services/tasks.js';
 import { setTabLabel } from '../tabs.js';
+import { startCallFor, joinLive, liveCallIn, onLiveCalls } from './call-ui.js';
+import { currentCall } from '../services/calls.js';
 
 const fmtSize = (n) => n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
 const fmtLen = (s) => `${Math.floor((s || 0) / 60)}:${String(Math.floor((s || 0) % 60)).padStart(2, '0')}`;
@@ -277,9 +279,11 @@ export default async function render(root, { params }) {
       <header class="chat-head">
         <a class="btn btn-ghost btn-icon chat-back" href="#/chat" aria-label="${L('رجوع', 'Back')}"><i class="fas fa-arrow-right" data-flip></i></a>
         <div class="row gap-12 grow min0" id="chat-head-main"></div>
-        ${member && !isGroup(openChat) ? `<button class="btn btn-ghost btn-icon chat-ring-btn" id="ring" title="${L('رنّ عليه (تنبيه بس، مش مكالمة)', 'Ring (an alert only, not a call)')}" aria-label="${L('رنّ', 'Ring')}"><i class="fas fa-phone-volume"></i></button>` : ''}
+        ${member ? `<button class="btn btn-ghost btn-icon chat-call-btn" id="call" title="${isGroup(openChat) ? L('مكالمة صوتية جماعية', 'Group voice call') : L('مكالمة صوتية', 'Voice call')}" aria-label="${L('مكالمة', 'Call')}"><i class="fas fa-phone"></i></button>` : ''}
+        ${member && !isGroup(openChat) ? `<button class="btn btn-ghost btn-icon chat-ring-btn" id="ring" title="${L('رنّة تنبيه (من غير مكالمة)', 'Ring alert (no call)')}" aria-label="${L('رنّ', 'Ring')}"><i class="fas fa-bell"></i></button>` : ''}
         ${admin ? `<div class="row gap-4"><button class="btn btn-sm btn-ghost" id="arch-view" title="${L('الرسائل المؤرشفة', 'Archived messages')}"><i class="fas fa-box-archive"></i><span class="hide-sm"> ${L('الأرشيف', 'Archive')}</span></button><button class="btn btn-sm btn-ghost" id="arch" title="${L('أرشفة المحادثة', 'Archive conversation')}" style="color:var(--bad)"><i class="fas fa-folder-minus"></i><span class="hide-sm"> ${L('أرشفة', 'Archive now')}</span></button></div>` : ''}
       </header>
+      <div class="chat-callbar hidden" id="callbar"></div>
       <div class="chat-msgs" id="msgs">${loader()}</div>
       ${member ? `<form class="chat-compose" id="compose">
         <div class="chat-away hidden" id="away"></div>
@@ -296,6 +300,9 @@ export default async function render(root, { params }) {
           <button class="btn btn-primary btn-icon" type="button" id="rec-ok" title="${L('إرسال', 'Send')}"><i class="fas fa-paper-plane" data-flip></i></button></div>
       </form>` : ''}`;
     drawHead();
+    drawCallBar();
+    const cb = $('#call');
+    if (cb) cb.onclick = () => busy(cb, () => startCallFor(openChat));
     const rb = $('#ring');
     if (rb) rb.onclick = () => busy(rb, async () => {
       try {
@@ -346,6 +353,7 @@ export default async function render(root, { params }) {
       if (m.type === 'image' && m.file) body += `<button class="chat-img" data-file="${esc(m.file.id)}" title="${esc(m.file.name)}"><img src="${esc(m.file.thumb || '')}" alt="${esc(m.file.name)}" loading="lazy"></button>`;
       if (m.type === 'file' && m.file) body += `<button class="chat-file" data-file="${esc(m.file.id)}"><i class="fas ${fileIcon(m.file.mime, m.file.name)}"></i><span class="min0 grow"><b class="truncate">${esc(m.file.name)}</b><small>${esc(fmtSize(m.file.size || 0))}</small></span><i class="fas fa-download"></i></button>`;
       if (m.type === 'voice' && m.file) body += `<div class="chat-voice" data-voice="${esc(m.file.id)}"><button class="btn btn-icon chat-voice-play" data-play="${esc(m.file.id)}" aria-label="${L('تشغيل', 'Play')}"><i class="fas fa-play"></i></button><span class="chat-voice-wave"></span><span class="num small">${esc(fmtLen(m.file.dur))}</span></div>`;
+      if (m.type === 'call' && m.call) body += `<div class="chat-callmsg ${esc(m.call.outcome || '')}"><i class="fas ${m.call.outcome === 'done' ? 'fa-phone' : 'fa-phone-slash'}"></i><span>${esc(callLine(m.call))}</span>${member && !m.archivedAt ? `<button type="button" class="btn btn-sm btn-ghost" data-callback title="${L('اتصل تاني', 'Call back')}"><i class="fas fa-phone"></i></button>` : ''}</div>`;
       if (m.type === 'ring') body += `<div class="chat-ringmsg"><i class="fas fa-phone-volume"></i> ${mine ? L('رنّيت', 'You rang') : L(`${esc(String(nameOf(m.by)).split(' ')[0])} رنّ عليك`, `${esc(String(nameOf(m.by)).split(' ')[0])} rang you`)}</div>`;
       if (m.text) body += `<div class="chat-text">${richText(m)}</div>`;
     }
@@ -412,6 +420,8 @@ export default async function render(root, { params }) {
       else toast(tr.title || L('تاسك', 'Task'), L('التاسك ده مش مسند ليك — بتشوف عنوانه بس.', 'This task is not assigned to you — you only see its title.'), 'info');
       return;
     }
+    if (e.target.closest('[data-callback]')) { startCallFor(openChat); return; }
+    const jc = e.target.closest('[data-joincall]'); if (jc) { joinLive(jc.dataset.joincall); return; }
     const rp = e.target.closest('[data-reply]'); if (rp) { setReply(find(rp.dataset.reply)); return; }
     const jp = e.target.closest('[data-jump]'); if (jp) { jumpTo(jp.dataset.jump); return; }
     if (e.target.closest('#reply-x')) { setReply(null); return; }
@@ -655,6 +665,19 @@ export default async function render(root, { params }) {
     box.innerHTML = rows.join('');
     box.classList.toggle('hidden', !rows.length);
   }
+  /** a call going on in this chat: who is in, and "Join" */
+  function drawCallBar() {
+    const bar = $('#callbar'); if (!bar || !openChat) return;
+    const c = liveCallIn(openChat.id), mine = currentCall();
+    const inIt = c && mine && mine.id === c.id;
+    if (!c || !(c.joined || []).length || (!isGroup(openChat) && !inIt)) { bar.classList.add('hidden'); bar.innerHTML = ''; return; }
+    const people = (c.joined || []).map(e => avatar(who(e), 'xs')).join('');
+    bar.innerHTML = `<i class="fas fa-phone-volume"></i><span class="grow min0 truncate">${inIt ? L('إنت في المكالمة دي', 'You are in this call') : L(`مكالمة صوتية شغالة · ${(c.joined || []).length} جوّه`, `Voice call on · ${(c.joined || []).length} in`)}</span><span class="chat-callbar-ppl">${people}</span>
+      ${inIt ? '' : `<button type="button" class="btn btn-sm btn-ok" data-joincall="${esc(c.id)}"><i class="fas fa-phone"></i> ${L('انضم', 'Join')}</button>`}`;
+    bar.classList.remove('hidden');
+  }
+  const offCalls = onLiveCalls(() => drawCallBar());
+
   /** scroll the chat to a message and flash it */
   function jumpTo(id) {
     const row = $('#msgs') && $('#msgs').querySelector(`[data-mid="${CSS.escape(id)}"]`);
@@ -684,7 +707,7 @@ export default async function render(root, { params }) {
   return () => {
     gone = true; openSeq++;
     stopRecording(true);
-    unChats && unChats(); unAll && unAll(); unMsgs && unMsgs(); offDir && offDir();
+    unChats && unChats(); unAll && unAll(); unMsgs && unMsgs(); offDir && offDir(); offCalls && offCalls();
     document.removeEventListener('click', closePicker); document.removeEventListener('visibilitychange', onVis);
     window.__amOpenChat = '';
   };

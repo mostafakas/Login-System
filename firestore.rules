@@ -386,12 +386,16 @@ service cloud.firestore {
       match /messages/{m} {
         allow read: if isAdmin() || inChat(id);
         allow create: if inChat(id) && request.resource.data.by == me() && request.resource.data.at == request.time
-          && request.resource.data.keys().hasOnly(['by', 'type', 'text', 'file', 'at', 'mentions', 'tasks', 'replyTo'])
+          && request.resource.data.keys().hasOnly(['by', 'type', 'text', 'file', 'at', 'mentions', 'tasks', 'replyTo', 'call'])
+          // a voice call written into the chat when it ends
+          && (!('call' in request.resource.data) || (request.resource.data.type == 'call' && request.resource.data.call is map
+              && request.resource.data.call.keys().hasOnly(['id', 'outcome', 'dur', 'group'])
+              && request.resource.data.call.outcome in ['done', 'missed', 'declined']))
           // a reply keeps a short quote of the message it answers
           && (!('replyTo' in request.resource.data) || (request.resource.data.replyTo is map
               && request.resource.data.replyTo.keys().hasOnly(['id', 'by', 'type', 'text'])
               && request.resource.data.replyTo.id is string && request.resource.data.replyTo.get('text', '').size() <= 200))
-          && request.resource.data.type in ['text', 'image', 'file', 'voice', 'ring']
+          && request.resource.data.type in ['text', 'image', 'file', 'voice', 'ring', 'call']
           // a "ring" (an alert with a ringing sound, no call) is for 1:1 conversations only
           && (request.resource.data.type != 'ring' || chatDoc(id).get('type', '') != 'group')
           && (!('mentions' in request.resource.data) || (request.resource.data.mentions is list && request.resource.data.mentions.size() <= 50))
@@ -453,6 +457,34 @@ service cloud.firestore {
         allow read: if active() && (isAdmin() || me() in chatDoc(fileDoc().chatId).members);
         allow create: if active() && fileDoc().by == me() && request.resource.data.data is string && request.resource.data.data.size() <= 700000;
         allow delete: if isAdmin();
+      }
+    }
+
+    // ---------- voice calls (WebRTC: the audio goes between the browsers; here only the call and its handshake) ----------
+    function callDoc(id) { return get(/databases/$(database)/documents/calls/$(id)).data; }
+    match /calls/{id} {
+      function nc() { return request.resource.data; }
+      allow read: if active() && (me() in resource.data.members || me() in resource.data.get('liveFor', []) || isAdmin());
+      // started from a chat I am in, for that chat's members, with only me in it
+      allow create: if active() && nc().from == me() && nc().members is list && nc().members.size() >= 2 && nc().members.size() <= 300
+        && me() in nc().members && chatDoc(nc().chatId).members.hasAll(nc().members)
+        && nc().joined == [me()] && nc().live == true && nc().status == 'ringing' && nc().liveFor == nc().members
+        && nc().keys().hasOnly(['chatId', 'group', 'chatName', 'from', 'fromName', 'members', 'liveFor', 'joined', 'beat', 'status', 'live', 'at', 'atMs', 'startedAt']);
+      // people in the call: join / leave / heartbeat / end. Nobody can add someone else, change who is invited or reopen it.
+      allow update: if active() && me() in resource.data.members
+        && onlyChanged(['joined', 'beat', 'status', 'startedAt', 'live', 'liveFor', 'outcome', 'endedAt', 'endedBy'])
+        && (nc().liveFor == resource.data.liveFor || (nc().liveFor.size() == 0 && nc().live == false))
+        && nc().joined is list && nc().joined.size() <= 12
+        && nc().joined.toSet().difference(resource.data.joined.toSet()).hasOnly([me()])
+        && (resource.data.live == true || nc().live == false)
+        && nc().status in ['ringing', 'active', 'ended'];
+      allow delete: if isAdmin();
+      // the connection handshake between two people in the call (deleted by whoever receives it)
+      match /signals/{s} {
+        allow read: if active() && resource.data.to == me();
+        allow create: if active() && request.resource.data.from == me() && me() in callDoc(id).members && request.resource.data.to in callDoc(id).members
+          && request.resource.data.kind in ['offer', 'answer', 'ice'] && request.resource.data.data is string && request.resource.data.data.size() < 30000;
+        allow delete: if active() && (resource.data.to == me() || resource.data.from == me());
       }
     }
 

@@ -18,6 +18,7 @@ import { startTasks, allTasks, taskById, taskLink } from '../services/tasks.js';
 import { setTabLabel } from '../tabs.js';
 import { startCallFor, joinLive, liveCallIn, onLiveCalls } from './call-ui.js';
 import { currentCall } from '../services/calls.js';
+import { watchMyRecRequests } from '../services/records.js';
 
 const fmtSize = (n) => n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
 const fmtLen = (s) => `${Math.floor((s || 0) / 60)}:${String(Math.floor((s || 0) % 60)).padStart(2, '0')}`;
@@ -354,6 +355,7 @@ export default async function render(root, { params }) {
       if (m.type === 'image' && m.file) body += `<button class="chat-img" data-file="${esc(m.file.id)}" title="${esc(m.file.name)}"><img src="${esc(m.file.thumb || '')}" alt="${esc(m.file.name)}" loading="lazy"></button>`;
       if (m.type === 'file' && m.file) body += `<button class="chat-file" data-file="${esc(m.file.id)}"><i class="fas ${fileIcon(m.file.mime, m.file.name)}"></i><span class="min0 grow"><b class="truncate">${esc(m.file.name)}</b><small>${esc(fmtSize(m.file.size || 0))}</small></span><i class="fas fa-download"></i></button>`;
       if (m.type === 'voice' && m.file) body += `<div class="chat-voice" data-voice="${esc(m.file.id)}"><button class="btn btn-icon chat-voice-play" data-play="${esc(m.file.id)}" aria-label="${L('تشغيل', 'Play')}"><i class="fas fa-play"></i></button><span class="chat-voice-wave"></span><span class="num small">${esc(fmtLen(m.file.dur))}</span></div>`;
+      if (m.type === 'call' && m.call && (m.call.rec || m.call.tr) && !m.archivedAt) body += recButtons(m);
       if (m.type === 'call' && m.call) body += `<div class="chat-callmsg ${esc(m.call.outcome || '')}"><i class="fas ${m.call.outcome === 'done' ? 'fa-phone' : 'fa-phone-slash'}"></i><span>${esc(callLine(m.call))}${m.call.with ? `<small class="chat-callwith">${esc(m.call.with.map(e => e === session.email ? L('إنت', 'you') : String(nameOf(e)).split(' ')[0]).join('، '))}</small>` : ''}</span>${member && !m.archivedAt ? `<button type="button" class="btn btn-sm btn-ghost" data-callback title="${L('اتصل تاني', 'Call back')}"><i class="fas fa-phone"></i></button>` : ''}</div>`;
       if (m.type === 'ring') body += `<div class="chat-ringmsg"><i class="fas fa-phone-volume"></i> ${mine ? L('رنّيت', 'You rang') : L(`${esc(String(nameOf(m.by)).split(' ')[0])} رنّ عليك`, `${esc(String(nameOf(m.by)).split(' ')[0])} rang you`)}</div>`;
       if (m.text) body += `<div class="chat-text">${richText(m)}</div>`;
@@ -431,6 +433,10 @@ export default async function render(root, { params }) {
     const rxb = e.target.closest('[data-react]'); if (rxb) { openReactPicker(find(rxb.dataset.react), rxb); return; }
     const rxc = e.target.closest('[data-rxchip]'); if (rxc) { const m = find(rxc.dataset.rxchip); if (m) react(openChat, m, rxc.dataset.emoji).catch(toastErr); return; }
     if (e.target.closest('[data-callback]')) { startCallFor(openChat); return; }
+    const ro = e.target.closest('[data-recopen]');
+    if (ro) { const ui = await import('./records.js'); if (ro.dataset.kind === 'tr') ui.openTranscript(ro.dataset.recopen); else ui.openRecording(ro.dataset.recopen); return; }
+    const rq = e.target.closest('[data-recask]');
+    if (rq) { const ui = await import('./records.js'); ui.requestModal({ callId: rq.dataset.recask, chatId: openChat.id, title: (isGroup(openChat) ? openChat.name : convTitle(openChat)) + ' — ' + (rq.dataset.when || ''), kinds: rq.dataset.kinds.split(',') }); return; }
     const jc = e.target.closest('[data-joincall]'); if (jc) { joinLive(jc.dataset.joincall); return; }
     const rp = e.target.closest('[data-reply]'); if (rp) { setReply(find(rp.dataset.reply)); return; }
     const jp = e.target.closest('[data-jump]'); if (jp) { jumpTo(jp.dataset.jump); return; }
@@ -741,6 +747,21 @@ export default async function render(root, { params }) {
     bar.classList.remove('hidden');
   }
   const offCalls = onLiveCalls(() => drawCallBar());
+  // my requests for recordings / transcripts (to show "waiting" / "open")
+  let recReqs = [];
+  const offRecReq = admin ? null : watchMyRecRequests(rows => { recReqs = rows; drawMsgs(); });
+  function recButtons(m) {
+    const kinds = ['rec', 'tr'].filter(k => m.call[k]);
+    const when = toMs(m.at) ? fmtDate(ymd(toMs(m.at))) + ' ' + fmtTime(toMs(m.at)) : '';
+    const label = { rec: [L('التسجيل', 'Recording'), 'fa-circle-play'], tr: [L('المحضر', 'Transcript'), 'fa-file-lines'] };
+    if (admin) return `<div class="chat-recbtns">${kinds.map(k => `<button type="button" class="btn btn-sm" data-recopen="${esc(m.call.id)}" data-kind="${k}"><i class="fas ${label[k][1]}"></i> ${label[k][0]}</button>`).join('')}</div>`;
+    const mine = recReqs.filter(r => r.callId === m.call.id);
+    const has = (k, st) => mine.some(r => r.status === st && (r.kinds || []).includes(k));
+    const open = kinds.filter(k => has(k, 'approved')), waiting = kinds.filter(k => !open.includes(k) && has(k, 'pending')), ask = kinds.filter(k => !open.includes(k) && !waiting.includes(k));
+    return `<div class="chat-recbtns">${open.map(k => `<button type="button" class="btn btn-sm" data-recopen="${esc(m.call.id)}" data-kind="${k}"><i class="fas ${label[k][1]}"></i> ${label[k][0]}</button>`).join('')}
+      ${waiting.length ? `<span class="badge warn"><i class="fas fa-hourglass-half"></i> ${L('مستني موافقة الأدمن', 'Waiting for the admin')}</span>` : ''}
+      ${ask.length ? `<button type="button" class="btn btn-sm btn-ghost" data-recask="${esc(m.call.id)}" data-kinds="${ask.join(',')}" data-when="${esc(when)}"><i class="fas fa-lock"></i> ${L(`اطلب ${ask.map(k => label[k][0]).join(' و')}`, `Request ${ask.map(k => label[k][0]).join(' & ')}`)}</button>` : ''}</div>`;
+  }
 
   /** scroll the chat to a message and flash it */
   function jumpTo(id) {
@@ -771,7 +792,7 @@ export default async function render(root, { params }) {
   return () => {
     gone = true; openSeq++; closeReactPicker();
     stopRecording(true);
-    unChats && unChats(); unAll && unAll(); unMsgs && unMsgs(); offDir && offDir(); offCalls && offCalls();
+    unChats && unChats(); unAll && unAll(); unMsgs && unMsgs(); offDir && offDir(); offCalls && offCalls(); offRecReq && offRecReq();
     document.removeEventListener('click', closePicker); document.removeEventListener('visibilitychange', onVis);
     window.__amOpenChat = '';
   };

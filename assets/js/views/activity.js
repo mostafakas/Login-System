@@ -72,7 +72,11 @@ const ACTIONS = {
   'call.start': ['بدأ مكالمة صوتية', 'Started a voice call', 'fa-phone', 'ok'],
   'call.join': ['دخل مكالمة صوتية', 'Joined a voice call', 'fa-phone', 'ok'],
   'call.add': ['ضاف ناس لمكالمة', 'Added people to a call', 'fa-user-plus', 'info'],
-  'call.share': ['عرض شاشته في مكالمة', 'Shared their screen in a call', 'fa-display', 'info']
+  'call.share': ['عرض شاشته في مكالمة', 'Shared their screen in a call', 'fa-display', 'info'],
+  'call.record': ['سجّل مكالمة', 'Recorded a call', 'fa-circle', 'warn'],
+  'record.request': ['طلب تسجيل / محضر مكالمة', 'Requested a call recording / transcript', 'fa-lock', 'info'],
+  'record.approve': ['وافق على طلب تسجيل', 'Approved a recording request', 'fa-check', 'ok'],
+  'record.reject': ['رفض طلب تسجيل', 'Rejected a recording request', 'fa-xmark', 'bad']
 };
 const catOf = (a) => a.startsWith('status') || a.startsWith('meeting.') ? 'attendance' : a.startsWith('auth.') || a.startsWith('profile.') ? 'account' : a.startsWith('request.') ? 'requests'
   : a.startsWith('user.') || a.startsWith('balance.') ? 'hr' : a.startsWith('settings.') ? 'settings' : a.startsWith('payroll.') ? 'payroll' : a.startsWith('chat.') ? 'chat' : 'hr';

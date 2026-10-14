@@ -7,7 +7,7 @@ import { db, doc, col, watch, query, where, updateDoc, setDoc, deleteDoc, runTra
 import { session, now } from '../core/session.js';   // now(): server-corrected clock — devices with a wrong clock agree
 import { L } from '../core/utils.js';
 import { userError } from '../core/ui.js';
-import { publicConfig } from './authsvc.js';
+import { publicConfig, callService } from './authsvc.js';
 import { ek, isGroup, postCallLog } from './chat.js';
 import { nameOf } from './directory.js';
 import { track } from './activity.js';
@@ -162,10 +162,10 @@ export async function hangUp(reason = '') {
     if (end) {
       const outcome = d.startedAt ? 'done' : (reason === 'missed' ? 'missed' : 'cancelled');
       tx.update(ref, { live: false, liveFor: [], status: 'ended', outcome, joined: left, beat, endedAt: now(), endedBy: me });
-      log = { id: c.id, outcome: outcome === 'cancelled' ? 'missed' : outcome, dur: d.startedAt ? Math.round((now() - d.startedAt) / 1000) : 0, group: !!d.group, with: d.group ? (d.members || []) : [] };
-    } else tx.update(ref, { joined: left, beat, [`leftAt.${ek(me)}`]: now(), sharing: (d.sharing || []).filter(e => e !== me && left.includes(e)) });
+      log = { id: c.id, outcome: outcome === 'cancelled' ? 'missed' : outcome, dur: d.startedAt ? Math.round((now() - d.startedAt) / 1000) : 0, group: !!d.group, with: d.group ? (d.members || []) : [], rec: !!d.rec, tr: !!d.tr };
+    } else tx.update(ref, { joined: left, beat, [`leftAt.${ek(me)}`]: now(), sharing: (d.sharing || []).filter(e => e !== me && left.includes(e)), ...(d.recBy === me ? { recBy: '' } : {}) });
   }).catch(e => console.warn('hang up', e && e.message));
-  if (log) postCallLog(c.call.chatId, log).catch(e => console.warn('call log', e && e.message));
+  if (log) finishLog(c, log);
 }
 
 /** The one who started the call ends it for everybody */
@@ -179,9 +179,14 @@ export async function endForAll() {
     if (!d || !d.live) return;
     const outcome = d.startedAt ? 'done' : 'missed';
     tx.update(ref, { live: false, liveFor: [], status: 'ended', outcome, joined: [], endedAt: now(), endedBy: session.email });
-    log = { id: c.id, outcome, dur: d.startedAt ? Math.round((now() - d.startedAt) / 1000) : 0, group: !!d.group, with: d.group ? (d.members || []) : [] };
+    log = { id: c.id, outcome, dur: d.startedAt ? Math.round((now() - d.startedAt) / 1000) : 0, group: !!d.group, with: d.group ? (d.members || []) : [], rec: !!d.rec, tr: !!d.tr };
   }).catch(e => console.warn('end for all', e && e.message));
-  if (log) postCallLog(c.call.chatId, log).catch(e => console.warn('call log', e && e.message));
+  if (log) finishLog(c, log);
+}
+/** The call is over: write it into the chat, and (when people were transcribed) put the transcript file together */
+function finishLog(c, log) {
+  postCallLog(c.call.chatId, log).catch(e => console.warn('call log', e && e.message));
+  if (log.tr) setTimeout(() => callService('trBuild', { callId: c.id }).catch(e => console.warn('transcript', e && e.message)), 6000);   // after the last lines are saved
 }
 /** my own heartbeat in that call is old: no page of mine is in it any more (another tab of mine may well be) */
 export const myBeatStale = (c) => now() - Number(((c && c.beat) || {})[ek(session.email)] || 0) > STALE;
@@ -435,6 +440,9 @@ function meterTick() {
   });
   if (changed) emit();
 }
+/** what the recorder mixes: my mic and everyone else's voice */
+export const audioStreams = () => !cur ? [] : [{ email: session.email, stream: cur.stream }, ...[...cur.peers].map(([e, p]) => ({ email: e, stream: p.audio && p.audio.srcObject })).filter(x => x.stream)];
+export const myScreen = () => (cur && cur.screen) || null;
 export const isTalking = (email) => !!(cur && cur.meters && cur.meters.get(email) && cur.meters.get(email).talking);
 
 // ---------------------------------------------------------------- calls that concern me

@@ -6,6 +6,7 @@ import { now } from '../core/session.js';
 import { dayKey } from '../core/policy.js';
 import { isGroup, ek } from '../services/chat.js';
 import { read } from '../core/fb.js';
+import { startRecording, stopRecording, isRecording, canRecord, onRecState, transcribing, transcriptBlocked, canTranscribe } from '../services/recording.js';
 import { session } from '../core/session.js';
 import { person, nameOf, activePeople } from '../services/directory.js';
 import { play } from '../core/sounds.js';
@@ -151,6 +152,7 @@ function drawPanel() {
       else if (a === 'perm') { try { Notification.requestPermission().then(() => drawPanel()); } catch {} }
       else if (a === 'min') { minimized = !minimized; drawPanel(); }
       else if (a === 'add') addPeople();
+      else if (a === 'rec') { (isRecording() ? stopRecording() : startRecording()).catch(toastErr); }
       else if (a === 'share') { const cc = currentCall(); (cc && cc.screen ? stopScreen() : shareScreen()).catch(toastErr); }
       else if (a === 'chat') location.hash = `#/chat/${encodeURIComponent((currentCall() || {}).call.chatId)}`;
     });
@@ -177,6 +179,7 @@ function drawPanel() {
     ? `<span class="call-person declined" title="${esc(nameOf(e))}">${avatar(who(e), 'sm')}<small>${L('اعتذر', 'declined')}</small></span>`
     : (now() - invitedAtOf(call, e) < RING_FOR ? `<span class="call-person waiting" title="${esc(nameOf(e))}">${avatar(who(e), 'sm')}<small>${L('بيرن…', 'ringing…')}</small></span>` : `<span class="call-person declined" title="${esc(nameOf(e))}">${avatar(who(e), 'sm')}<small>${L('ما ردّش', 'no answer')}</small></span>`)).join('');
   const perm = 'Notification' in window ? Notification.permission : 'granted';
+  const recOther = !!(call.recBy && call.recBy !== me && (call.joined || []).includes(call.recBy));
   const failed = [...c.peers.values()].some(p => p.state === 'failed');
   panel.classList.toggle('min', minimized);
   panel.innerHTML = `
@@ -186,12 +189,15 @@ function drawPanel() {
       <button class="btn btn-ghost btn-icon btn-sm" data-c="min" title="${minimized ? L('كبّر', 'Expand') : L('صغّر', 'Minimize')}"><i class="fas ${minimized ? 'fa-up-right-and-down-left-from-center' : 'fa-down-left-and-up-right-to-center'}"></i></button></div>
     ${minimized ? '' : `<div class="call-people">${people}${ringingPpl}</div>
       ${failed ? `<div class="call-warn"><i class="fas fa-triangle-exclamation"></i> ${L('الاتصال مش راضي يتوصل — غالباً شبكة الشركة أو النت بيمنعه. جرّب نت تاني.', 'The connection fails — the network probably blocks it. Try another connection.')}</div>` : ''}
+      ${call.recBy && (call.joined || []).includes(call.recBy) ? `<div class="call-recon"><span class="rec-dot"></span> ${call.recBy === me ? L('إنت بتسجّل المكالمة', 'You are recording this call') : L(`المكالمة بتتسجّل (${String(nameOf(call.recBy)).split(' ')[0]})`, `This call is being recorded (${String(nameOf(call.recBy)).split(' ')[0]})`)}</div>` : ''}
+      ${call.startedAt ? `<div class="call-trnote"><i class="fas fa-file-lines"></i> ${!canTranscribe() ? L('متصفحك مش بيدعم التفريغ — كلامك مش هيتكتب في المحضر', 'Your browser cannot transcribe — your words will not be in the transcript') : transcriptBlocked() ? L('التفريغ متوقف: المتصفح منعه', 'Transcript blocked by the browser') : c.muted ? L('التفريغ واقف وإنت قافل المايك', 'Transcript paused while muted') : L('الكلام بيتفرّغ تلقائياً في محضر', 'What is said is transcribed automatically')}</div>` : ''}
       ${c.screen ? `<div class="call-sharing"><i class="fas fa-display"></i> ${L('إنت بتعرض شاشتك', 'You are sharing your screen')} <button class="btn btn-sm" data-c="share">${L('وقف', 'Stop')}</button></div>` : ''}
       ${perm === 'default' ? `<button class="call-hint" data-c="perm"><i class="fas fa-bell"></i> ${L('فعّل إشعارات الويندوز عشان المكالمات توصلك والسيستم في الخلفية', 'Turn on desktop notifications so calls reach you in the background')}</button>` : ''}
       ${perm === 'denied' ? `<div class="call-hint"><i class="fas fa-bell-slash"></i> ${L('إشعارات الويندوز مقفولة للموقع ده — افتحها من علامة القفل جنب العنوان', 'Desktop notifications are blocked for this site — allow them from the lock icon')}</div>` : ''}`}
     ${endMenu ? `<div class="call-endmenu"><button class="btn btn-sm btn-danger" data-c="endall"><i class="fas fa-phone-slash"></i> ${L('إنهاء المكالمة للكل', 'End the call for everyone')}</button><button class="btn btn-sm" data-c="leave"><i class="fas fa-right-from-bracket"></i> ${L('خروج بس', 'Just leave')}</button><button class="btn btn-sm btn-ghost" data-c="endx">${L('رجوع', 'Back')}</button></div>` : ''}
     <div class="call-actions">
       <button class="btn btn-icon call-btn ${c.muted ? 'on' : ''}" data-c="mute" title="${c.muted ? L('افتح المايك', 'Unmute') : L('اقفل المايك', 'Mute')}"><i class="fas ${c.muted ? 'fa-microphone-slash' : 'fa-microphone'}"></i></button>
+      ${canRecord() && call.startedAt ? `<button class="btn btn-icon call-btn ${isRecording() ? 'rec-on' : ''}" data-c="rec" title="${isRecording() ? L('وقف التسجيل', 'Stop recording') : L('سجّل المكالمة', 'Record the call')}" ${recOther ? 'disabled' : ''}><i class="fas ${isRecording() ? 'fa-stop' : 'fa-circle'}"></i></button>` : ''}
       ${canShareScreen() ? `<button class="btn btn-icon call-btn ${c.screen ? 'on' : ''}" data-c="share" title="${c.screen ? L('وقف عرض شاشتك', 'Stop sharing your screen') : L(`اعرض شاشتك (${(call.sharing || []).length}/${MAX_SHARING})`, `Share your screen (${(call.sharing || []).length}/${MAX_SHARING})`)}"><i class="fas ${c.screen ? 'fa-display' : 'fa-desktop'}"></i></button>` : ''}
       ${(call.joined || []).includes(me) ? `<button class="btn btn-icon call-btn" data-c="add" title="${L('إضافة حد للمكالمة', 'Add someone to the call')}"><i class="fas fa-user-plus"></i></button>` : ''}
       <button class="btn btn-icon call-btn end" data-c="end" title="${L('إنهاء المكالمة', 'Hang up')}"><i class="fas fa-phone-slash"></i></button>
@@ -270,6 +276,7 @@ let started = false;
 export function startCallWatchers() {
   if (started) return; started = true;
   onCallState(() => { drawPanel(); drawStage(); liveSubs.forEach(cb => cb(live)); });
+  onRecState(() => drawPanel());
   watchMyCalls(rows => {
     live = rows;
     const me = session.email, mine = currentCall();

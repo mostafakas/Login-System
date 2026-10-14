@@ -7,6 +7,8 @@
  *   • welcome — emails a new employee their username + temporary password
  *   • renameCheck / rename — admin changes an account's username (login email); the site moves the data first
  *   • ping    — health check used by Settings → System
+ *   • recUp / recGet / trBuild — call recordings (parts of a few minutes) and the call transcript, kept in this
+ *               account's Drive; employees see one only after the admin approves their request
  *   • fileUp / fileGet — chat files, task attachments and payroll receipts are kept in this account's Google Drive
  *               (free 15 GB) instead of Firestore, so they no longer eat Firebase's free daily quota
  *
@@ -41,6 +43,9 @@ function doPost(e) {
       case 'rename': return json_(rename_(body));
       case 'fileUp': return json_(fileUp_(body));
       case 'fileGet': return json_(fileGet_(body));
+      case 'recUp': return json_(recUp_(body));
+      case 'recGet': return json_(recGet_(body));
+      case 'trBuild': return json_(trBuild_(body));
       default: return json_({ ok: false, error: 'unknown-action' });
     }
   } catch (err) {
@@ -253,6 +258,96 @@ function fileGet_(b) {
   return { ok: true, name: meta.name || file.getName(), mime: meta.mime || blob.getContentType(), data: Utilities.base64Encode(blob.getBytes()) };
 }
 
+// ---------------------------------------------------------------- call recordings & transcripts
+// Recordings come in parts of a few minutes (a crash loses at most one part). They and the transcript live in this
+// account's Drive; call_records/{callId} lists them. Only the admin, and people the admin approved, can open them.
+const REC_MAX_BYTES = 40 * 1024 * 1024;
+function callOf_(callId) { const c = getDoc_('calls/' + callId); if (!c) throw new Error('not-found'); return c; }
+function recFolder_(sub) {
+  const root = filesRoot_();
+  const it = root.getFoldersByName(sub);
+  return it.hasNext() ? it.next() : root.createFolder(sub);
+}
+function canSeeRec_(me, rec, kind) {
+  if (me.role === 'admin') return true;
+  const list = (rec && rec[kind === 'tr' ? 'viewTr' : 'viewRec']) || [];
+  return list.indexOf(me.email) >= 0;
+}
+function stamp_(ms) { return Utilities.formatDate(new Date(Number(ms) || Date.now()), 'Africa/Cairo', 'yyyy-MM-dd HH:mm'); }
+
+/** one part of a recording (webm, base64) from someone in the call */
+function recUp_(b) {
+  const me = caller_(b.idToken);
+  const callId = String(b.callId || '');
+  if (!callId || !b.data) throw new Error('bad-request');
+  const call = callOf_(callId);
+  if ((call.members || []).indexOf(me.email) < 0) throw new Error('forbidden');
+  const bytes = Utilities.base64Decode(String(b.data));
+  if (bytes.length > REC_MAX_BYTES) throw new Error('too-large');
+  const n = Math.max(1, Number(b.part) || 1);
+  const title = call.chatName || call.fromName || 'call';
+  const name = stamp_(call.atMs) + ' — ' + String(title).replace(/[\\/]/g, '_').slice(0, 60) + ' — part ' + n + '.webm';
+  let file;
+  try {
+    file = recFolder_('recordings').createFile(Utilities.newBlob(bytes, String(b.mime || 'video/webm').slice(0, 80), name));
+    file.setDescription('rec:' + callId + ':' + me.email);
+  } catch (e) { throw new Error('drive-error:' + String(e.message || e).slice(0, 200)); }
+  const rec = getDoc_('call_records/' + callId) || {};
+  const parts = (rec.parts || []).concat([{ id: file.getId(), n: n, by: me.email, startMs: Number(b.startMs) || 0, durMs: Number(b.durMs) || 0, size: bytes.length, video: !!b.video, mime: String(b.mime || 'video/webm').slice(0, 80) }]);
+  setDoc_('call_records/' + callId, {
+    callId: callId, chatId: call.chatId || '', title: String(title).slice(0, 120), group: !!call.group,
+    members: call.members || [], atMs: Number(call.atMs) || 0, startedAt: Number(call.startedAt) || 0, parts: parts, updatedMs: Date.now()
+  });
+  return { ok: true, id: file.getId() };
+}
+
+/** a recording part (kind 'rec', with part id) or the transcript (kind 'tr') for the admin / approved people */
+function recGet_(b) {
+  const me = caller_(b.idToken);
+  const callId = String(b.callId || ''), kind = b.kind === 'tr' ? 'tr' : 'rec';
+  const rec = getDoc_('call_records/' + callId);
+  if (!rec) throw new Error('not-found');
+  if (!canSeeRec_(me, rec, kind)) throw new Error('forbidden');
+  const id = kind === 'tr' ? ((rec.transcript || {}).id || '') : String(b.id || '');
+  if (kind === 'rec' && !(rec.parts || []).some(p => p.id === id)) throw new Error('not-found');
+  if (!id) throw new Error('not-found');
+  let file;
+  try { file = DriveApp.getFileById(id); } catch (e) { throw new Error('not-found'); }
+  const blob = file.getBlob();
+  if (kind === 'tr') return { ok: true, name: file.getName(), text: blob.getDataAsString('UTF-8') };
+  return { ok: true, name: file.getName(), mime: blob.getContentType(), data: Utilities.base64Encode(blob.getBytes()) };
+}
+
+/** Build (or rebuild) the transcript file of a call from what every participant's browser wrote down */
+function trBuild_(b) {
+  const me = caller_(b.idToken);
+  const callId = String(b.callId || '');
+  const call = callOf_(callId);
+  if ((call.members || []).indexOf(me.email) < 0 && me.role !== 'admin') throw new Error('forbidden');
+  const parts = listDocs_('call_transcripts/' + callId + '/parts');
+  const lines = [];
+  parts.forEach(p => (p.lines || []).forEach(l => { if (l && l.text) lines.push({ t: Number(l.t) || 0, by: p.by || '', name: p.name || p.by || '', text: String(l.text) }); }));
+  lines.sort((a, c) => a.t - c.t);
+  const title = call.chatName || ('مكالمة ' + (call.fromName || ''));
+  const who = {}; lines.forEach(l => { who[l.by] = l.name; });
+  const dur = call.startedAt && call.endedAt ? Math.round((call.endedAt - call.startedAt) / 60000) : 0;
+  const head = ['محضر مكالمة — ' + title, 'التاريخ: ' + stamp_(call.startedAt || call.atMs) + (dur ? ' · المدة حوالي ' + dur + ' دقيقة' : ''),
+    'اللي اتكلموا: ' + Object.keys(who).map(k => who[k]).join('، '), '(تفريغ تلقائي من المتصفح — ممكن يكون فيه أخطاء)', ''.padEnd(40, '—'), ''];
+  const body = lines.map(l => '[' + Utilities.formatDate(new Date(l.t), 'Africa/Cairo', 'HH:mm:ss') + '] ' + l.name + ': ' + l.text);
+  const text = '\uFEFF' + head.concat(body.length ? body : ['(مفيش كلام اتسجل)']).join('\n');
+  const rec = getDoc_('call_records/' + callId) || {};
+  const name = stamp_(call.atMs) + ' — ' + String(title).replace(/[\\/]/g, '_').slice(0, 60) + ' — transcript.txt';
+  let file = null;
+  if (rec.transcript && rec.transcript.id) { try { file = DriveApp.getFileById(rec.transcript.id); file.setContent(text); } catch (e) { file = null; } }
+  if (!file) { file = recFolder_('transcripts').createFile(name, text, MimeType.PLAIN_TEXT); file.setDescription('tr:' + callId); }
+  setDoc_('call_records/' + callId, {
+    callId: callId, chatId: call.chatId || '', title: String(title).slice(0, 120), group: !!call.group,
+    members: call.members || [], atMs: Number(call.atMs) || 0, startedAt: Number(call.startedAt) || 0, endedAt: Number(call.endedAt) || 0,
+    transcript: { id: file.getId(), lines: lines.length, builtMs: Date.now() }, updatedMs: Date.now()
+  });
+  return { ok: true, lines: lines.length };
+}
+
 // ---------------------------------------------------------------- identity & Firestore (service account)
 function caller_(idToken) {
   if (!idToken) throw new Error('unauthenticated:no-token');
@@ -378,16 +473,40 @@ function fromValue_(v) {
   return null;
 }
 function fromFields_(f) { const o = {}; Object.keys(f).forEach(k => { o[k] = fromValue_(f[k]); }); return o; }
+function toValue_(v) {
+  if (typeof v === 'boolean') return { booleanValue: v };
+  if (typeof v === 'number') return Number.isInteger(v) ? { integerValue: String(v) } : { doubleValue: v };
+  if (v === null || v === undefined) return { nullValue: null };
+  if (Array.isArray(v)) return { arrayValue: { values: v.map(toValue_) } };
+  if (typeof v === 'object') return { mapValue: { fields: toFields_(v) } };
+  return { stringValue: String(v) };
+}
 function toFields_(o) {
   const f = {};
-  Object.keys(o).forEach(k => {
-    const v = o[k];
-    if (typeof v === 'boolean') f[k] = { booleanValue: v };
-    else if (typeof v === 'number') f[k] = Number.isInteger(v) ? { integerValue: String(v) } : { doubleValue: v };
-    else if (v === null) f[k] = { nullValue: null };
-    else f[k] = { stringValue: String(v) };
-  });
+  Object.keys(o).forEach(k => { f[k] = toValue_(o[k]); });
   return f;
+}
+/** create or update (only the given fields) */
+function setDoc_(path, data) {
+  const mask = Object.keys(data).map(k => 'updateMask.fieldPaths=' + encodeURIComponent('`' + k + '`')).join('&');
+  const r = UrlFetchApp.fetch(FS_BASE + fsPath_(path) + '?' + mask, {
+    method: 'patch', contentType: 'application/json', headers: { Authorization: 'Bearer ' + token_() },
+    payload: JSON.stringify({ fields: toFields_(data) }), muteHttpExceptions: true
+  });
+  if (r.getResponseCode() >= 300) throw new Error('firestore set ' + r.getResponseCode() + ' ' + r.getContentText().slice(0, 200));
+}
+/** all documents of a (sub)collection */
+function listDocs_(path) {
+  const out = []; let page = '';
+  do {
+    const r = UrlFetchApp.fetch(FS_BASE + fsPath_(path) + '?pageSize=300' + (page ? '&pageToken=' + encodeURIComponent(page) : ''), { headers: { Authorization: 'Bearer ' + token_() }, muteHttpExceptions: true });
+    if (r.getResponseCode() === 404) return out;
+    if (r.getResponseCode() >= 300) throw new Error('firestore list ' + r.getResponseCode() + ' ' + r.getContentText().slice(0, 200));
+    const j = JSON.parse(r.getContentText());
+    (j.documents || []).forEach(d => out.push(Object.assign({ id: d.name.split('/').pop() }, fromFields_(d.fields || {}))));
+    page = j.nextPageToken || '';
+  } while (page);
+  return out;
 }
 
 /** OAuth token for the Firebase service account (cached ~50 minutes). */

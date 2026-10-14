@@ -389,7 +389,7 @@ service cloud.firestore {
           && request.resource.data.keys().hasOnly(['by', 'type', 'text', 'file', 'at', 'mentions', 'tasks', 'replyTo', 'call'])
           // a voice call written into the chat when it ends
           && (!('call' in request.resource.data) || (request.resource.data.type == 'call' && request.resource.data.call is map
-              && request.resource.data.call.keys().hasOnly(['id', 'outcome', 'dur', 'group', 'with'])
+              && request.resource.data.call.keys().hasOnly(['id', 'outcome', 'dur', 'group', 'with', 'rec', 'tr'])
               && request.resource.data.call.outcome in ['done', 'missed', 'declined']))
           // a reply keeps a short quote of the message it answers
           && (!('replyTo' in request.resource.data) || (request.resource.data.replyTo is map
@@ -487,7 +487,10 @@ service cloud.firestore {
       // Someone talking may invite more people (the invite list only grows): from a group chat only its members,
       // from a 1:1 call any colleague — that call then becomes a call of several people.
       allow update: if active() && me() in resource.data.members
-        && onlyChanged(['joined', 'beat', 'status', 'startedAt', 'live', 'liveFor', 'outcome', 'endedAt', 'endedBy', 'members', 'invitedAt', 'invitedBy', 'group', 'declinedAt', 'leftAt', 'sharing'])
+        && onlyChanged(['joined', 'beat', 'status', 'startedAt', 'live', 'liveFor', 'outcome', 'endedAt', 'endedBy', 'members', 'invitedAt', 'invitedBy', 'group', 'declinedAt', 'leftAt', 'sharing', 'recBy', 'rec', 'tr'])
+        // recording: one at a time — you can start it unless someone still in the call is recording
+        && (!('recBy' in affected()) || nc().recBy == '' || (nc().recBy == me()
+            && (resource.data.get('recBy', '') in ['', me()] || !(resource.data.get('recBy', '') in resource.data.joined))))
         // screen sharing: at most 3 at once, and you can only put yourself on the list
         && (!('sharing' in affected()) || (nc().sharing is list && nc().sharing.size() <= 3
             && nc().sharing.toSet().difference(resource.data.get('sharing', []).toSet()).hasOnly([me()])))
@@ -508,6 +511,28 @@ service cloud.firestore {
           && request.resource.data.kind in ['offer', 'answer', 'ice'] && request.resource.data.data is string && request.resource.data.data.size() < 30000;
         allow delete: if active() && (resource.data.to == me() || resource.data.from == me());
       }
+    }
+
+    // ---------- call recordings & transcripts ----------
+    // what each person's browser wrote down during a call (only the admin reads it; the Apps Script builds the file)
+    match /call_transcripts/{callId}/parts/{p} {
+      allow create: if active() && request.resource.data.by == me() && me() in callDoc(callId).members
+        && request.resource.data.lines is list && request.resource.data.lines.size() <= 300;
+      allow read, delete: if isAdmin();
+    }
+    // the recordings / transcript of a call (written by the Apps Script); the admin decides who else may open them
+    match /call_records/{id} {
+      allow read: if isAdmin() || (active() && (me() in resource.data.get('viewRec', []) || me() in resource.data.get('viewTr', [])));
+      allow write: if isAdmin();
+    }
+    // "may I see the recording / transcript of that call?" → the admin approves or rejects
+    match /record_requests/{id} {
+      allow read: if isAdmin() || (active() && resource.data.by == me());
+      allow create: if active() && request.resource.data.by == me() && request.resource.data.status == 'pending'
+        && request.resource.data.kinds is list && request.resource.data.kinds.size() > 0 && request.resource.data.kinds.hasOnly(['rec', 'tr'])
+        && request.resource.data.reason is string && request.resource.data.reason.size() <= 500;
+      allow update: if isAdmin();
+      allow delete: if isAdmin() || (active() && resource.data.by == me() && resource.data.status == 'pending');
     }
 
     // ---------- meeting invitations ----------

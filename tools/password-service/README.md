@@ -61,6 +61,12 @@ Firebase Console ← **Authentication ← Settings ← Authorized domains ← Ad
 ## تحديث الكود بعدين
 Deploy ← **Manage deployments** ← ✏️ ← Version: **New version** ← Deploy. الرابط مش بيتغير.
 
+## تسجيل المكالمات والمحاضر
+- التسجيلات بتتحفظ في Drive بتاع الحساب ده في فولدر **AL MASTER HR files (do not share) ← recordings**، والمحاضر في **transcripts**.
+- **ما تشيرش الفولدرات دي.** محدش يقدر يفتح تسجيل أو محضر غير الأدمن، أو اللي الأدمن وافق على طلبه من صفحة «التسجيلات والمحاضر».
+- لو جيت تحدّث الكود: الصق آخر `Code.gs` ← Deploy ← Manage deployments ← **New version**. فيه 3 عمليات جديدة: `recUp` و`recGet` و`trBuild`.
+- ساعة فيها عرض شاشة بتاخد حوالي 300 ميجا، والصوت لوحده أقل بكتير.
+
 ## تفعيل تخزين الملفات على Drive (مرة واحدة)
 1. الصق آخر `Code.gs` و`appsscript.json` (فيه صلاحية Drive جديدة).
 2. من المحرر اختار `setupCheck` ← **Run** ← هيطلب صلاحية **Google Drive** ← **Allow**. لازم يظهر في الـ log `"files": true`.

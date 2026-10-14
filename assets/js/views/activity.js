@@ -71,7 +71,8 @@ const ACTIONS = {
   'chat.ring': ['رنّ على زميل', 'Rang a colleague', 'fa-phone-volume', 'warn'],
   'call.start': ['بدأ مكالمة صوتية', 'Started a voice call', 'fa-phone', 'ok'],
   'call.join': ['دخل مكالمة صوتية', 'Joined a voice call', 'fa-phone', 'ok'],
-  'call.add': ['ضاف ناس لمكالمة', 'Added people to a call', 'fa-user-plus', 'info']
+  'call.add': ['ضاف ناس لمكالمة', 'Added people to a call', 'fa-user-plus', 'info'],
+  'call.share': ['عرض شاشته في مكالمة', 'Shared their screen in a call', 'fa-display', 'info']
 };
 const catOf = (a) => a.startsWith('status') || a.startsWith('meeting.') ? 'attendance' : a.startsWith('auth.') || a.startsWith('profile.') ? 'account' : a.startsWith('request.') ? 'requests'
   : a.startsWith('user.') || a.startsWith('balance.') ? 'hr' : a.startsWith('settings.') ? 'settings' : a.startsWith('payroll.') ? 'payroll' : a.startsWith('chat.') ? 'chat' : 'hr';

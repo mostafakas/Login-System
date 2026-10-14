@@ -1400,3 +1400,27 @@ html[dir="rtl"] .mon-metric.on { box-shadow: inset -3px 0 0 var(--brand); }
 .call-hint { display: flex; align-items: center; gap: 8px; width: 100%; text-align: start; font: inherit; font-size: 12px; color: #ffd27a; background: rgba(255,180,0,.12); border: 0; border-radius: 10px; padding: 6px 10px; cursor: pointer; }
 div.call-hint { cursor: default; }
 .cp-note { color: var(--warn) !important; font-weight: 700; }
+
+/* ---------- screen sharing (several screens at once) ---------- */
+.call-sharing { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 700; color: #9ff0c4; background: rgba(16,185,129,.14); border-radius: 10px; padding: 6px 10px; }
+.call-sharing .btn { margin-inline-start: auto; background: rgba(255,255,255,.14); color: #fff; border-color: transparent; }
+.screen-stage { position: fixed; z-index: 94; top: 76px; inset-inline-end: 24px; width: min(980px, calc(100vw - var(--rail-w, var(--sidebar-w)) - 72px)); max-height: calc(100dvh - 120px); background: #0b0f2a; color: #fff; border-radius: 18px; box-shadow: 0 24px 70px rgba(0,0,0,.45); display: flex; flex-direction: column; overflow: hidden; animation: popin .2s ease; }
+.screen-head { display: flex; align-items: center; gap: 10px; padding: 8px 12px; font-size: 13px; background: rgba(255,255,255,.06); }
+.screen-head .btn-ghost { color: #fff; }
+.screen-grid { display: grid; gap: 6px; padding: 6px; min-height: 0; flex: 1; overflow: auto; }
+.screen-grid.n1 { grid-template-columns: 1fr; }
+.screen-grid.n2 { grid-template-columns: 1fr 1fr; }
+.screen-grid.n3 { grid-template-columns: 1fr 1fr; }
+.screen-grid.n3:not(.focused) .screen-tile:first-child { grid-column: 1 / -1; }
+.screen-grid.focused { grid-template-columns: 1fr 180px; grid-auto-rows: min-content; }
+.screen-grid.focused .screen-tile.main { grid-column: 1; grid-row: 1 / span 3; }
+.screen-grid.focused .screen-tile:not(.main) { grid-column: 2; min-height: 100px; }
+.screen-grid.focused .screen-tile:not(.main) video { max-height: 120px; }
+.screen-tile { position: relative; background: #000; border-radius: 12px; overflow: hidden; cursor: zoom-in; min-height: 120px; display: flex; }
+.screen-tile.main { cursor: zoom-out; }
+.screen-tile video { width: 100%; height: 100%; max-height: calc(100dvh - 190px); object-fit: contain; display: block; }
+.screen-tile:fullscreen video { max-height: none; }
+.screen-name { position: absolute; bottom: 6px; inset-inline-start: 6px; display: inline-flex; align-items: center; gap: 6px; background: rgba(0,0,0,.6); color: #fff; font-size: 12px; font-weight: 700; padding: 3px 8px; border-radius: 999px; }
+.screen-stage.collapsed { width: auto; }
+.screen-stage.collapsed .screen-grid { display: none; }
+@media (max-width: 900px) { .screen-stage { inset-inline: 8px; width: auto; top: 64px; max-height: 55dvh; } .screen-grid.focused { grid-template-columns: 1fr; } .screen-grid.focused .screen-tile:not(.main) { display: none; } }

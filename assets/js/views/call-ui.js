@@ -11,7 +11,8 @@ import { person, nameOf, activePeople } from '../services/directory.js';
 import { play } from '../core/sounds.js';
 import {
   startCall, joinCall, declineCall, hangUp, setMuted, currentCall, onCallState, watchMyCalls, dropStale, isTalking,
-  lastEndedCall, fmtDur, RING_FOR, MAX_IN_CALL, touchedHere, addToCall, invitedAtOf, endForAll, myBeatStale
+  lastEndedCall, fmtDur, RING_FOR, MAX_IN_CALL, touchedHere, addToCall, invitedAtOf, endForAll, myBeatStale,
+  shareScreen, stopScreen, canShareScreen, screensNow, MAX_SHARING
 } from '../services/calls.js';
 
 const who = (e) => person(e) || { email: e, name: nameOf(e) };
@@ -150,6 +151,7 @@ function drawPanel() {
       else if (a === 'perm') { try { Notification.requestPermission().then(() => drawPanel()); } catch {} }
       else if (a === 'min') { minimized = !minimized; drawPanel(); }
       else if (a === 'add') addPeople();
+      else if (a === 'share') { const cc = currentCall(); (cc && cc.screen ? stopScreen() : shareScreen()).catch(toastErr); }
       else if (a === 'chat') location.hash = `#/chat/${encodeURIComponent((currentCall() || {}).call.chatId)}`;
     });
   }
@@ -184,11 +186,13 @@ function drawPanel() {
       <button class="btn btn-ghost btn-icon btn-sm" data-c="min" title="${minimized ? L('كبّر', 'Expand') : L('صغّر', 'Minimize')}"><i class="fas ${minimized ? 'fa-up-right-and-down-left-from-center' : 'fa-down-left-and-up-right-to-center'}"></i></button></div>
     ${minimized ? '' : `<div class="call-people">${people}${ringingPpl}</div>
       ${failed ? `<div class="call-warn"><i class="fas fa-triangle-exclamation"></i> ${L('الاتصال مش راضي يتوصل — غالباً شبكة الشركة أو النت بيمنعه. جرّب نت تاني.', 'The connection fails — the network probably blocks it. Try another connection.')}</div>` : ''}
+      ${c.screen ? `<div class="call-sharing"><i class="fas fa-display"></i> ${L('إنت بتعرض شاشتك', 'You are sharing your screen')} <button class="btn btn-sm" data-c="share">${L('وقف', 'Stop')}</button></div>` : ''}
       ${perm === 'default' ? `<button class="call-hint" data-c="perm"><i class="fas fa-bell"></i> ${L('فعّل إشعارات الويندوز عشان المكالمات توصلك والسيستم في الخلفية', 'Turn on desktop notifications so calls reach you in the background')}</button>` : ''}
       ${perm === 'denied' ? `<div class="call-hint"><i class="fas fa-bell-slash"></i> ${L('إشعارات الويندوز مقفولة للموقع ده — افتحها من علامة القفل جنب العنوان', 'Desktop notifications are blocked for this site — allow them from the lock icon')}</div>` : ''}`}
     ${endMenu ? `<div class="call-endmenu"><button class="btn btn-sm btn-danger" data-c="endall"><i class="fas fa-phone-slash"></i> ${L('إنهاء المكالمة للكل', 'End the call for everyone')}</button><button class="btn btn-sm" data-c="leave"><i class="fas fa-right-from-bracket"></i> ${L('خروج بس', 'Just leave')}</button><button class="btn btn-sm btn-ghost" data-c="endx">${L('رجوع', 'Back')}</button></div>` : ''}
     <div class="call-actions">
       <button class="btn btn-icon call-btn ${c.muted ? 'on' : ''}" data-c="mute" title="${c.muted ? L('افتح المايك', 'Unmute') : L('اقفل المايك', 'Mute')}"><i class="fas ${c.muted ? 'fa-microphone-slash' : 'fa-microphone'}"></i></button>
+      ${canShareScreen() ? `<button class="btn btn-icon call-btn ${c.screen ? 'on' : ''}" data-c="share" title="${c.screen ? L('وقف عرض شاشتك', 'Stop sharing your screen') : L(`اعرض شاشتك (${(call.sharing || []).length}/${MAX_SHARING})`, `Share your screen (${(call.sharing || []).length}/${MAX_SHARING})`)}"><i class="fas ${c.screen ? 'fa-display' : 'fa-desktop'}"></i></button>` : ''}
       ${(call.joined || []).includes(me) ? `<button class="btn btn-icon call-btn" data-c="add" title="${L('إضافة حد للمكالمة', 'Add someone to the call')}"><i class="fas fa-user-plus"></i></button>` : ''}
       <button class="btn btn-icon call-btn end" data-c="end" title="${L('إنهاء المكالمة', 'Hang up')}"><i class="fas fa-phone-slash"></i></button>
     </div>`;
@@ -219,11 +223,53 @@ async function addPeople() {
   } catch (e) { toastErr(e); }
 }
 
+// ---------------------------------------------------------------- the screens being shown (several at once)
+let stage = null, focus = '', collapsed = false;
+const tiles = new Map();   // email → { el, video, stream }
+function drawStage() {
+  const list = currentCall() ? screensNow() : [];
+  if (!list.length) { if (stage) { stage.remove(); stage = null; } tiles.clear(); focus = ''; collapsed = false; return; }
+  if (!stage) {
+    stage = document.createElement('div'); stage.className = 'screen-stage';
+    stage.innerHTML = `<div class="screen-head"><i class="fas fa-display"></i><b class="grow" id="ss-title"></b>
+      <button class="btn btn-ghost btn-icon btn-sm" data-s="full" title="${L('ملء الشاشة', 'Full screen')}"><i class="fas fa-expand"></i></button>
+      <button class="btn btn-ghost btn-icon btn-sm" data-s="min" title="${L('صغّر / كبّر', 'Collapse / expand')}"><i class="fas fa-window-minimize"></i></button></div>
+      <div class="screen-grid" id="ss-grid"></div>`;
+    document.body.appendChild(stage);
+    stage.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-s]');
+      if (b && b.dataset.s === 'min') { collapsed = !collapsed; drawStage(); return; }
+      if (b && b.dataset.s === 'full') { const t = focus && tiles.get(focus); const el = t ? t.el : stage; (el.requestFullscreen ? el.requestFullscreen() : Promise.reject()).catch(() => {}); return; }
+      const tile = e.target.closest('[data-tile]');
+      if (tile) { focus = focus === tile.dataset.tile ? '' : tile.dataset.tile; drawStage(); }
+    });
+    stage.addEventListener('dblclick', (e) => { const tile = e.target.closest('[data-tile]'); if (tile && tile.requestFullscreen) tile.requestFullscreen().catch(() => {}); });
+  }
+  const grid = stage.querySelector('#ss-grid');
+  const emails = list.map(x => x.email);
+  [...tiles.keys()].forEach(e => { if (!emails.includes(e)) { tiles.get(e).el.remove(); tiles.delete(e); } });
+  list.forEach(({ email, stream }) => {
+    let t = tiles.get(email);
+    if (!t) {
+      const el = document.createElement('div'); el.className = 'screen-tile'; el.dataset.tile = email;
+      el.innerHTML = `<video autoplay playsinline muted></video><span class="screen-name">${avatar(who(email), 'xs')} ${esc(L(`شاشة ${String(nameOf(email)).split(' ')[0]}`, `${String(nameOf(email)).split(' ')[0]}'s screen`))}</span>`;
+      t = { el, video: el.querySelector('video'), stream: null };
+      tiles.set(email, t); grid.appendChild(el);
+    }
+    if (t.stream !== stream) { t.stream = stream; t.video.srcObject = stream; t.video.play().catch(() => {}); }
+  });
+  if (focus && !tiles.has(focus)) focus = '';
+  stage.classList.toggle('collapsed', collapsed);
+  grid.className = `screen-grid n${Math.min(list.length, 3)} ${focus ? 'focused' : ''}`;
+  tiles.forEach((t, e) => t.el.classList.toggle('main', e === focus));
+  stage.querySelector('#ss-title').textContent = list.length > 1 ? L(`${list.length} شاشات معروضة — اضغط على شاشة عشان تكبّرها`, `${list.length} screens — click one to enlarge`) : L(`${String(nameOf(list[0].email)).split(' ')[0]} بيعرض شاشته`, `${String(nameOf(list[0].email)).split(' ')[0]} is sharing`);
+}
+
 // ---------------------------------------------------------------- started once after sign-in
 let started = false;
 export function startCallWatchers() {
   if (started) return; started = true;
-  onCallState(() => { drawPanel(); liveSubs.forEach(cb => cb(live)); });
+  onCallState(() => { drawPanel(); drawStage(); liveSubs.forEach(cb => cb(live)); });
   watchMyCalls(rows => {
     live = rows;
     const me = session.email, mine = currentCall();

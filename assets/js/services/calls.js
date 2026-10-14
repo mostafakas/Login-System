@@ -13,6 +13,7 @@ import { nameOf } from './directory.js';
 import { track } from './activity.js';
 
 export const MAX_IN_CALL = 6;           // people talking at once in a group call
+export const MAX_SHARING = 3;           // screens shown at the same time
 export const RING_FOR = 45000;          // nobody answered by then → missed
 const BEAT_EVERY = 15000, STALE = 50000;  // "still in the call" heartbeat; silent longer than STALE = gone
 const STUN = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }];
@@ -162,7 +163,7 @@ export async function hangUp(reason = '') {
       const outcome = d.startedAt ? 'done' : (reason === 'missed' ? 'missed' : 'cancelled');
       tx.update(ref, { live: false, liveFor: [], status: 'ended', outcome, joined: left, beat, endedAt: now(), endedBy: me });
       log = { id: c.id, outcome: outcome === 'cancelled' ? 'missed' : outcome, dur: d.startedAt ? Math.round((now() - d.startedAt) / 1000) : 0, group: !!d.group, with: d.group ? (d.members || []) : [] };
-    } else tx.update(ref, { joined: left, beat, [`leftAt.${ek(me)}`]: now() });
+    } else tx.update(ref, { joined: left, beat, [`leftAt.${ek(me)}`]: now(), sharing: (d.sharing || []).filter(e => e !== me && left.includes(e)) });
   }).catch(e => console.warn('hang up', e && e.message));
   if (log) postCallLog(c.call.chatId, log).catch(e => console.warn('call log', e && e.message));
 }
@@ -205,6 +206,9 @@ function enter(id, call, stream, offerTo) {
     if (!d || !d.live) { if (d) cur.call = { ...d, id }; teardown(true); return; }
     cur.call = { ...d, id };
     if (d.startedAt && cur.ringTimer) { clearTimeout(cur.ringTimer); cur.ringTimer = 0; }
+    const nShare = (d.sharing || []).length;
+    if (cur.screen && nShare !== cur.shareN) cur.peers.forEach(tuneScreen);   // more / fewer screens: adjust the quality
+    cur.shareN = nShare;
     const alive = (d.joined || []).filter(e => now() - Number((d.beat || {})[ek(e)] || 0) < STALE);
     [...cur.peers.keys()].forEach(e => { if (!alive.includes(e)) closePeer(e); });   // left / dropped
     if (!d.group && d.startedAt && !alive.some(e => e !== me)) { hangUp(); return; }   // the other side is gone
@@ -216,7 +220,7 @@ function enter(id, call, stream, offerTo) {
     const c = cur.call || {};
     const upd = { [`beat.${ek(me)}`]: now() };
     const dead = (c.joined || []).filter(e => e !== me && now() - Number((c.beat || {})[ek(e)] || 0) > STALE);
-    if (dead.length) upd.joined = (c.joined || []).filter(e => !dead.includes(e));
+    if (dead.length) { upd.joined = (c.joined || []).filter(e => !dead.includes(e)); upd.sharing = (c.sharing || []).filter(e => !dead.includes(e)); }
     updateDoc(doc(db, 'calls', id), upd).catch(() => {});
   };
   cur.timers.push(setInterval(beat, BEAT_EVERY));
@@ -246,6 +250,7 @@ function teardown(remoteEnded = false) {
   c.unsubs.forEach(u => { try { u(); } catch {} });
   c.peers.forEach((_, e) => closePeerOf(c, e));
   c.stream.getTracks().forEach(t => t.stop());
+  if (c.screen) c.screen.getTracks().forEach(t => t.stop());
   // handshake messages nobody picked up (they left first): don't leave them behind
   setTimeout(() => c.sent.forEach(sid => deleteDoc(doc(db, `calls/${c.id}/signals`, sid)).catch(() => {})), 1500);
   try { c.actx && c.actx.close(); } catch {}
@@ -262,9 +267,13 @@ async function newPeer(email) {
   const audio = document.createElement('audio');
   audio.autoplay = true; audio.setAttribute('playsinline', '');
   (document.getElementById('call-audio') || document.body.appendChild(Object.assign(document.createElement('div'), { id: 'call-audio', hidden: true }))).appendChild(audio);
-  const p = { pc, audio, state: 'connecting', iceQ: [], iceOut: [], iceTimer: 0, remoteSet: false, born: now(), initiator: false, tries: 0 };
+  const p = { pc, audio, state: 'connecting', iceQ: [], iceOut: [], iceTimer: 0, remoteSet: false, born: now(), initiator: false, tries: 0, screen: null };
   cur.stream.getTracks().forEach(t => pc.addTrack(t, cur.stream));
-  pc.ontrack = (ev) => { audio.srcObject = ev.streams[0]; audio.play().catch(() => {}); addMeter(email, ev.streams[0]); };
+  pc.ontrack = (ev) => {
+    if (ev.track.kind === 'video') { p.screen = new MediaStream([ev.track]); ev.track.onunmute = () => emit(); emit(); return; }   // their screen (when they share)
+    const st = ev.streams[0] || new MediaStream([ev.track]);
+    audio.srcObject = st; audio.play().catch(() => {}); addMeter(email, st);
+  };
   pc.onicecandidate = (ev) => {
     if (!ev.candidate) return;
     p.iceOut.push(ev.candidate.toJSON());
@@ -297,9 +306,24 @@ async function send(to, kind, data) {
   cur.sent.push(ref.id);
   await setDoc(ref, { from: session.email, to, kind, data: JSON.stringify(data), atMs: now(), at: serverTimestamp() });
 }
+/** the video lane of a connection (for screen sharing) */
+const videoLane = (p) => p.pc.getTransceivers().find(t => (t.receiver && t.receiver.track && t.receiver.track.kind) === 'video');
+async function sendScreenTo(p) {
+  const t = videoLane(p); if (!t) return;
+  try { await t.sender.replaceTrack(cur && cur.screen ? cur.screen.getVideoTracks()[0] : null); } catch (e) { console.warn('screen', e && e.message); }
+  tuneScreen(p);
+}
+function tuneScreen(p) {
+  const t = videoLane(p); if (!t || !t.sender) return;
+  // fewer bits each when several screens are on, so nobody's connection chokes
+  const n = Math.max(1, ((cur && cur.call && cur.call.sharing) || []).length);
+  try { const prm = t.sender.getParameters(); if (!prm.encodings || !prm.encodings.length) prm.encodings = [{}]; prm.encodings[0].maxBitrate = n > 1 ? 650000 : 1200000; prm.encodings[0].maxFramerate = n > 1 ? 10 : 15; t.sender.setParameters(prm).catch(() => {}); } catch {}
+}
 async function call1(email, tries = 0) {
   const p = await newPeer(email);
   p.initiator = true; p.tries = tries;
+  p.pc.addTransceiver('video', { direction: 'sendrecv' });
+  if (cur && cur.screen) sendScreenTo(p);
   const offer = await p.pc.createOffer({ offerToReceiveAudio: true });
   await p.pc.setLocalDescription(offer);
   await send(email, 'offer', { type: offer.type, sdp: offer.sdp });
@@ -312,6 +336,8 @@ async function onSignal(sig) {
     if (cur.peers.has(from)) closePeer(from);   // they reconnected
     const p = await newPeer(from);
     await p.pc.setRemoteDescription(data); p.remoteSet = true;
+    const vt = videoLane(p); if (vt) vt.direction = 'sendrecv';   // so I can show my screen to them too, later
+    if (cur && cur.screen) await sendScreenTo(p);
     const ans = await p.pc.createAnswer();
     await p.pc.setLocalDescription(ans);
     await send(from, 'answer', { type: ans.type, sdp: ans.sdp });
@@ -330,6 +356,59 @@ async function onSignal(sig) {
 function flushIce(p) { p.iceQ.splice(0).forEach(c => p.pc.addIceCandidate(c).catch(() => {})); }
 
 // ---------------------------------------------------------------- mute + who is talking
+// ---------------------------------------------------------------- screen sharing (up to MAX_SHARING at once)
+export const canShareScreen = () => !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
+export async function shareScreen() {
+  if (!cur) return;
+  if (!canShareScreen()) throw userError('عرض الشاشة متاح من الكمبيوتر بس (Chrome / Edge / Firefox).', 'Screen sharing works from a computer only (Chrome / Edge / Firefox).');
+  if (cur.screen) return;
+  const sharing = cur.call.sharing || [];
+  if (sharing.length >= MAX_SHARING) throw userError(`فيه ${MAX_SHARING} بيعرضوا شاشتهم دلوقتي — ده الحد.`, `${MAX_SHARING} people are sharing already — that is the limit.`);
+  let screen;
+  try { screen = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 15 }, audio: false }); }
+  catch { return; }   // the person closed the picker
+  const track = screen.getVideoTracks()[0];
+  try { track.contentHint = 'detail'; } catch {}
+  const id = cur.id, me = session.email;
+  try {
+    await runTransaction(db, async (tx) => {
+      const ref = doc(db, 'calls', id);
+      const s = await tx.get(ref); const d = s.exists() ? s.data() : null;
+      if (!d || !d.live) throw userError('المكالمة خلصت.', 'The call has ended.');
+      const list = (d.sharing || []).filter(e => e !== me && (d.joined || []).includes(e));
+      if (list.length >= MAX_SHARING) throw userError(`فيه ${MAX_SHARING} بيعرضوا شاشتهم دلوقتي — ده الحد.`, `${MAX_SHARING} people are sharing already — that is the limit.`);
+      tx.update(ref, { sharing: [...list, me] });
+    });
+  } catch (e) { screen.getTracks().forEach(t => t.stop()); throw e; }
+  if (!cur || cur.id !== id) { screen.getTracks().forEach(t => t.stop()); return; }
+  cur.screen = screen;
+  track.onended = () => stopScreen();   // the browser's own "Stop sharing" bar
+  await Promise.all([...cur.peers.values()].map(sendScreenTo));
+  track_('call.share');
+  emit();
+}
+export async function stopScreen() {
+  if (!cur || !cur.screen) return;
+  const screen = cur.screen, id = cur.id, me = session.email;
+  cur.screen = null;
+  screen.getTracks().forEach(t => { t.onended = null; t.stop(); });
+  await Promise.all([...cur.peers.values()].map(sendScreenTo));
+  await runTransaction(db, async (tx) => {
+    const ref = doc(db, 'calls', id);
+    const s = await tx.get(ref); const d = s.exists() ? s.data() : null;
+    if (!d || !d.live) return;
+    tx.update(ref, { sharing: (d.sharing || []).filter(e => e !== me) });
+  }).catch(() => {});
+  emit();
+}
+const track_ = (a) => { try { track(a, { target: (cur && cur.call && (cur.call.chatName || '')) || '' }); } catch {} };
+/** the screens shown right now (not mine): [{ email, stream }] */
+export function screensNow() {
+  if (!cur) return [];
+  const on = (cur.call && cur.call.sharing) || [];
+  return on.filter(e => e !== session.email).map(e => ({ email: e, stream: (cur.peers.get(e) || {}).screen || null })).filter(x => x.stream);
+}
+
 export function setMuted(on) {
   if (!cur) return;
   cur.muted = !!on;
@@ -385,6 +464,6 @@ export async function dropStale(call) {
     const beat = { ...(d.beat || {}) }; delete beat[ek(me)];
     const left = (d.joined || []).filter(e => e !== me);
     if (!d.group || !left.length) tx.update(ref, { live: false, liveFor: [], status: 'ended', outcome: d.startedAt ? 'done' : 'missed', joined: left, beat, endedAt: now(), endedBy: me });
-    else tx.update(ref, { joined: left, beat, [`leftAt.${ek(me)}`]: now() });
+    else tx.update(ref, { joined: left, beat, [`leftAt.${ek(me)}`]: now(), sharing: (d.sharing || []).filter(e => e !== me && left.includes(e)) });
   }).catch(() => {});
 }

@@ -158,23 +158,54 @@ export const canTranscribe = () => !!SR;
 let tr = null;   // { callId, sr, lines, timer, on }
 function trStart(callId) {
   if (!SR || tr) return;
-  const sr = new SR();
-  sr.lang = 'ar-EG'; sr.continuous = true; sr.interimResults = false; sr.maxAlternatives = 1;
-  tr = { callId, sr, lines: [], on: true, running: false, flagged: false, fails: 0 };
+  tr = { callId, sr: null, lines: [], on: true, running: false, flagged: false, fails: 0, pending: '', pendingAt: 0, lastEvent: now() };
   const t = tr;
-  sr.onresult = (e) => {
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      const r = e.results[i];
-      if (r.isFinal) { const text = String(r[0].transcript || '').trim(); if (text) t.lines.push({ t: now(), text: text.slice(0, 1000) }); }
-    }
-  };
-  sr.onerror = (e) => { if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { t.on = false; t.blocked = true; emit(); } else t.fails++; };
-  sr.onend = () => { t.running = false; if (t.on && tr === t) setTimeout(() => run(t), t.fails > 5 ? 3000 : 250); };   // it stops by itself every so often
   t.timer = setInterval(() => flush(t), FLUSH_MS + Math.round(Math.random() * 4000));   // spread out, so the people in a call don't all write at once
+  // Chrome's recognizer sometimes goes quiet without ending: give it a fresh start after a long silence
+  t.watch = setInterval(() => { if (t.on && t.running && !t.paused && now() - t.lastEvent > 45000) { t.lastEvent = now(); try { t.sr.stop(); } catch {} } }, 10000);
   run(t);
   emit();
 }
-function run(t) { if (!t.on || t.running || t.paused) return; try { t.sr.start(); t.running = true; } catch {} }
+/** keep a phrase: the final text, or (when the recognizer stopped half-way) what it had heard so far */
+function keep(t, text, at) {
+  const x = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!x) return;
+  const last = t.lines[t.lines.length - 1];
+  if (last && last.text === x && Math.abs(last.t - at) < 5000) return;   // the same phrase twice (a restart)
+  t.lines.push({ t: at || now(), text: x.slice(0, 1000) });
+}
+/** a fresh recognizer each time: Chrome stops it after silences / every minute or so, and words said in the gap are lost
+ *  — so it restarts at once, and whatever was heard but not finished is kept instead of being dropped */
+function run(t) {
+  if (!t.on || t.running || t.paused || tr !== t) return;
+  const sr = new SR();
+  sr.lang = 'ar-EG'; sr.continuous = true; sr.interimResults = true; sr.maxAlternatives = 1;
+  sr.onresult = (e) => {
+    t.lastEvent = now(); t.fails = 0;
+    let interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const r = e.results[i];
+      if (!t.pendingAt) t.pendingAt = now();                  // when this phrase began (keeps the speakers in order)
+      if (r.isFinal) { keep(t, r[0].transcript, t.pendingAt); t.pending = ''; t.pendingAt = 0; }
+      else interim += r[0].transcript;
+    }
+    if (interim.trim()) t.pending = interim;
+  };
+  sr.onspeechstart = () => { t.lastEvent = now(); };
+  sr.onerror = (e) => {
+    t.lastEvent = now();
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { t.on = false; t.blocked = true; emit(); return; }
+    if (e.error !== 'no-speech' && e.error !== 'aborted') t.fails++;   // silence is normal in a meeting, not a failure
+  };
+  sr.onend = () => {
+    if (t.sr === sr) t.running = false;
+    if (t.pending) { keep(t, t.pending, t.pendingAt); t.pending = ''; t.pendingAt = 0; }   // words heard just before it stopped
+    if (!t.on) { flush(t); return; }
+    setTimeout(() => run(t), t.fails > 8 ? 1500 : 0);    // straight back to listening
+  };
+  t.sr = sr;
+  try { sr.start(); t.running = true; t.lastEvent = now(); } catch { t.running = false; setTimeout(() => run(t), 500); }
+}
 async function flush(t) {
   if (!t.lines.length) return;
   const lines = t.lines.splice(0);
@@ -186,9 +217,9 @@ async function flush(t) {
 function trStop() {
   const t = tr; if (!t) return;
   tr = null; t.on = false;
-  clearInterval(t.timer);
-  try { t.sr.stop(); } catch {}
-  setTimeout(() => flush(t), 600);   // the last words arrive just after stop()
+  clearInterval(t.timer); clearInterval(t.watch);
+  try { t.sr && t.sr.stop(); } catch {}              // onend keeps the half-heard phrase and saves
+  setTimeout(() => { if (t.pending) { keep(t, t.pending, t.pendingAt); t.pending = ''; } flush(t); }, 1500);
   emit();
 }
 export const transcribing = () => !!(tr && tr.on && !tr.paused);
@@ -204,7 +235,7 @@ onCallState(() => {
     if (!tr) trStart(c.id);
     if (tr) {
       const pause = !!c.muted;
-      if (pause !== !!tr.paused) { tr.paused = pause; if (pause) { try { tr.sr.stop(); } catch {} } else run(tr); emit(); }
+      if (pause !== !!tr.paused) { tr.paused = pause; if (pause) { try { tr.sr && tr.sr.stop(); } catch {} } else run(tr); emit(); }
     }
   }
 });

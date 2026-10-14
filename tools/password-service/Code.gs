@@ -305,9 +305,15 @@ function recUp_(b) {
 function recGet_(b) {
   const me = caller_(b.idToken);
   const callId = String(b.callId || ''), kind = b.kind === 'tr' ? 'tr' : 'rec';
-  const rec = getDoc_('call_records/' + callId);
+  let rec = getDoc_('call_records/' + callId);
   if (!rec) throw new Error('not-found');
   if (!canSeeRec_(me, rec, kind)) throw new Error('forbidden');
+  // the transcript is rebuilt when someone's last lines arrived after it was made (nothing said is left out)
+  if (kind === 'tr') {
+    const parts = listDocs_('call_transcripts/' + callId + '/parts');
+    const newest = parts.reduce((m, p) => Math.max(m, Number(p.atMs) || 0), 0);
+    if (parts.length && (!rec.transcript || !rec.transcript.id || newest > Number(rec.transcript.builtMs || 0) - 5000)) { buildTranscript_(callId, parts); rec = getDoc_('call_records/' + callId) || rec; }
+  }
   const id = kind === 'tr' ? ((rec.transcript || {}).id || '') : String(b.id || '');
   if (kind === 'rec' && !(rec.parts || []).some(p => p.id === id)) throw new Error('not-found');
   if (!id) throw new Error('not-found');
@@ -324,7 +330,11 @@ function trBuild_(b) {
   const callId = String(b.callId || '');
   const call = callOf_(callId);
   if ((call.members || []).indexOf(me.email) < 0 && me.role !== 'admin') throw new Error('forbidden');
-  const parts = listDocs_('call_transcripts/' + callId + '/parts');
+  return { ok: true, lines: buildTranscript_(callId) };
+}
+function buildTranscript_(callId, partsIn) {
+  const call = callOf_(callId);
+  const parts = partsIn || listDocs_('call_transcripts/' + callId + '/parts');
   const lines = [];
   parts.forEach(p => (p.lines || []).forEach(l => { if (l && l.text) lines.push({ t: Number(l.t) || 0, by: p.by || '', name: p.name || p.by || '', text: String(l.text) }); }));
   lines.sort((a, c) => a.t - c.t);
@@ -345,7 +355,7 @@ function trBuild_(b) {
     members: call.members || [], atMs: Number(call.atMs) || 0, startedAt: Number(call.startedAt) || 0, endedAt: Number(call.endedAt) || 0,
     transcript: { id: file.getId(), lines: lines.length, builtMs: Date.now() }, updatedMs: Date.now()
   });
-  return { ok: true, lines: lines.length };
+  return lines.length;
 }
 
 // ---------------------------------------------------------------- identity & Firestore (service account)

@@ -28,8 +28,12 @@ def svc(r):
 ctx.route('https://svc.test/**', svc)
 # headless Chrome has no speech recognition: a fake one that "hears" a sentence every 2 seconds
 ctx.add_init_script("""(() => { class FakeSR { constructor() { this.continuous = true; this.lang = ''; }
-  start() { if (this._t) return; let n = 0; this._t = setInterval(() => { n++; const res = [{ transcript: 'جملة رقم ' + n + ' من ' + (localStorage.getItem('mockauth_current') || '') }]; res.isFinal = true;
-    this.onresult && this.onresult({ resultIndex: 0, results: [res] }); }, 2000); }
+  start() { if (this._t) return; let n = 0; this._t = setInterval(() => { n++;
+    if (n % 3 === 0) {   // like Chrome: it stops by itself in the middle of a phrase — the words heard so far must not be lost
+      const res = [{ transcript: 'نص ناقص ' + n }]; res.isFinal = false; this.onresult && this.onresult({ resultIndex: 0, results: [res] });
+      clearInterval(this._t); this._t = 0; setTimeout(() => this.onend && this.onend(), 50); return; }
+    const res = [{ transcript: 'جملة رقم ' + n + ' من ' + (localStorage.getItem('mockauth_current') || '') }]; res.isFinal = true;
+    this.onresult && this.onresult({ resultIndex: 0, results: [res] }); }, 1500); }
   stop() { clearInterval(this._t); this._t = 0; setTimeout(() => this.onend && this.onend(), 10); } abort() { this.stop(); } }
   window.SpeechRecognition = FakeSR; window.webkitSpeechRecognition = FakeSR; })();""")
 errs = []
@@ -57,6 +61,9 @@ ok(len(parts) >= 1 and len(base64.b64decode(list(parts.values())[0]['data'])) > 
 d = db(A)
 lines = [v for k, v in d.items() if k.startswith('call_transcripts/')]
 ok(any(l['by'] == 'emp1@almaster.tech' for l in lines) and any(l['by'] == 'emp2@almaster.tech' for l in lines), f'each side writes down its own words ({len(lines)} saves)')
+texts = [x['text'] for l in lines for x in l['lines']]
+ok(any(t.startswith('نص ناقص') for t in texts), 'a phrase cut off when the recognizer stops is still kept')
+ok(sum(1 for t in texts if t.startswith('جملة رقم')) >= 8, f'it keeps listening after each stop ({len(texts)} lines)')
 B.locator('.call-panel [data-c=end]').click(); A.wait_for_timeout(4000)
 msgs = [v for k, v in db(A).items() if k.startswith(f'chats/{dm}/messages/') and v.get('type') == 'call']
 ok(msgs and msgs[-1]['call'].get('rec') and msgs[-1]['call'].get('tr'), 'the call in the chat says it was recorded and transcribed')

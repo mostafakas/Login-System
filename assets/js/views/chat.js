@@ -76,8 +76,8 @@ export default async function render(root, { params }) {
         <div class="chat-side-head">
           <h2>${L('الشات', 'Chat')}</h2>
           <div class="row gap-4">
-            ${canHostRoom() ? `<button class="btn btn-soft btn-sm" id="room" title="${L('ميتنج أونلاين مع أي حد — زملاء أو ناس من برّه بلينك', 'Online meeting with anyone — colleagues or outsiders by link')}"><i class="fas fa-video"></i><span class="hide-sm"> ${L('ميتنج', 'Meeting')}</span></button>` : ''}
-            ${admin ? `<button class="btn btn-soft btn-sm" id="newg" title="${L('جروب جديد', 'New group')}"><i class="fas fa-users"></i> ${L('جروب', 'Group')}</button>` : ''}
+            ${canHostRoom() ? `<button class="btn btn-soft btn-sm btn-icon" id="room" title="${L('ميتنج أونلاين مع أي حد — زملاء أو ناس من برّه بلينك', 'Online meeting with anyone — colleagues or outsiders by link')}" aria-label="${L('ميتنج أونلاين', 'Online meeting')}"><i class="fas fa-video"></i></button>` : ''}
+            ${admin ? `<button class="btn btn-soft btn-sm btn-icon" id="newg" title="${L('جروب جديد', 'New group')}" aria-label="${L('جروب جديد', 'New group')}"><i class="fas fa-users"></i></button>` : ''}
             <div class="chat-new-wrap">
               <button class="btn btn-primary btn-sm" id="new"><i class="fas fa-pen-to-square"></i> ${L('محادثة', 'New chat')}</button>
               <div class="chat-picker hidden" id="picker">

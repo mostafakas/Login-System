@@ -688,6 +688,7 @@ html[dir="rtl"] .mon-metric.on { box-shadow: inset -3px 0 0 var(--brand); }
 .chat-side { display: flex; flex-direction: column; min-height: 0; overflow: visible; }
 .chat-side-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 16px 16px 10px; }
 .chat-side-head h2 { font-size: 18px; font-weight: 800; }
+.chat-side-head > .row { flex-wrap: nowrap; flex-shrink: 0; }
 .chat-modes { margin: 0 16px 10px; display: flex; } .chat-modes button { flex: 1; justify-content: center; }
 .chat-search { margin: 0 16px 10px; } .chat-search .input { height: 38px; }
 .chat-convs { flex: 1; overflow-y: auto; padding: 0 8px 8px; min-height: 0; }

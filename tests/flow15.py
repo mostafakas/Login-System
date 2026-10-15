@@ -128,6 +128,20 @@ G4 = ctx.new_page(); G4.goto(link); G4.wait_for_timeout(1500)
 G4.fill('#gn', 'متأخر'); G4.click('#gj'); G4.wait_for_timeout(1500)
 print('late guest:', G4.locator('#g').inner_text()[:80])
 
+# the host opens the guest link in the same browser: the employee stays signed in
+A.evaluate("() => localStorage.setItem('mockauth_current', 'emp1@almaster.tech')"); before = 'emp1@almaster.tech'
+H = page(); H.goto(link); H.wait_for_timeout(1500)
+ok(H.locator('#gn').count() == 1, 'guest page opens in the employee\'s browser')
+after = A.evaluate("() => localStorage.getItem('mockauth_current')")
+ok(after == before and '@almaster' in (after or ''), f'employee sign-in untouched by the guest page ({before} → {after})')
+# (the real check is above; reloading here would trip the one-device rule, since every test page shares one browser)
+H.close()
+# a browser left with a guest sign-in by the older version: back to the login page, no error
+A.evaluate("() => localStorage.setItem('mockauth_current', 'anon:Oldguest123')")
+A.goto(BASE + '/app.html'); A.wait_for_timeout(2500)
+ok('index.html' in A.url and A.locator('#email').count() == 1, f'leftover guest sign-in → login page ({A.url})')
+ok(A.evaluate("() => localStorage.getItem('mockauth_current')") in (None, ''), 'leftover guest sign-in cleared')
+
 print('errors:', errs)
 ok(not errs, 'no page errors')
 br.close(); pw.stop()

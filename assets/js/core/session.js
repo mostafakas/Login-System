@@ -63,6 +63,8 @@ export function requireSession({ onProfileChange } = {}) {
     let first = true;
     onAuthStateChanged(auth, async (u) => {
       if (!u) { if (first) location.replace('index.html'); return; }
+      // a sign-in without an email (a guest from a call link, from an older version) is not an employee: back to login
+      if (!u.email) { if (first) { first = false; signOut(auth).catch(() => {}).then(() => location.replace('index.html')); } return; }
       if (!first) return;
       first = false;
       session.user = u;

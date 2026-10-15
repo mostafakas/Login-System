@@ -13,7 +13,11 @@ export function getAuth(app) {
   const key = app ? app.name : '[DEFAULT]';
   if (instances.has(key)) return instances.get(key);
   const auth = { app, currentUser: null, listeners: new Set(), primary: key === '[DEFAULT]' };
-  if (auth.primary) { const cur = localStorage.getItem(LS_CUR); if (cur && loadUsers()[cur]) auth.currentUser = mkUser(cur, auth); }
+  if (auth.primary) {
+    const cur = localStorage.getItem(LS_CUR);
+    if (cur && cur.startsWith('anon:')) auth.currentUser = anonUser(cur.slice(5), auth);   // like the real SDK: shared by every tab of the site
+    else if (cur && loadUsers()[cur]) auth.currentUser = mkUser(cur, auth);
+  }
   instances.set(key, auth);
   return auth;
 }
@@ -33,10 +37,12 @@ export async function signInWithEmailAndPassword(auth, email, password) {
   return { user: auth.currentUser };
 }
 // a guest (no account): kept for this tab only
+const anonUser = (uid, auth) => ({ uid, email: null, isAnonymous: true, displayName: null, getIdToken: async () => 'mock-anon-' + uid, _auth: auth });
 export async function signInAnonymously(auth) {
   let uid = sessionStorage.getItem('mockauth_anon');
   if (!uid) { uid = 'Anon' + Math.random().toString(36).slice(2, 12); sessionStorage.setItem('mockauth_anon', uid); }
-  auth.currentUser = { uid, email: null, isAnonymous: true, displayName: null, getIdToken: async () => 'mock-anon-' + uid, _auth: auth };
+  auth.currentUser = anonUser(uid, auth);
+  if (auth.primary) localStorage.setItem(LS_CUR, 'anon:' + uid);   // on the main app it replaces whoever was signed in
   emit(auth);
   return { user: auth.currentUser };
 }

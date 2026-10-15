@@ -21,11 +21,16 @@ export const firebaseConfig = {
   appId: '1:884142036232:web:eeb6677d988565653a08bd'
 };
 
-const app = getApps().find(a => a.name === '[DEFAULT]') || initializeApp(firebaseConfig);
+// guest.html (someone without an account joining a call) runs on its own app instance: its sign-in is kept apart, so
+// opening a call link in a browser where an employee is signed in never replaces (or signs out) that employee.
+export const GUEST_MODE = typeof window !== 'undefined' && window.__AM_GUEST === true;
+const APP_NAME = GUEST_MODE ? 'guest' : '[DEFAULT]';
+const app = getApps().find(a => a.name === APP_NAME) || (GUEST_MODE ? initializeApp(firebaseConfig, APP_NAME) : initializeApp(firebaseConfig));
 export const auth = getAuth(app);
 // Local persistent cache: reopening the app (or another tab) resumes from the browser's copy, and Firestore
 // only bills the documents that changed since — a big saving on the free daily quota.
 function makeDb() {
+  if (GUEST_MODE) return getFirestore(app);   // a guest keeps nothing on the device
   try { return initializeFirestore(app, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) }); }
   catch (e) { console.warn('persistent cache unavailable', e && e.message); return getFirestore(app); }
 }

@@ -58,6 +58,7 @@ byId('back-link').onclick = () => { byId('reset-view').classList.add('hidden'); 
 // Already signed in with a valid account → straight to the app
 onAuthStateChanged(auth, async (u) => {
   if (!u || signingIn) return;
+  if (!u.email) { signOut(auth).catch(() => {}); return; }   // a leftover guest sign-in (call link): clear it quietly
   try {
     const p = await read('users', normEmail(u.email));
     if (p && !p.isSuspended) location.replace('app.html');

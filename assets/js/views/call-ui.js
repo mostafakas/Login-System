@@ -13,7 +13,7 @@ import { play } from '../core/sounds.js';
 import {
   startCall, joinCall, declineCall, hangUp, setMuted, currentCall, onCallState, watchMyCalls, dropStale, isTalking,
   lastEndedCall, fmtDur, RING_FOR, MAX_IN_CALL, touchedHere, addToCall, invitedAtOf, endForAll, myBeatStale,
-  callName, guestLink, watchGuests, admitGuest, denyGuest, isGuestEmail,
+  callName, guestLink, watchGuests, admitGuest, denyGuest, isGuestEmail, startRoom, canHostRoom,
   shareScreen, stopScreen, canShareScreen, screensNow, MAX_SHARING
 } from '../services/calls.js';
 
@@ -90,9 +90,10 @@ function showIncoming(c) {
   if (incoming.has(c.id)) return;
   const from = who(((c.invitedBy || {})[ek(session.email)]) || c.from);   // whoever added me, else who started it
   const inNames = (c.joined || []).filter(e => e !== session.email).map(e => String(nm(e, c)).split(' ')[0]).join('، ');
-  const title = c.group && !c.chatName ? L(`${from.name || from.email} بيضيفك لمكالمة`, `${from.name || from.email} adds you to a call`)
+  const title = c.room ? L(`${from.name || from.email} بيدعوك لميتنج أونلاين: ${c.chatName}`, `${from.name || from.email} invites you to an online meeting: ${c.chatName}`)
+    : c.group && !c.chatName ? L(`${from.name || from.email} بيضيفك لمكالمة`, `${from.name || from.email} adds you to a call`)
     : c.group ? L(`مكالمة جماعية في ${c.chatName}`, `Group call in ${c.chatName}`) : L(`${from.name || from.email} بيكلّمك`, `${from.name || from.email} is calling you`);
-  const sub = c.group && !c.chatName ? L(`جوّه: ${inNames}`, `In the call: ${inNames}`) : c.group ? L(`${from.name || from.email} بدأها · ${(c.joined || []).length} جوّه: ${(c.joined || []).map(e => String(nm(e, c)).split(' ')[0]).join('، ')}`, `Started by ${from.name || from.email} · ${(c.joined || []).length} in`) : L('📞 مكالمة صوتية', '📞 Voice call');
+  const sub = c.room ? L(`جوّه: ${inNames || '—'}`, `In the call: ${inNames || '—'}`) : c.group && !c.chatName ? L(`جوّه: ${inNames}`, `In the call: ${inNames}`) : c.group ? L(`${from.name || from.email} بدأها · ${(c.joined || []).length} جوّه: ${(c.joined || []).map(e => String(nm(e, c)).split(' ')[0]).join('، ')}`, `Started by ${from.name || from.email} · ${(c.joined || []).length} in`) : L('📞 مكالمة صوتية', '📞 Voice call');
   const el = document.createElement('div');
   el.className = 'ring-pop call-in'; el.setAttribute('role', 'alertdialog');
   el.innerHTML = `<span class="ring-av">${avatar(from)}</span><div class="grow min0"><b class="truncate">${esc(title)}</b><small class="truncate">${esc(sub)}</small></div>
@@ -186,7 +187,7 @@ function drawPanel() {
   const otherOne = call.group ? null : who((call.members || []).find(e => e !== me));
   const firstNames = (list) => list.map(e => String(nm(e)).split(' ')[0]).join('، ');
   const title = call.group ? (call.chatName || L(`مكالمة مع ${firstNames(others) || '…'}`, `Call with ${firstNames(others) || '…'}`)) : (otherOne.name || otherOne.email);
-  const canOpenChat = !call.chatMembers || call.chatMembers.includes(me);
+  const canOpenChat = !call.room && (!call.chatMembers || call.chatMembers.includes(me));
   const STATE = { connecting: L('بيتوصل…', 'connecting…'), unstable: L('الشبكة ضعيفة', 'weak network'), failed: L('مش قادر يتوصل', 'cannot connect'), closed: '' };
   const people = [me, ...others].map(e => {
     const p = c.peers.get(e); const st = e === me ? '' : (p ? (p.state === 'connected' ? '' : STATE[p.state] || '') : STATE.connecting);
@@ -234,6 +235,39 @@ function drawPanel() {
   if (!ringing && ringback) { clearInterval(ringback); ringback = 0; }
 }
 
+/** Online meeting (admins, project managers, sales): a topic, colleagues if you like, then the link for anyone else */
+export function openRoomDialog() {
+  if (!canHostRoom()) return;
+  const max = MAX_IN_CALL - 1, picked = new Set();
+  const m = modal({
+    title: L('ميتنج أونلاين', 'Online meeting'), icon: 'fa-video',
+    body: `<div class="col gap-12">
+      <p class="small muted">${L('مكالمة بتبدأها إنت، وتدعي فيها أي حد: زمايلك من هنا، وأي حد ملوش حساب على السيستم (عميل مثلاً) بلينك هيظهرلك أول ما تبدأ.', 'A call you start and invite anyone to: colleagues from here, and anyone without an account (a client, say) through a link you get right after starting.')}</p>
+      <div class="field"><label>${L('موضوع الميتنج', 'Topic')}</label><input class="input" id="rm-t" maxlength="80" placeholder="${L('مثلاً: ميتنج مع عميل شركة كذا', 'e.g. meeting with a client')}"></div>
+      <div class="field"><label>${L(`زملاء من السيستم (اختياري — لحد ${max})`, `Colleagues (optional — up to ${max})`)}</label>
+        <div class="search mb-8"><i class="fas fa-search"></i><input class="input" id="rm-q" placeholder="${L('ابحث بالاسم', 'Search by name')}"></div>
+        <div class="chat-members" id="rm-list" style="max-height:220px"></div></div>
+      <div id="rm-err" class="alert bad hidden"></div></div>`,
+    foot: `<button class="btn" data-close>${L('إلغاء', 'Cancel')}</button><button class="btn btn-ok" id="rm-go"><i class="fas fa-video"></i> ${L('ابدأ الميتنج', 'Start the meeting')}</button>`
+  });
+  const draw = () => {
+    const q = m.$('#rm-q').value.trim().toLowerCase();
+    m.$('#rm-list').innerHTML = activePeople().filter(p => p.email !== session.email && (!q || `${p.name} ${p.title} ${p.department} ${p.email}`.toLowerCase().includes(q)))
+      .sort((a, b) => (picked.has(b.email) - picked.has(a.email)) || String(a.name || '').localeCompare(String(b.name || ''), 'ar'))
+      .map(p => { const on = picked.has(p.email); return `<label class="chat-member" style="cursor:pointer"><input type="checkbox" data-p="${esc(p.email)}" ${on ? 'checked' : ''} ${!on && picked.size >= max ? 'disabled' : ''}>${avatar(p, 'sm')}<span class="grow min0"><b class="truncate">${esc(p.name || p.email)}</b><small class="truncate">${esc([p.title, p.department].filter(Boolean).join(' · '))}</small></span></label>`; })
+      .join('') || `<p class="muted small" style="padding:10px">${L('مفيش نتائج', 'No results')}</p>`;
+  };
+  m.$('#rm-q').oninput = draw;
+  m.$('#rm-list').onchange = (e) => { const c = e.target.closest('[data-p]'); if (!c) return; if (c.checked) picked.add(c.dataset.p); else picked.delete(c.dataset.p); draw(); };
+  m.$('#rm-go').onclick = async (e) => {
+    const b = e.currentTarget, err = m.$('#rm-err'); err.classList.add('hidden'); b.disabled = true;
+    try { await startRoom({ topic: m.$('#rm-t').value, people: [...picked] }); m.close(); shareGuestLink(); }
+    catch (ex) { b.disabled = false; if (ex.userMessage) { err.textContent = ex.userMessage; err.classList.remove('hidden'); } else toastErr(ex); }
+  };
+  draw();
+  m.$('#rm-t').focus();
+}
+
 /** A link for someone without an account: they open it, write their name, and wait until someone lets them in */
 async function shareGuestLink() {
   try {
@@ -256,7 +290,7 @@ async function shareGuestLink() {
 async function addPeople() {
   const c = currentCall(); if (!c) return;
   try {
-    const chat = await read('chats', c.call.chatId).catch(() => null);
+    const chat = c.call.chatId ? await read('chats', c.call.chatId).catch(() => null) : null;   // an online meeting: any colleague
     const fromGroup = !!chat && chat.type === 'group';
     // a group: its members · a 1:1 call (or a call that grew from one): any colleague
     const pool = fromGroup ? { id: c.call.chatId, ...chat } : { id: c.call.chatId, name: '', members: activePeople().map(p => p.email) };

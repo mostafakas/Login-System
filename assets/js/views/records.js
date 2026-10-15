@@ -4,7 +4,7 @@ import { L, esc } from '../core/utils.js';
 import { modal, toast, toastErr, busy, avatar, empty } from '../core/ui.js';
 import { session, isAdmin } from '../core/session.js';
 import { nameOf, person } from '../services/directory.js';
-import { fmtDur } from '../services/calls.js';
+import { fmtDur, canHostRoom, watchMyRooms, isGuestEmail } from '../services/calls.js';
 import {
   watchMyRecRequests, watchPendingRecRequests, watchAllRecords, watchSharedRecords, mayOpen, requestAccess, decideRecRequest,
   loadPart, loadTranscript, getRecord, fmtWhen, KIND_LABEL
@@ -88,10 +88,12 @@ export function requestModal({ callId, chatId, title, kinds = ['rec', 'tr'] }) {
 export default async function render(root) {
   const admin = isAdmin();
   const unsubs = [];
-  let records = [], pending = [], mine = [];
+  let records = [], pending = [], mine = [], rooms = [];
+  const hostsRooms = !admin && canHostRoom();
   root.innerHTML = `<div class="col gap-16">
     ${admin ? `<section class="card"><div class="card-head"><h3><i class="fas fa-inbox"></i> ${L('طلبات الاطلاع', 'Access requests')}</h3></div><div class="card-body" id="rq"></div></section>` : ''}
     <section class="card"><div class="card-head"><h3><i class="fas fa-circle-play"></i> ${admin ? L('كل التسجيلات والمحاضر', 'All recordings & transcripts') : L('التسجيلات والمحاضر المتاحة ليك', 'Recordings & transcripts open to you')}</h3></div><div class="card-body" id="list"></div></section>
+    ${hostsRooms ? `<section class="card"><div class="card-head"><h3><i class="fas fa-video"></i> ${L('ميتنجاتي الأونلاين', 'My online meetings')}</h3></div><div class="card-body" id="rooms"></div></section>` : ''}
     ${admin ? '' : `<section class="card"><div class="card-head"><h3><i class="fas fa-paper-plane"></i> ${L('طلباتي', 'My requests')}</h3></div><div class="card-body" id="mine"></div></section>`}
   </div>`;
   const ST = { pending: ['warn', L('مستني', 'Pending')], approved: ['ok', L('اتوافق', 'Approved')], rejected: ['bad', L('اترفض', 'Rejected')] };
@@ -107,11 +109,23 @@ export default async function render(root) {
     el.innerHTML = records.length ? records.map(r => {
       const parts = r.parts || [], dur = parts.reduce((s, p) => s + (p.durMs || 0), 0);
       return `<div class="rec-row"><span class="icon-tile"><i class="fas ${parts.some(p => p.video) ? 'fa-display' : 'fa-phone'}"></i></span>
-        <div class="grow min0"><b class="truncate">${esc(r.title || '')}</b><div class="xs muted">${esc(fmtWhen(r.startedAt || r.atMs))} · ${esc((r.members || []).map(e => String(nameOf(e)).split(' ')[0]).join('، '))}</div>
+        <div class="grow min0"><b class="truncate">${esc(r.title || '')}</b><div class="xs muted">${esc(fmtWhen(r.startedAt || r.atMs))} · ${esc((r.members || []).map(e => isGuestEmail(e) ? L('ضيف', 'guest') : String(nameOf(e)).split(' ')[0]).join('، '))}</div>
         ${admin && ((r.viewRec || []).length || (r.viewTr || []).length) ? `<div class="xs muted">${L('متاح لـ', 'Open to')}: ${esc([...new Set([...(r.viewRec || []), ...(r.viewTr || [])])].map(nameOf).join('، '))}</div>` : ''}</div>
         ${parts.length && mayOpen(r, 'rec') ? `<button class="btn btn-sm" data-play="${esc(r.id)}"><i class="fas fa-circle-play"></i> ${L('التسجيل', 'Recording')} · ${esc(fmtDur(dur / 1000))}</button>` : ''}
         ${r.transcript && mayOpen(r, 'tr') ? `<button class="btn btn-sm" data-tr="${esc(r.id)}"><i class="fas fa-file-lines"></i> ${L('المحضر', 'Transcript')}</button>` : ''}</div>`;
     }).join('') : empty('fa-circle-play', admin ? L('لسه مفيش مكالمات متسجّلة', 'No recorded calls yet') : L('مفيش حاجة متاحة ليك لسه', 'Nothing open to you yet'), admin ? '' : L('من الشات، اطلب تسجيل أو محضر أي مكالمة كنت فيها.', 'From the chat, request a call\'s recording or transcript.'));
+  };
+  // online meetings I hosted (no chat to ask from): ask for their recording / transcript here
+  const drawRooms = () => {
+    const el = root.querySelector('#rooms'); if (!el) return;
+    const done = rooms.filter(c => !c.live && (c.rec || c.tr));
+    el.innerHTML = done.length ? done.map(c => {
+      const kinds = [c.rec ? 'rec' : '', c.tr ? 'tr' : ''].filter(Boolean), open = records.some(r => r.id === c.id);
+      const asked = mine.find(q => q.callId === c.id && q.status === 'pending');
+      return `<div class="rec-row"><span class="icon-tile"><i class="fas fa-video"></i></span><div class="grow min0"><b class="truncate">${esc(c.chatName || '')}</b>
+        <div class="xs muted">${esc(fmtWhen(c.startedAt || c.atMs))} · ${esc(kinds.map(k => KIND_LABEL[k]()).join(' + '))}</div></div>
+        ${open ? `<span class="badge ok">${L('متاح فوق', 'Open above')}</span>` : asked ? `<span class="badge warn">${L('مستني الأدمن', 'Waiting')}</span>` : `<button class="btn btn-sm" data-ask="${esc(c.id)}"><i class="fas fa-lock"></i> ${L('اطلب', 'Request')}</button>`}</div>`;
+    }).join('') : `<p class="muted small">${L('الميتنجات اللي بتعملها من «ميتنج» في الشات وتتسجّل أو يتعملها محضر بتظهر هنا.', 'Online meetings you host that are recorded or transcribed show up here.')}</p>`;
   };
   const drawMine = () => {
     const el = root.querySelector('#mine'); if (!el) return;
@@ -120,6 +134,7 @@ export default async function render(root) {
   };
   root.addEventListener('click', async (e) => {
     const p = e.target.closest('[data-play]'); if (p) { openRecording(p.dataset.play, records.find(r => r.id === p.dataset.play)); return; }
+    const a = e.target.closest('[data-ask]'); if (a) { const c = rooms.find(x => x.id === a.dataset.ask); if (c) requestModal({ callId: c.id, chatId: '', title: `${c.chatName || ''} — ${fmtWhen(c.startedAt || c.atMs)}`, kinds: [c.rec ? 'rec' : '', c.tr ? 'tr' : ''].filter(Boolean) }); return; }
     const t = e.target.closest('[data-tr]'); if (t) { openTranscript(t.dataset.tr, records.find(r => r.id === t.dataset.tr)); return; }
     const y = e.target.closest('[data-yes]'), n = e.target.closest('[data-no]');
     if (y || n) { const q = pending.find(x => x.id === (y || n).dataset[y ? 'yes' : 'no']); if (q) busy(y || n, async () => { try { await decideRecRequest(q, !!y); toast(y ? L('اتوافق — بقى يقدر يفتحه', 'Approved — they can open it now') : L('اترفض', 'Rejected')); } catch (ex) { toastErr(ex); } }); }
@@ -128,9 +143,10 @@ export default async function render(root) {
     unsubs.push(watchPendingRecRequests(rows => { pending = rows; drawReq(); }));
     unsubs.push(watchAllRecords(rows => { records = rows; drawList(); }));
   } else {
-    unsubs.push(watchSharedRecords(rows => { records = rows; drawList(); }));
-    unsubs.push(watchMyRecRequests(rows => { mine = rows; drawMine(); }));
+    unsubs.push(watchSharedRecords(rows => { records = rows; drawList(); drawRooms(); }));
+    unsubs.push(watchMyRecRequests(rows => { mine = rows; drawMine(); drawRooms(); }));
+    if (hostsRooms) unsubs.push(watchMyRooms(rows => { rooms = rows; drawRooms(); }));
   }
-  drawReq(); drawList(); drawMine();
+  drawReq(); drawList(); drawMine(); drawRooms();
   return () => unsubs.forEach(f => { try { f(); } catch {} });
 }

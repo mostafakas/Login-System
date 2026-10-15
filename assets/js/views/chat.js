@@ -16,8 +16,8 @@ import {
 } from '../services/chat.js';
 import { startTasks, allTasks, taskById, taskLink } from '../services/tasks.js';
 import { setTabLabel } from '../tabs.js';
-import { startCallFor, joinLive, liveCallIn, onLiveCalls } from './call-ui.js';
-import { currentCall } from '../services/calls.js';
+import { startCallFor, joinLive, liveCallIn, onLiveCalls, openRoomDialog } from './call-ui.js';
+import { currentCall, canHostRoom } from '../services/calls.js';
 import { watchMyRecRequests } from '../services/records.js';
 
 const fmtSize = (n) => n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
@@ -76,6 +76,7 @@ export default async function render(root, { params }) {
         <div class="chat-side-head">
           <h2>${L('الشات', 'Chat')}</h2>
           <div class="row gap-4">
+            ${canHostRoom() ? `<button class="btn btn-soft btn-sm" id="room" title="${L('ميتنج أونلاين مع أي حد — زملاء أو ناس من برّه بلينك', 'Online meeting with anyone — colleagues or outsiders by link')}"><i class="fas fa-video"></i><span class="hide-sm"> ${L('ميتنج', 'Meeting')}</span></button>` : ''}
             ${admin ? `<button class="btn btn-soft btn-sm" id="newg" title="${L('جروب جديد', 'New group')}"><i class="fas fa-users"></i> ${L('جروب', 'Group')}</button>` : ''}
             <div class="chat-new-wrap">
               <button class="btn btn-primary btn-sm" id="new"><i class="fas fa-pen-to-square"></i> ${L('محادثة', 'New chat')}</button>
@@ -112,6 +113,7 @@ export default async function render(root, { params }) {
   const closePicker = (e) => { if (!e.target.closest('.chat-new-wrap')) $('#picker').classList.add('hidden'); };
   document.addEventListener('click', closePicker);
   if (admin) $('#newg').onclick = () => groupEditor(null);
+  if ($('#room')) $('#room').onclick = () => openRoomDialog();
 
   // ---------- group: create / edit (name, photo, members, group admins) ----------
   function groupEditor(chat) {

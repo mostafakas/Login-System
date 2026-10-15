@@ -4,7 +4,7 @@
 // No time limit. Without a TURN relay a few strict networks may not connect; a relay can be added later in
 // settings/public.iceServers without code changes.
 import { db, doc, col, watch, query, where, updateDoc, setDoc, deleteDoc, runTransaction, serverTimestamp } from '../core/fb.js';
-import { session, now } from '../core/session.js';   // now(): server-corrected clock — devices with a wrong clock agree
+import { session, now, isAdmin, isPM, hasCRM } from '../core/session.js';   // now(): server-corrected clock — devices with a wrong clock agree
 import { L } from '../core/utils.js';
 import { userError } from '../core/ui.js';
 import { publicConfig, callService } from './authsvc.js';
@@ -76,6 +76,34 @@ export async function startCall(chat, people = null) {
   return ref.id;
 }
 
+/** Online meeting (not tied to a chat): admins, project managers and sales (CRM access / sales manager) open a call
+ *  of their own, then invite anyone — colleagues (optional) and people without an account through the guest link. */
+export const canHostRoom = () => isAdmin() || isPM() || hasCRM() || session.role === 'sales_manager';
+export async function startRoom({ topic = '', people = [] } = {}) {
+  if (cur) throw userError('إنت في مكالمة دلوقتي. اقفلها الأول.', 'You are already in a call. Hang up first.');
+  if (!canHostRoom()) throw userError('الميتنج الأونلاين للأدمن ومدير المشروعات والسيلز بس.', 'Online meetings are for admins, project managers and sales only.');
+  const me = session.email;
+  const picked = [...new Set(people || [])].filter(e => e && e !== me);
+  if (picked.length > MAX_IN_CALL - 1) throw userError(`تقدر تختار لحد ${MAX_IN_CALL - 1} زملاء.`, `You can pick up to ${MAX_IN_CALL - 1} colleagues.`);
+  const stream = await getMic();
+  const ref = doc(col('calls'));
+  touched.add(ref.id);
+  const t = now(), members = [me, ...picked];
+  const data = {
+    chatId: '', room: true, group: true, chatName: String(topic || '').trim().slice(0, 80) || L('ميتنج أونلاين', 'Online meeting'),
+    from: me, fromName: nameOf(me), members, liveFor: members, joined: [me], names: Object.fromEntries(members.map(e => [ek(e), nameOf(e)])),
+    invitedAt: Object.fromEntries(picked.map(e => [ek(e), t])), invitedBy: Object.fromEntries(picked.map(e => [ek(e), me])),
+    beat: { [ek(me)]: t }, status: 'active', live: true, at: serverTimestamp(), atMs: t, startedAt: t   // on from the start: the host is in it
+  };
+  try { await setDoc(ref, data); } catch (e) { stream.getTracks().forEach(x => x.stop()); throw e; }
+  track('call.room', { target: data.chatName, detail: picked.map(nameOf).join('، ') });
+  enter(ref.id, { ...data, id: ref.id }, stream, []);
+  return ref.id;
+}
+/** my online meetings (latest first) — where their recordings / transcripts can be asked for */
+export const watchMyRooms = (cb) => watch(query(col('calls'), where('from', '==', session.email), where('room', '==', true)),
+  rows => cb(rows.sort((a, b) => (b.atMs || 0) - (a.atMs || 0)).slice(0, 30)), () => cb([]));
+
 /** During a call: invite more people (they ring now, and can join). From a group: its members. From a 1:1 call: any
  *  colleague — the call then becomes a call of several people (it no longer ends when one of the two leaves). */
 export const MAX_INVITED = 30;
@@ -88,7 +116,7 @@ export async function addToCall(people) {
     const s = await tx.get(ref); const d = s.exists() ? s.data() : null;
     if (!d || !d.live) throw userError('المكالمة خلصت.', 'The call has ended.');
     if (!(d.joined || []).includes(session.email)) throw userError('ادخل المكالمة الأول.', 'Join the call first.');
-    const cs = await tx.get(doc(db, 'chats', d.chatId)); const chat = cs.exists() ? cs.data() : null;
+    const cs = d.chatId ? await tx.get(doc(db, 'chats', d.chatId)) : null; const chat = cs && cs.exists() ? cs.data() : null;   // an online meeting has no chat
     const fromGroup = !!chat && chat.type === 'group';
     // new people, and people asked before who declined or left (they ring again)
     added = [...new Set((people || []).map(e => String(e || '').toLowerCase()))]
@@ -151,7 +179,7 @@ export async function declineCall(call) {
     tx.update(ref, { live: false, liveFor: [], status: 'ended', outcome: 'declined', endedAt: now(), endedBy: session.email });
     ended = true;
   }).catch(e => console.warn('decline', e && e.message));
-  if (ended) postCallLog(call.chatId, { id: call.id, outcome: 'declined', dur: 0, group: false }).catch(() => {});
+  if (ended && call.chatId) postCallLog(call.chatId, { id: call.id, outcome: 'declined', dur: 0, group: false }).catch(() => {});
 }
 
 /** Leave the call. The last one out (or anyone in a 1:1) ends it and writes the call into the chat. */
@@ -238,7 +266,7 @@ export async function endForAll() {
 }
 /** The call is over: write it into the chat, and (when people were transcribed) put the transcript file together */
 function finishLog(c, log) {
-  postCallLog(c.call.chatId, log).catch(e => console.warn('call log', e && e.message));
+  if (c.call.chatId) postCallLog(c.call.chatId, log).catch(e => console.warn('call log', e && e.message));   // an online meeting has no chat to write into
   if (log.tr) setTimeout(() => callService('trBuild', { callId: c.id }).catch(e => console.warn('transcript', e && e.message)), 6000);   // after the last lines are saved
 }
 /** my own heartbeat in that call is old: no page of mine is in it any more (another tab of mine may well be) */

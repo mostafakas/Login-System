@@ -6,6 +6,7 @@ import { dayKey } from '../core/policy.js';
 import { activePeople, person, nameOf, departments, meetingLine } from '../services/directory.js';
 import { startMeeting, updateMeeting, watchIncoming, watchAnswers, acceptInvite, declineInvite, settleAnswer, inviteText } from '../services/meetings.js';
 import { play } from '../core/sounds.js';
+import { canHostRoom } from '../services/calls.js';
 
 const liveStatus = (p) => (p && STATUS_META[p.status] && p.status !== 'Offline' && p.dayKey === dayKey(now()) ? p.status : 'Offline');
 const pill = (p) => { const s = liveStatus(p), m = STATUS_META[s]; return `<span class="chat-st ${s.toLowerCase()}" style="--c:${m.color}" title="${esc(meetingLine(p) || L(m.ar, m.en))}"><i class="fas ${m.icon}"></i>${esc(L(m.ar, m.en))}</span>`; };
@@ -33,7 +34,7 @@ export function openMeetingPicker() {
           <div class="field"><label>${L('موضوع الميتنج (اختياري)', 'Topic (optional)')}</label><input class="input" id="mp-topic" maxlength="120" value="${esc(editing ? me.meetingTopic || '' : '')}"></div>
         </div>
         <div id="mp-err" class="alert bad hidden"></div></div>`,
-      foot: `<button class="btn" data-close>${L('إلغاء', 'Cancel')}</button><button class="btn btn-primary" id="mp-go"><i class="fas fa-paper-plane"></i> ${editing ? L('حفظ وابعت للجداد', 'Save & invite the new ones') : L('ابدأ الميتنج وابعت الدعوة', 'Start & send the invitation')}</button>`,
+      foot: `${!editing && canHostRoom() ? `<button class="btn btn-soft" id="mp-room" style="margin-inline-end:auto" title="${L('مكالمة أونلاين تدعي فيها أي حد، حتى اللي ملوش حساب', 'An online call with anyone, even without an account')}"><i class="fas fa-video"></i> ${L('ميتنج أونلاين بلينك', 'Online meeting (link)')}</button>` : ''}<button class="btn" data-close>${L('إلغاء', 'Cancel')}</button><button class="btn btn-primary" id="mp-go"><i class="fas fa-paper-plane"></i> ${editing ? L('حفظ وابعت للجداد', 'Save & invite the new ones') : L('ابدأ الميتنج وابعت الدعوة', 'Start & send the invitation')}</button>`,
       onClose: () => { if (!done) resolve(false); }
     });
     const drawPicked = () => {
@@ -54,6 +55,7 @@ export function openMeetingPicker() {
     m.$('#mp-d').onchange = (e) => { const d = e.target.value; if (!d) return; activePeople().forEach(p => { if (p.department === d && p.email !== session.email) picked.add(p.email); }); e.target.value = ''; draw(); };
     m.$('#mp-list').onchange = (e) => { const c = e.target.closest('[data-p]'); if (!c) return; if (c.checked) picked.add(c.dataset.p); else picked.delete(c.dataset.p); drawPicked(); };
     m.$('#mp-picked').onclick = (e) => { const b = e.target.closest('[data-un]'); if (b) { picked.delete(b.dataset.un); draw(); } };
+    if (m.$('#mp-room')) m.$('#mp-room').onclick = () => { m.close(); import('./call-ui.js').then(x => x.openRoomDialog()); };
     m.$('#mp-go').onclick = (e) => busy(e.currentTarget, async () => {
       const err = m.$('#mp-err'); err.classList.add('hidden');
       const data = { people: [...picked], external: m.$('#mp-ext').value, topic: m.$('#mp-topic').value };

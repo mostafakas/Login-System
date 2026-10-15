@@ -479,15 +479,22 @@ service cloud.firestore {
     function guestId() { return 'guest_' + request.auth.uid.lower() + '@guest.local'; }
     function cid() { return anon() ? guestId() : me(); }
     function callerOk() { return anon() || active(); }
+    // online meetings (a call not tied to a chat): admins, project managers and sales (CRM access / sales manager)
+    function roomHost() { return active() && (role() in ['admin', 'pm', 'sales_manager'] || prof().get('permissions', {}).get('crm', false) == true); }
     match /calls/{id} {
       function nc() { return request.resource.data; }
-      allow read: if callerOk() && (cid() in resource.data.members || cid() in resource.data.get('liveFor', []) || isAdmin());
+      allow read: if callerOk() && (cid() in resource.data.members || cid() in resource.data.get('liveFor', []) || resource.data.get('from', '') == cid() || isAdmin());
       // started from a chat I am in, for that chat's members, with only me in it
-      allow create: if active() && nc().from == me() && nc().members is list && nc().members.size() >= 2 && nc().members.size() <= 300
-        && me() in nc().members && chatDoc(nc().chatId).members.hasAll(nc().members)
+      allow create: if (active() && nc().from == me() && nc().members is list && nc().members.size() >= 2 && nc().members.size() <= 300
+        && me() in nc().members && !('room' in nc()) && chatDoc(nc().chatId).members.hasAll(nc().members)
         && nc().joined == [me()] && nc().live == true && nc().status == 'ringing' && nc().liveFor == nc().members
         && (!('chatMembers' in nc()) || nc().chatMembers == nc().members)
-        && nc().keys().hasOnly(['chatId', 'group', 'chatName', 'from', 'fromName', 'members', 'liveFor', 'joined', 'beat', 'status', 'live', 'at', 'atMs', 'startedAt', 'invitedAt', 'invitedBy', 'chatMembers', 'names']);
+        && nc().keys().hasOnly(['chatId', 'group', 'chatName', 'from', 'fromName', 'members', 'liveFor', 'joined', 'beat', 'status', 'live', 'at', 'atMs', 'startedAt', 'invitedAt', 'invitedBy', 'chatMembers', 'names']))
+        // an online meeting: no chat, the host is in it from the start, colleagues invited if any (guests come by link)
+        || (roomHost() && nc().from == me() && nc().room == true && nc().chatId == '' && nc().group == true
+          && nc().members is list && nc().members.size() >= 1 && nc().members.size() <= 6 && nc().members[0] == me()
+          && nc().joined == [me()] && nc().live == true && nc().status == 'active' && nc().liveFor == nc().members
+          && nc().keys().hasOnly(['chatId', 'room', 'group', 'chatName', 'from', 'fromName', 'members', 'liveFor', 'joined', 'beat', 'status', 'live', 'at', 'atMs', 'startedAt', 'invitedAt', 'invitedBy', 'names']));
       // people in the call: join / leave / heartbeat / end. Nobody can put someone else in the call or reopen it.
       // Someone talking may invite more people (the invite list only grows): from a group chat only its members,
       // from a 1:1 call any colleague — that call then becomes a call of several people.
@@ -512,7 +519,7 @@ service cloud.firestore {
         && (!anon() || !('names' in affected()) || nc().names.diff(resource.data.get('names', {})).affectedKeys().size() <= 1)
         && (nc().members == resource.data.members || (!anon() && me() in resource.data.joined && resource.data.live == true
             && nc().members.hasAll(resource.data.members) && nc().members.size() <= 30
-            && (chatDoc(resource.data.chatId).get('type', '') != 'group' || chatDoc(resource.data.chatId).members.hasAll(nc().members.removeAll(nc().get('guestList', []))))))
+            && (resource.data.get('room', false) == true || chatDoc(resource.data.chatId).get('type', '') != 'group' || chatDoc(resource.data.chatId).members.hasAll(nc().members.removeAll(nc().get('guestList', []))))))
         && (nc().group == resource.data.group || (nc().group == true && nc().members.size() > resource.data.members.size()))
         && (nc().liveFor == nc().members || (nc().liveFor.size() == 0 && nc().live == false))
         && nc().joined is list && nc().joined.size() <= 12

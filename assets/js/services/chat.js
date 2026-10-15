@@ -154,7 +154,9 @@ export async function postCallLog(chatId, call) {
   if (call.group && Array.isArray(call.with) && call.with.length) c.with = call.with.slice(0, 12);   // who was called (a group call is for some members only)
   if (call.rec) c.rec = true;   // it was recorded
   if (call.tr) c.tr = true;     // there is a transcript
-  const names = c.with ? ' — ' + c.with.filter(e => e !== session.email).map(e => String(nameOf(e)).split(' ')[0]).join('، ') : '';
+  if (call.gn && Object.keys(call.gn).length) c.gn = call.gn;   // guests from outside (no account): their names
+  const nm = (e) => (c.gn && c.gn[ek(e)]) || nameOf(e);
+  const names = c.with ? ' — ' + c.with.filter(e => e !== session.email).map(e => String(nm(e)).split(' ')[0]).join('، ') : '';
   return post(chat, { type: 'call', text: '', call: c }, (callLine(c) + names).slice(0, 140));
 }
 

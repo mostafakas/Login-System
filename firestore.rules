@@ -389,7 +389,7 @@ service cloud.firestore {
           && request.resource.data.keys().hasOnly(['by', 'type', 'text', 'file', 'at', 'mentions', 'tasks', 'replyTo', 'call'])
           // a voice call written into the chat when it ends
           && (!('call' in request.resource.data) || (request.resource.data.type == 'call' && request.resource.data.call is map
-              && request.resource.data.call.keys().hasOnly(['id', 'outcome', 'dur', 'group', 'with', 'rec', 'tr'])
+              && request.resource.data.call.keys().hasOnly(['id', 'outcome', 'dur', 'group', 'with', 'rec', 'tr', 'gn'])
               && request.resource.data.call.outcome in ['done', 'missed', 'declined']))
           // a reply keeps a short quote of the message it answers
           && (!('replyTo' in request.resource.data) || (request.resource.data.replyTo is map
@@ -474,49 +474,79 @@ service cloud.firestore {
 
     // ---------- voice calls (WebRTC: the audio goes between the browsers; here only the call and its handshake) ----------
     function callDoc(id) { return get(/databases/$(database)/documents/calls/$(id)).data; }
+    // guests: people without an account, signed in anonymously from a call link, known in the call by a made-up address
+    function anon() { return request.auth != null && request.auth.token.firebase.sign_in_provider == 'anonymous'; }
+    function guestId() { return 'guest_' + request.auth.uid.lower() + '@guest.local'; }
+    function cid() { return anon() ? guestId() : me(); }
+    function callerOk() { return anon() || active(); }
     match /calls/{id} {
       function nc() { return request.resource.data; }
-      allow read: if active() && (me() in resource.data.members || me() in resource.data.get('liveFor', []) || isAdmin());
+      allow read: if callerOk() && (cid() in resource.data.members || cid() in resource.data.get('liveFor', []) || isAdmin());
       // started from a chat I am in, for that chat's members, with only me in it
       allow create: if active() && nc().from == me() && nc().members is list && nc().members.size() >= 2 && nc().members.size() <= 300
         && me() in nc().members && chatDoc(nc().chatId).members.hasAll(nc().members)
         && nc().joined == [me()] && nc().live == true && nc().status == 'ringing' && nc().liveFor == nc().members
         && (!('chatMembers' in nc()) || nc().chatMembers == nc().members)
-        && nc().keys().hasOnly(['chatId', 'group', 'chatName', 'from', 'fromName', 'members', 'liveFor', 'joined', 'beat', 'status', 'live', 'at', 'atMs', 'startedAt', 'invitedAt', 'invitedBy', 'chatMembers']);
+        && nc().keys().hasOnly(['chatId', 'group', 'chatName', 'from', 'fromName', 'members', 'liveFor', 'joined', 'beat', 'status', 'live', 'at', 'atMs', 'startedAt', 'invitedAt', 'invitedBy', 'chatMembers', 'names']);
       // people in the call: join / leave / heartbeat / end. Nobody can put someone else in the call or reopen it.
       // Someone talking may invite more people (the invite list only grows): from a group chat only its members,
       // from a 1:1 call any colleague — that call then becomes a call of several people.
-      allow update: if active() && me() in resource.data.members
-        && onlyChanged(['joined', 'beat', 'status', 'startedAt', 'live', 'liveFor', 'outcome', 'endedAt', 'endedBy', 'members', 'invitedAt', 'invitedBy', 'group', 'declinedAt', 'leftAt', 'sharing', 'recBy', 'rec', 'tr'])
+      // A guest who was let in may do what the others do in the call, except invite people, hand out the link or record.
+      allow update: if callerOk() && cid() in resource.data.members
+        && onlyChanged(['joined', 'beat', 'status', 'startedAt', 'live', 'liveFor', 'outcome', 'endedAt', 'endedBy', 'members', 'invitedAt', 'invitedBy', 'group', 'declinedAt', 'leftAt', 'sharing', 'recBy', 'rec', 'tr', 'names', 'guestKey', 'guestList'])
         // recording: one at a time — you can start it unless someone still in the call is recording
-        && (!('recBy' in affected()) || nc().recBy == '' || (nc().recBy == me()
+        && (!('recBy' in affected()) || nc().recBy == '' || (!anon() && nc().recBy == me()
             && (resource.data.get('recBy', '') in ['', me()] || !(resource.data.get('recBy', '') in resource.data.joined))))
+        && (!('rec' in affected()) || !anon())
         // screen sharing: at most 3 at once, and you can only put yourself on the list
         && (!('sharing' in affected()) || (nc().sharing is list && nc().sharing.size() <= 3
-            && nc().sharing.toSet().difference(resource.data.get('sharing', []).toSet()).hasOnly([me()])))
-        && (nc().members == resource.data.members || (me() in resource.data.joined && resource.data.live == true
+            && nc().sharing.toSet().difference(resource.data.get('sharing', []).toSet()).hasOnly([cid()])))
+        // the guest link: made once, by someone talking in the call
+        && (!('guestKey' in affected()) || (!anon() && resource.data.get('guestKey', '') == '' && nc().guestKey is string
+            && nc().guestKey.size() >= 16 && nc().guestKey.size() <= 40 && me() in resource.data.joined && resource.data.live == true))
+        // letting a guest in: one at a time, a guest address, the list only grows
+        && (!('guestList' in affected()) || (!anon() && me() in resource.data.joined && resource.data.live == true
+            && nc().guestList.size() == resource.data.get('guestList', []).size() + 1 && nc().guestList.hasAll(resource.data.get('guestList', []))
+            && nc().guestList[nc().guestList.size() - 1].matches('^guest_[a-z0-9]+@guest[.]local$')))
+        // a guest only writes their own name
+        && (!anon() || !('names' in affected()) || nc().names.diff(resource.data.get('names', {})).affectedKeys().size() <= 1)
+        && (nc().members == resource.data.members || (!anon() && me() in resource.data.joined && resource.data.live == true
             && nc().members.hasAll(resource.data.members) && nc().members.size() <= 30
-            && (chatDoc(resource.data.chatId).get('type', '') != 'group' || chatDoc(resource.data.chatId).members.hasAll(nc().members))))
+            && (chatDoc(resource.data.chatId).get('type', '') != 'group' || chatDoc(resource.data.chatId).members.hasAll(nc().members.removeAll(nc().get('guestList', []))))))
         && (nc().group == resource.data.group || (nc().group == true && nc().members.size() > resource.data.members.size()))
         && (nc().liveFor == nc().members || (nc().liveFor.size() == 0 && nc().live == false))
         && nc().joined is list && nc().joined.size() <= 12
-        && nc().joined.toSet().difference(resource.data.joined.toSet()).hasOnly([me()])
+        && nc().joined.toSet().difference(resource.data.joined.toSet()).hasOnly([cid()])
         && (resource.data.live == true || nc().live == false)
         && nc().status in ['ringing', 'active', 'ended'];
       allow delete: if isAdmin();
       // the connection handshake between two people in the call (deleted by whoever receives it)
       match /signals/{s} {
-        allow read: if active() && resource.data.to == me();
-        allow create: if active() && request.resource.data.from == me() && me() in callDoc(id).members && request.resource.data.to in callDoc(id).members
+        allow read: if callerOk() && resource.data.to == cid();
+        allow create: if callerOk() && request.resource.data.from == cid() && cid() in callDoc(id).members && request.resource.data.to in callDoc(id).members
           && request.resource.data.kind in ['offer', 'answer', 'ice'] && request.resource.data.data is string && request.resource.data.data.size() < 30000;
-        allow delete: if active() && (resource.data.to == me() || resource.data.from == me());
+        allow delete: if callerOk() && (resource.data.to == cid() || resource.data.from == cid());
+      }
+      // a guest at the door: opened the call link (with its key) and wrote a name; someone in the call lets them in or not
+      match /guests/{uid} {
+        function g() { return request.resource.data; }
+        function nameOk() { return g().name is string && g().name.size() >= 2 && g().name.size() <= 60; }
+        allow read: if (anon() && request.auth.uid == uid) || (active() && me() in callDoc(id).members);
+        allow create: if anon() && request.auth.uid == uid && callDoc(id).live == true
+          && callDoc(id).get('guestKey', '') != '' && g().key == callDoc(id).guestKey
+          && g().status == 'waiting' && g().email == guestId() && nameOk() && g().at == request.time
+          && g().keys().hasOnly(['name', 'key', 'status', 'email', 'at']);
+        // the guest opened the link again while still waiting (new name / time)
+        allow update: if (anon() && request.auth.uid == uid && resource.data.status == 'waiting' && onlyChanged(['name', 'at']) && nameOk() && g().at == request.time)
+          || (active() && me() in callDoc(id).joined && onlyChanged(['status', 'by']) && g().status in ['allowed', 'denied'] && g().by == me());
+        allow delete: if isAdmin();
       }
     }
 
     // ---------- call recordings & transcripts ----------
     // what each person's browser wrote down during a call (only the admin reads it; the Apps Script builds the file)
     match /call_transcripts/{callId}/parts/{p} {
-      allow create: if active() && request.resource.data.by == me() && me() in callDoc(callId).members
+      allow create: if callerOk() && request.resource.data.by == cid() && cid() in callDoc(callId).members
         && request.resource.data.lines is list && request.resource.data.lines.size() <= 300;
       allow read, delete: if isAdmin();
     }

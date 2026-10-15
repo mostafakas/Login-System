@@ -210,7 +210,7 @@ async function flush(t) {
   if (!t.lines.length) return;
   const lines = t.lines.splice(0);
   try {
-    await setDoc(doc(col(`call_transcripts/${t.callId}/parts`)), { by: session.email, name: nameOf(session.email), lines, at: serverTimestamp(), atMs: now() });
+    await setDoc(doc(col(`call_transcripts/${t.callId}/parts`)), { by: session.email, name: session.guestName || nameOf(session.email), lines, at: serverTimestamp(), atMs: now() });
     if (!t.flagged) { t.flagged = true; updateDoc(doc(db, 'calls', t.callId), { tr: true }).catch(() => {}); }
   } catch (e) { t.lines.unshift(...lines); console.warn('transcript save', e && e.message); }
 }

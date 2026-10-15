@@ -120,6 +120,8 @@ function applyUpdate(ref, data) {
 }
 function applyDelete(ref) { logWrite('delete', ref, store[ref.path] || {}, null); delete store[ref.path]; }
 function commit() { persist(); notifyAll(); }
+// writes start from what other pages saved last (like the server merging), so a stale page never wipes their writes
+function fresh() { try { store = dec(JSON.parse(localStorage.getItem(LS) || '{}')); } catch {} }
 
 // ---- snapshots ----
 function bill(n) { try { const k = 'mock_reads'; localStorage.setItem(k, String(Number(localStorage.getItem(k) || 0) + n)); } catch {} }
@@ -185,9 +187,9 @@ function querySnap(q, prevIds) {
 export async function getDoc(ref) { await tick(); bill(1); if (localStorage.getItem('mock_quota') === '1') throw err('resource-exhausted', 'Quota exceeded.'); return docSnap(ref); }
 export const getDocFromServer = getDoc;
 export async function getDocs(q) { await tick(); const r = querySnap(q); bill(Math.max(1, r.docs.length)); return r; } // throws like Firestore when an index is missing
-export async function setDoc(ref, data, opts) { await tick(); applySet(ref, data, opts); commit(); }
-export async function updateDoc(ref, data) { await tick(); applyUpdate(ref, data); commit(); }
-export async function deleteDoc(ref) { await tick(); applyDelete(ref); commit(); }
+export async function setDoc(ref, data, opts) { await tick(); fresh(); applySet(ref, data, opts); commit(); }
+export async function updateDoc(ref, data) { await tick(); fresh(); applyUpdate(ref, data); commit(); }
+export async function deleteDoc(ref) { await tick(); fresh(); applyDelete(ref); commit(); }
 export async function addDoc(col, data) { const r = doc(col); await setDoc(r, data); return r; }
 const tick = () => new Promise(r => setTimeout(r, 1));
 
@@ -224,7 +226,7 @@ export function writeBatch() {
     update(ref, data) { ops.push(() => applyUpdate(ref, data)); return this; },
     delete(ref) { ops.push(() => applyDelete(ref)); return this; },
     async commit() {
-      await tick();
+      await tick(); fresh();
       const backup = clone(store);
       try { ops.forEach(o => o()); } catch (e) { store = backup; throw e; }
       commit();
@@ -241,6 +243,7 @@ export async function runTransaction(db, fn) {
     delete(ref) { wrote = true; ops.push(() => applyDelete(ref)); return tx; }
   };
   const result = await fn(tx);
+  fresh();
   const backup = clone(store);
   try { ops.forEach(o => o()); } catch (e) { store = backup; throw e; }
   commit();

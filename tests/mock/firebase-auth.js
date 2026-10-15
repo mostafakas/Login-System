@@ -32,6 +32,14 @@ export async function signInWithEmailAndPassword(auth, email, password) {
   emit(auth);
   return { user: auth.currentUser };
 }
+// a guest (no account): kept for this tab only
+export async function signInAnonymously(auth) {
+  let uid = sessionStorage.getItem('mockauth_anon');
+  if (!uid) { uid = 'Anon' + Math.random().toString(36).slice(2, 12); sessionStorage.setItem('mockauth_anon', uid); }
+  auth.currentUser = { uid, email: null, isAnonymous: true, displayName: null, getIdToken: async () => 'mock-anon-' + uid, _auth: auth };
+  emit(auth);
+  return { user: auth.currentUser };
+}
 export async function signOut(auth) {
   auth.currentUser = null;
   if (auth.primary) localStorage.removeItem(LS_CUR);

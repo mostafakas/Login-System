@@ -13,10 +13,12 @@ import { play } from '../core/sounds.js';
 import {
   startCall, joinCall, declineCall, hangUp, setMuted, currentCall, onCallState, watchMyCalls, dropStale, isTalking,
   lastEndedCall, fmtDur, RING_FOR, MAX_IN_CALL, touchedHere, addToCall, invitedAtOf, endForAll, myBeatStale,
+  callName, guestLink, watchGuests, admitGuest, denyGuest, isGuestEmail,
   shareScreen, stopScreen, canShareScreen, screensNow, MAX_SHARING
 } from '../services/calls.js';
 
-const who = (e) => person(e) || { email: e, name: nameOf(e) };
+const nm = (e, c) => callName(c || (currentCall() || {}).call, e);   // employees by profile, guests by the name kept in the call
+const who = (e, c) => person(e) || { email: e, name: nm(e, c) };
 let live = [];                       // live calls in my chats
 const liveSubs = new Set();
 export const onLiveCalls = (cb) => { liveSubs.add(cb); return () => liveSubs.delete(cb); };
@@ -87,10 +89,10 @@ function hideIncoming(id) {
 function showIncoming(c) {
   if (incoming.has(c.id)) return;
   const from = who(((c.invitedBy || {})[ek(session.email)]) || c.from);   // whoever added me, else who started it
-  const inNames = (c.joined || []).filter(e => e !== session.email).map(e => String(nameOf(e)).split(' ')[0]).join('، ');
+  const inNames = (c.joined || []).filter(e => e !== session.email).map(e => String(nm(e, c)).split(' ')[0]).join('، ');
   const title = c.group && !c.chatName ? L(`${from.name || from.email} بيضيفك لمكالمة`, `${from.name || from.email} adds you to a call`)
     : c.group ? L(`مكالمة جماعية في ${c.chatName}`, `Group call in ${c.chatName}`) : L(`${from.name || from.email} بيكلّمك`, `${from.name || from.email} is calling you`);
-  const sub = c.group && !c.chatName ? L(`جوّه: ${inNames}`, `In the call: ${inNames}`) : c.group ? L(`${from.name || from.email} بدأها · ${(c.joined || []).length} جوّه: ${(c.joined || []).map(e => String(nameOf(e)).split(' ')[0]).join('، ')}`, `Started by ${from.name || from.email} · ${(c.joined || []).length} in`) : L('📞 مكالمة صوتية', '📞 Voice call');
+  const sub = c.group && !c.chatName ? L(`جوّه: ${inNames}`, `In the call: ${inNames}`) : c.group ? L(`${from.name || from.email} بدأها · ${(c.joined || []).length} جوّه: ${(c.joined || []).map(e => String(nm(e, c)).split(' ')[0]).join('، ')}`, `Started by ${from.name || from.email} · ${(c.joined || []).length} in`) : L('📞 مكالمة صوتية', '📞 Voice call');
   const el = document.createElement('div');
   el.className = 'ring-pop call-in'; el.setAttribute('role', 'alertdialog');
   el.innerHTML = `<span class="ring-av">${avatar(from)}</span><div class="grow min0"><b class="truncate">${esc(title)}</b><small class="truncate">${esc(sub)}</small></div>
@@ -116,10 +118,25 @@ function showIncoming(c) {
 
 // ---------------------------------------------------------------- the call bar
 let panel = null, clock = 0, ringback = 0, minimized = false, wasIn = null, endMenu = false;
+// guests from outside waiting to be let in
+let lobby = { id: '', off: null, rows: [] };
+function watchLobby(c) {
+  const id = c ? c.id : '';
+  if (lobby.id === id) return;
+  if (lobby.off) lobby.off();
+  lobby = { id, off: null, rows: [] };
+  if (!id) return;
+  lobby.off = watchGuests(id, rows => {
+    const fresh = rows.some(r => !lobby.rows.some(x => x.id === r.id));
+    lobby.rows = rows;
+    if (fresh) { play('meeting'); if (minimized) minimized = false; }
+    drawPanel();
+  });
+}
 function drawPanel() {
   const c = currentCall();
   if (!c) {
-    clearInterval(clock); clock = 0; clearInterval(ringback); ringback = 0; endMenu = false;
+    clearInterval(clock); clock = 0; clearInterval(ringback); ringback = 0; endMenu = false; watchLobby(null);
     if (panel) { panel.remove(); panel = null; }
     const end = lastEndedCall();
     if (wasIn && end && end.id === wasIn) {
@@ -132,6 +149,7 @@ function drawPanel() {
     return;
   }
   if (wasIn !== c.id) { wasIn = c.id; play('calljoin'); }
+  watchLobby(c);
   const call = c.call || {};
   if (!panel) {
     panel = document.createElement('div'); panel.className = 'call-panel'; panel.setAttribute('role', 'region');
@@ -149,6 +167,11 @@ function drawPanel() {
       else if (a === 'endall') { endMenu = false; endForAll(); }
       else if (a === 'leave') { endMenu = false; hangUp(); }
       else if (a === 'endx') { endMenu = false; drawPanel(); }
+      else if (a === 'guest') shareGuestLink();
+      else if (a === 'gin' || a === 'gout') {
+        const g = lobby.rows.find(x => x.id === b.dataset.g); if (!g) return;
+        (a === 'gin' ? admitGuest(g) : denyGuest(g)).then(() => { if (a === 'gin') toast(L(`${g.name} دخل المكالمة`, `${g.name} joined the call`), L('ضيف من برّه', 'Guest from outside'), 'info'); }).catch(toastErr);
+      }
       else if (a === 'perm') { try { Notification.requestPermission().then(() => drawPanel()); } catch {} }
       else if (a === 'min') { minimized = !minimized; drawPanel(); }
       else if (a === 'add') addPeople();
@@ -161,23 +184,23 @@ function drawPanel() {
   const others = (call.joined || []).filter(e => e !== me);
   const ringing = !call.startedAt;
   const otherOne = call.group ? null : who((call.members || []).find(e => e !== me));
-  const firstNames = (list) => list.map(e => String(nameOf(e)).split(' ')[0]).join('، ');
+  const firstNames = (list) => list.map(e => String(nm(e)).split(' ')[0]).join('، ');
   const title = call.group ? (call.chatName || L(`مكالمة مع ${firstNames(others) || '…'}`, `Call with ${firstNames(others) || '…'}`)) : (otherOne.name || otherOne.email);
   const canOpenChat = !call.chatMembers || call.chatMembers.includes(me);
   const STATE = { connecting: L('بيتوصل…', 'connecting…'), unstable: L('الشبكة ضعيفة', 'weak network'), failed: L('مش قادر يتوصل', 'cannot connect'), closed: '' };
   const people = [me, ...others].map(e => {
     const p = c.peers.get(e); const st = e === me ? '' : (p ? (p.state === 'connected' ? '' : STATE[p.state] || '') : STATE.connecting);
-    return `<span class="call-person ${isTalking(e) ? 'talking' : ''} ${e === me && c.muted ? 'muted' : ''}" title="${esc(e === me ? L('إنت', 'You') : nameOf(e))}">${avatar(who(e), 'sm')}${e === me && c.muted ? '<i class="fas fa-microphone-slash"></i>' : ''}${st ? `<small>${esc(st)}</small>` : ''}</span>`;
+    return `<span class="call-person ${isTalking(e) ? 'talking' : ''} ${e === me && c.muted ? 'muted' : ''}" title="${esc(e === me ? L('إنت', 'You') : nm(e))}">${avatar(who(e), 'sm')}${e === me && c.muted ? '<i class="fas fa-microphone-slash"></i>' : ''}${st ? `<small>${esc(st)}</small>` : ''}</span>`;
   }).join('');
   // asked but not in yet (still ringing for them)
   const declined = (e) => Number(((call.declinedAt || {})[ek(e)]) || 0) > invitedAtOf(call, e);
   const waiting = call.group ? (call.members || []).filter(e => e !== me && !others.includes(e) && now() - invitedAtOf(call, e) < RING_FOR + 15000) : [];
   const left = (e) => Number(((call.leftAt || {})[ek(e)]) || 0) > invitedAtOf(call, e);
   const ringingPpl = waiting.map(e => left(e)
-    ? `<span class="call-person declined" title="${esc(nameOf(e))}">${avatar(who(e), 'sm')}<small>${L('خرج', 'left')}</small></span>`
+    ? `<span class="call-person declined" title="${esc(nm(e))}">${avatar(who(e), 'sm')}<small>${L('خرج', 'left')}</small></span>`
     : declined(e)
-    ? `<span class="call-person declined" title="${esc(nameOf(e))}">${avatar(who(e), 'sm')}<small>${L('اعتذر', 'declined')}</small></span>`
-    : (now() - invitedAtOf(call, e) < RING_FOR ? `<span class="call-person waiting" title="${esc(nameOf(e))}">${avatar(who(e), 'sm')}<small>${L('بيرن…', 'ringing…')}</small></span>` : `<span class="call-person declined" title="${esc(nameOf(e))}">${avatar(who(e), 'sm')}<small>${L('ما ردّش', 'no answer')}</small></span>`)).join('');
+    ? `<span class="call-person declined" title="${esc(nm(e))}">${avatar(who(e), 'sm')}<small>${L('اعتذر', 'declined')}</small></span>`
+    : (now() - invitedAtOf(call, e) < RING_FOR ? `<span class="call-person waiting" title="${esc(nm(e))}">${avatar(who(e), 'sm')}<small>${L('بيرن…', 'ringing…')}</small></span>` : `<span class="call-person declined" title="${esc(nm(e))}">${avatar(who(e), 'sm')}<small>${L('ما ردّش', 'no answer')}</small></span>`)).join('');
   const perm = 'Notification' in window ? Notification.permission : 'granted';
   const recOther = !!(call.recBy && call.recBy !== me && (call.joined || []).includes(call.recBy));
   const failed = [...c.peers.values()].some(p => p.state === 'failed');
@@ -187,9 +210,11 @@ function drawPanel() {
       <small class="num" id="call-clock">${ringing ? L('بيرن…', 'Ringing…') : fmtDur((now() - call.startedAt) / 1000)}${call.group ? ` · ${others.length + 1}/${MAX_IN_CALL}` : ''}</small></div>
       ${canOpenChat ? `<button class="btn btn-ghost btn-icon btn-sm" data-c="chat" title="${L('الشات', 'Chat')}"><i class="fas fa-comment-dots"></i></button>` : ''}
       <button class="btn btn-ghost btn-icon btn-sm" data-c="min" title="${minimized ? L('كبّر', 'Expand') : L('صغّر', 'Minimize')}"><i class="fas ${minimized ? 'fa-up-right-and-down-left-from-center' : 'fa-down-left-and-up-right-to-center'}"></i></button></div>
+    ${lobby.rows.length ? `<div class="call-lobby">${lobby.rows.map(g => `<div class="call-lobby-row"><i class="fas fa-user-clock"></i><span class="grow min0 truncate"><b>${esc(g.name || L('ضيف', 'Guest'))}</b> ${L('(من برّه) عايز يدخل', '(outside) wants to join')}</span>
+      <button class="btn btn-sm btn-ok" data-c="gin" data-g="${esc(g.id)}">${L('سماح', 'Let in')}</button><button class="btn btn-sm" data-c="gout" data-g="${esc(g.id)}">${L('رفض', 'Deny')}</button></div>`).join('')}</div>` : ''}
     ${minimized ? '' : `<div class="call-people">${people}${ringingPpl}</div>
       ${failed ? `<div class="call-warn"><i class="fas fa-triangle-exclamation"></i> ${L('الاتصال مش راضي يتوصل — غالباً شبكة الشركة أو النت بيمنعه. جرّب نت تاني.', 'The connection fails — the network probably blocks it. Try another connection.')}</div>` : ''}
-      ${call.recBy && (call.joined || []).includes(call.recBy) ? `<div class="call-recon"><span class="rec-dot"></span> ${call.recBy === me ? L('إنت بتسجّل المكالمة', 'You are recording this call') : L(`المكالمة بتتسجّل (${String(nameOf(call.recBy)).split(' ')[0]})`, `This call is being recorded (${String(nameOf(call.recBy)).split(' ')[0]})`)}</div>` : ''}
+      ${call.recBy && (call.joined || []).includes(call.recBy) ? `<div class="call-recon"><span class="rec-dot"></span> ${call.recBy === me ? L('إنت بتسجّل المكالمة', 'You are recording this call') : L(`المكالمة بتتسجّل (${String(nm(call.recBy)).split(' ')[0]})`, `This call is being recorded (${String(nm(call.recBy)).split(' ')[0]})`)}</div>` : ''}
       ${call.startedAt ? `<div class="call-trnote"><i class="fas fa-file-lines"></i> ${!canTranscribe() ? L('متصفحك مش بيدعم التفريغ — كلامك مش هيتكتب في المحضر', 'Your browser cannot transcribe — your words will not be in the transcript') : transcriptBlocked() ? L('التفريغ متوقف: المتصفح منعه', 'Transcript blocked by the browser') : c.muted ? L('التفريغ واقف وإنت قافل المايك', 'Transcript paused while muted') : L('الكلام بيتفرّغ تلقائياً في محضر', 'What is said is transcribed automatically')}</div>` : ''}
       ${c.screen ? `<div class="call-sharing"><i class="fas fa-display"></i> ${L('إنت بتعرض شاشتك', 'You are sharing your screen')} <button class="btn btn-sm" data-c="share">${L('وقف', 'Stop')}</button></div>` : ''}
       ${perm === 'default' ? `<button class="call-hint" data-c="perm"><i class="fas fa-bell"></i> ${L('فعّل إشعارات الويندوز عشان المكالمات توصلك والسيستم في الخلفية', 'Turn on desktop notifications so calls reach you in the background')}</button>` : ''}
@@ -200,12 +225,31 @@ function drawPanel() {
       ${canRecord() && call.startedAt ? `<button class="btn btn-icon call-btn ${isRecording() ? 'rec-on' : ''}" data-c="rec" title="${isRecording() ? L('وقف التسجيل', 'Stop recording') : L('سجّل المكالمة', 'Record the call')}" ${recOther ? 'disabled' : ''}><i class="fas ${isRecording() ? 'fa-stop' : 'fa-circle'}"></i></button>` : ''}
       ${canShareScreen() ? `<button class="btn btn-icon call-btn ${c.screen ? 'on' : ''}" data-c="share" title="${c.screen ? L('وقف عرض شاشتك', 'Stop sharing your screen') : L(`اعرض شاشتك (${(call.sharing || []).length}/${MAX_SHARING})`, `Share your screen (${(call.sharing || []).length}/${MAX_SHARING})`)}"><i class="fas ${c.screen ? 'fa-display' : 'fa-desktop'}"></i></button>` : ''}
       ${(call.joined || []).includes(me) ? `<button class="btn btn-icon call-btn" data-c="add" title="${L('إضافة حد للمكالمة', 'Add someone to the call')}"><i class="fas fa-user-plus"></i></button>` : ''}
+      ${(call.joined || []).includes(me) && call.startedAt ? `<button class="btn btn-icon call-btn" data-c="guest" title="${L('ضيف من برّه (من غير حساب) — لينك', 'A guest without an account — link')}"><i class="fas fa-link"></i></button>` : ''}
       <button class="btn btn-icon call-btn end" data-c="end" title="${L('إنهاء المكالمة', 'Hang up')}"><i class="fas fa-phone-slash"></i></button>
     </div>`;
   if (!clock) clock = setInterval(() => { const cc = currentCall(); const el = document.getElementById('call-clock'); if (cc && el && cc.call.startedAt) el.textContent = fmtDur((now() - cc.call.startedAt) / 1000) + (cc.call.group ? ` · ${(cc.call.joined || []).length}/${MAX_IN_CALL}` : ''); }, 1000);
   // the caller hears a ring-back tone until someone answers
   if (ringing && call.from === me && !ringback) { play('ringback'); ringback = setInterval(() => { const cc = currentCall(); if (cc && !cc.call.startedAt) play('ringback'); }, 3000); }
   if (!ringing && ringback) { clearInterval(ringback); ringback = 0; }
+}
+
+/** A link for someone without an account: they open it, write their name, and wait until someone lets them in */
+async function shareGuestLink() {
+  try {
+    const link = await guestLink();
+    if (!link) return;
+    const msg = L(`ادخل المكالمة من اللينك ده: ${link}`, `Join the call from this link: ${link}`);
+    const m = modal({
+      title: L('ضيف من برّه', 'A guest from outside'), icon: 'fa-link', size: 'narrow',
+      body: `<div class="col gap-12"><p class="small muted">${L('ابعت اللينك ده لأي حد مش عنده حساب على السيستم. بيفتحه من الموبايل أو الكمبيوتر، يكتب اسمه، ويستنى لحد ما حد في المكالمة يدوس «سماح». اللينك شغال طول ما المكالمة دي شغالة بس.', 'Send this link to someone without an account. They open it, write their name and wait until someone in the call presses "Let in". It works only while this call is on.')}</p>
+        <input class="input" id="gl-link" readonly dir="ltr" value="${esc(link)}">
+        <p class="xs muted">${L('الضيف بيسمع ويتكلم ويشوف الشاشات المعروضة، وكلامه بيدخل في المحضر والتسجيل. مش بيشوف الشات ولا أي حاجة تانية في السيستم.', 'The guest hears, talks and sees shared screens; their words go into the transcript and recording. They see nothing else in the system.')}</p></div>`,
+      foot: `<a class="btn" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(msg)}"><i class="fab fa-whatsapp"></i> ${L('واتساب', 'WhatsApp')}</a><button class="btn btn-primary" id="gl-copy"><i class="fas fa-copy"></i> ${L('نسخ اللينك', 'Copy link')}</button>`
+    });
+    m.$('#gl-link').onclick = (e) => e.target.select();
+    m.$('#gl-copy').onclick = async () => { try { await navigator.clipboard.writeText(link); } catch { m.$('#gl-link').select(); document.execCommand && document.execCommand('copy'); } toast(L('اتنسخ', 'Copied'), '', 'info'); };
+  } catch (e) { toastErr(e); }
 }
 
 /** "Add" in the call bar: pick more people from the group */
@@ -225,7 +269,7 @@ async function addPeople() {
     const people = await pickCallees(pool, { exclude: [...new Set([...(k.joined || []), ...ringingNow])], max: MAX_IN_CALL - (k.joined || []).length, adding: true, anyone: !fromGroup, notes });
     if (!people || !people.length) return;
     const n = await addToCall(people);
-    if (n) toast(L('اتضافوا وبيرن عندهم', 'Added — ringing now'), people.map(e => nameOf(e)).join('، '));
+    if (n) toast(L('اتضافوا وبيرن عندهم', 'Added — ringing now'), people.map(e => nm(e)).join('، '));
   } catch (e) { toastErr(e); }
 }
 
@@ -258,7 +302,7 @@ function drawStage() {
     let t = tiles.get(email);
     if (!t) {
       const el = document.createElement('div'); el.className = 'screen-tile'; el.dataset.tile = email;
-      el.innerHTML = `<video autoplay playsinline muted></video><span class="screen-name">${avatar(who(email), 'xs')} ${esc(L(`شاشة ${String(nameOf(email)).split(' ')[0]}`, `${String(nameOf(email)).split(' ')[0]}'s screen`))}</span>`;
+      el.innerHTML = `<video autoplay playsinline muted></video><span class="screen-name">${avatar(who(email), 'xs')} ${esc(L(`شاشة ${String(nm(email)).split(' ')[0]}`, `${String(nm(email)).split(' ')[0]}'s screen`))}</span>`;
       t = { el, video: el.querySelector('video'), stream: null };
       tiles.set(email, t); grid.appendChild(el);
     }
@@ -268,7 +312,7 @@ function drawStage() {
   stage.classList.toggle('collapsed', collapsed);
   grid.className = `screen-grid n${Math.min(list.length, 3)} ${focus ? 'focused' : ''}`;
   tiles.forEach((t, e) => t.el.classList.toggle('main', e === focus));
-  stage.querySelector('#ss-title').textContent = list.length > 1 ? L(`${list.length} شاشات معروضة — اضغط على شاشة عشان تكبّرها`, `${list.length} screens — click one to enlarge`) : L(`${String(nameOf(list[0].email)).split(' ')[0]} بيعرض شاشته`, `${String(nameOf(list[0].email)).split(' ')[0]} is sharing`);
+  stage.querySelector('#ss-title').textContent = list.length > 1 ? L(`${list.length} شاشات معروضة — اضغط على شاشة عشان تكبّرها`, `${list.length} screens — click one to enlarge`) : L(`${String(nm(list[0].email)).split(' ')[0]} بيعرض شاشته`, `${String(nm(list[0].email)).split(' ')[0]} is sharing`);
 }
 
 // ---------------------------------------------------------------- started once after sign-in

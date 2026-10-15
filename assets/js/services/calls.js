@@ -25,6 +25,13 @@ const emit = () => listeners.forEach(cb => { try { cb(cur); } catch (e) { consol
 /** the call I am in (one at a time) */
 let cur = null;
 export const currentCall = () => cur;
+// ---- guests: people without an account, let in from a link (calls/{id}/guests/{uid}), with a made-up address
+export const GUEST_DOMAIN = '@guest.local';
+export const isGuestEmail = (e) => String(e || '').endsWith(GUEST_DOMAIN);
+export const guestEmailFor = (uid) => 'guest_' + String(uid || '').toLowerCase() + GUEST_DOMAIN;
+const myName = () => session.guestName || nameOf(session.email);
+/** the name of someone in a call (guests have no profile: their name is kept in the call) */
+export const callName = (c, e) => (((c && c.names) || {})[ek(e)]) || (isGuestEmail(e) ? L('ضيف', 'Guest') : nameOf(e));
 const touched = new Set();   // calls this page started or joined (so a fresh snapshot is never taken for a left-over)
 export const touchedHere = (id) => touched.has(id);
 
@@ -58,7 +65,7 @@ export async function startCall(chat, people = null) {
   const me = session.email;
   const data = {
     chatId: chat.id, group: isGroup(chat), chatName: isGroup(chat) ? String(chat.name || '').slice(0, 80) : '',
-    from: me, fromName: nameOf(me), members, liveFor: members, joined: [me], ...(isGroup(chat) ? {} : { chatMembers: members.slice() }), beat: { [ek(me)]: now() },
+    from: me, fromName: nameOf(me), members, liveFor: members, joined: [me], names: Object.fromEntries(members.map(e => [ek(e), nameOf(e)])), ...(isGroup(chat) ? {} : { chatMembers: members.slice() }), beat: { [ek(me)]: now() },
     status: 'ringing', live: true, at: serverTimestamp(), atMs: now(), startedAt: 0
   };
   try { await setDoc(ref, data); } catch (e) { stream.getTracks().forEach(t => t.stop()); throw e; }
@@ -92,7 +99,8 @@ export async function addToCall(people) {
     const invitedAt = { ...(d.invitedAt || {}) }, invitedBy = { ...(d.invitedBy || {}) };
     added.forEach(e => { invitedAt[ek(e)] = now(); invitedBy[ek(e)] = session.email; });
     const grows = members.length > (d.members || []).length;
-    tx.update(ref, { invitedAt, invitedBy, ...(grows ? { members, liveFor: members } : {}), ...(d.group || !grows ? {} : { group: true }) });
+    const names = { ...(d.names || {}) }; added.forEach(e => { if (!names[ek(e)]) names[ek(e)] = nameOf(e); });
+    tx.update(ref, { invitedAt, invitedBy, names, ...(grows ? { members, liveFor: members } : {}), ...(d.group || !grows ? {} : { group: true }) });
   });
   if (added.length) track('call.add', { target: cur.call.chatName || '', detail: added.map(nameOf).join('، ') });
   return added.length;
@@ -120,7 +128,7 @@ export async function joinCall(callId) {
       if (alive.length >= MAX_IN_CALL) throw userError(`المكالمة فيها ${MAX_IN_CALL} أشخاص — ده الحد.`, `The call already has ${MAX_IN_CALL} people — that is the limit.`);
       before = alive;
       beat[ek(me)] = now();
-      const upd = { joined: [...alive, me], beat, status: 'active', ...(c.startedAt ? {} : { startedAt: now() }) };
+      const upd = { joined: [...alive, me], beat, status: 'active', ...(c.startedAt ? {} : { startedAt: now() }), names: { ...(c.names || {}), [ek(me)]: (isGuestEmail(me) && (c.names || {})[ek(me)]) || myName() } };
       tx.update(ref, upd);
       call = { ...c, ...upd, id: callId };
     });
@@ -158,15 +166,60 @@ export async function hangUp(reason = '') {
     if (!d || !d.live) return;
     const beat = { ...(d.beat || {}) }; delete beat[ek(me)];
     const left = (d.joined || []).filter(e => e !== me && now() - Number(beat[ek(e)] || 0) < STALE);
-    const end = !d.group || !left.length;
+    const end = !d.group || !left.filter(e => !isGuestEmail(e)).length;   // guests alone don't keep a call going
     if (end) {
       const outcome = d.startedAt ? 'done' : (reason === 'missed' ? 'missed' : 'cancelled');
       tx.update(ref, { live: false, liveFor: [], status: 'ended', outcome, joined: left, beat, endedAt: now(), endedBy: me });
-      log = { id: c.id, outcome: outcome === 'cancelled' ? 'missed' : outcome, dur: d.startedAt ? Math.round((now() - d.startedAt) / 1000) : 0, group: !!d.group, with: d.group ? (d.members || []) : [], rec: !!d.rec, tr: !!d.tr };
+      log = { id: c.id, outcome: outcome === 'cancelled' ? 'missed' : outcome, dur: d.startedAt ? Math.round((now() - d.startedAt) / 1000) : 0, group: !!d.group, with: d.group ? (d.members || []) : [], rec: !!d.rec, tr: !!d.tr, gn: guestNames(d) };
     } else tx.update(ref, { joined: left, beat, [`leftAt.${ek(me)}`]: now(), sharing: (d.sharing || []).filter(e => e !== me && left.includes(e)), ...(d.recBy === me ? { recBy: '' } : {}) });
   }).catch(e => console.warn('hang up', e && e.message));
   if (log) finishLog(c, log);
 }
+
+const guestNames = (d) => { const o = {}; (d.members || []).filter(isGuestEmail).forEach(e => { o[ek(e)] = String(((d.names || {})[ek(e)]) || L('ضيف', 'Guest')).slice(0, 60); }); return o; };
+
+// ---------------------------------------------------------------- guests from outside (a link + the host lets them in)
+const randKey = () => { const a = new Uint8Array(18); crypto.getRandomValues(a); return [...a].map(x => x.toString(36).padStart(2, '0')).join('').slice(0, 24); };
+/** The link for this call (made once per call; anyone opening it waits until someone in the call lets them in) */
+export async function guestLink() {
+  if (!cur) return '';
+  const id = cur.id;
+  let key = '';
+  await runTransaction(db, async (tx) => {
+    const ref = doc(db, 'calls', id);
+    const s = await tx.get(ref); const d = s.exists() ? s.data() : null;
+    if (!d || !d.live) throw userError('المكالمة خلصت.', 'The call has ended.');
+    key = d.guestKey || randKey();
+    if (!d.guestKey) tx.update(ref, { guestKey: key });
+  });
+  const base = location.origin + location.pathname.replace(/[^/]*$/, '');
+  return `${base}guest.html#c=${encodeURIComponent(id)}&k=${encodeURIComponent(key)}`;
+}
+/** guests waiting at the door of my call */
+export const watchGuests = (callId, cb) => watch(query(col(`calls/${callId}/guests`), where('status', '==', 'waiting')), cb, () => cb([]));
+/** let a guest in: they become part of the call (and can talk, see screens, be in the transcript) */
+export async function admitGuest(g) {
+  if (!cur) return;
+  const id = cur.id;
+  await runTransaction(db, async (tx) => {
+    const ref = doc(db, 'calls', id), gref = doc(db, `calls/${id}/guests`, g.id);
+    const s = await tx.get(ref); const d = s.exists() ? s.data() : null;
+    const gs = await tx.get(gref); const gd = gs.exists() ? gs.data() : null;
+    if (!d || !d.live) throw userError('المكالمة خلصت.', 'The call has ended.');
+    if (!gd || gd.status !== 'waiting') return;
+    const e = gd.email;
+    if ((d.joined || []).length >= MAX_IN_CALL) throw userError(`المكالمة فيها ${MAX_IN_CALL} أشخاص — ده الحد.`, `The call already has ${MAX_IN_CALL} people — that is the limit.`);
+    const members = (d.members || []).includes(e) ? d.members : [...(d.members || []), e];
+    tx.update(ref, {
+      members, liveFor: members, guestList: [...new Set([...(d.guestList || []), e])], group: true,
+      names: { ...(d.names || {}), [ek(e)]: String(gd.name || '').slice(0, 60) + ' ' + L('(ضيف)', '(guest)') },
+      invitedAt: { ...(d.invitedAt || {}), [ek(e)]: now() }, invitedBy: { ...(d.invitedBy || {}), [ek(e)]: session.email }
+    });
+    tx.update(gref, { status: 'allowed', by: session.email });
+  });
+  track('call.guest', { target: g.name || '', detail: cur.call.chatName || '' });
+}
+export const denyGuest = (g) => cur ? updateDoc(doc(db, `calls/${cur.id}/guests`, g.id), { status: 'denied', by: session.email }) : Promise.resolve();
 
 /** The one who started the call ends it for everybody */
 export async function endForAll() {
@@ -179,7 +232,7 @@ export async function endForAll() {
     if (!d || !d.live) return;
     const outcome = d.startedAt ? 'done' : 'missed';
     tx.update(ref, { live: false, liveFor: [], status: 'ended', outcome, joined: [], endedAt: now(), endedBy: session.email });
-    log = { id: c.id, outcome, dur: d.startedAt ? Math.round((now() - d.startedAt) / 1000) : 0, group: !!d.group, with: d.group ? (d.members || []) : [], rec: !!d.rec, tr: !!d.tr };
+    log = { id: c.id, outcome, dur: d.startedAt ? Math.round((now() - d.startedAt) / 1000) : 0, group: !!d.group, with: d.group ? (d.members || []) : [], rec: !!d.rec, tr: !!d.tr, gn: guestNames(d) };
   }).catch(e => console.warn('end for all', e && e.message));
   if (log) finishLog(c, log);
 }
@@ -217,6 +270,7 @@ function enter(id, call, stream, offerTo) {
     const alive = (d.joined || []).filter(e => now() - Number((d.beat || {})[ek(e)] || 0) < STALE);
     [...cur.peers.keys()].forEach(e => { if (!alive.includes(e)) closePeer(e); });   // left / dropped
     if (!d.group && d.startedAt && !alive.some(e => e !== me)) { hangUp(); return; }   // the other side is gone
+    if (isGuestEmail(me) && !alive.some(e => !isGuestEmail(e))) { hangUp(); return; }   // a guest: everyone with an account is gone
     emit();
   }));
   // "still here" + dropping people whose device went quiet
@@ -226,6 +280,8 @@ function enter(id, call, stream, offerTo) {
     const upd = { [`beat.${ek(me)}`]: now() };
     const dead = (c.joined || []).filter(e => e !== me && now() - Number((c.beat || {})[ek(e)] || 0) > STALE);
     if (dead.length) { upd.joined = (c.joined || []).filter(e => !dead.includes(e)); upd.sharing = (c.sharing || []).filter(e => !dead.includes(e)); }
+    // someone dropped me while my device was quiet (sleep, a network gap): I'm still here — back on the list
+    if (!(c.joined || []).includes(me) && c.live) upd.joined = [...(upd.joined || c.joined || []), me];
     updateDoc(doc(db, 'calls', id), upd).catch(() => {});
   };
   cur.timers.push(setInterval(beat, BEAT_EVERY));

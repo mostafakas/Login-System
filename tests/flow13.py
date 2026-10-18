@@ -64,8 +64,8 @@ D.screenshot(path='shots/f13-three.png')
 D.locator('.call-panel [data-c=share]').first.click(); D.wait_for_timeout(1500)
 ok(not state(D)['mine'] and len(state(D)['sharing']) == 3, 'a fourth screen is refused (limit 3)')
 # focus one
-D.locator('.screen-tile[data-tile="emp2@almaster.tech"]').click(); D.wait_for_timeout(400)
-ok(D.locator('.screen-tile.main[data-tile="emp2@almaster.tech"]').count() == 1, 'clicking a screen enlarges it')
+D.locator('.screen-tile[data-tile="s:emp2@almaster.tech"]').click(); D.wait_for_timeout(400)
+ok(D.locator('.screen-tile.main[data-tile="s:emp2@almaster.tech"]').count() == 1, 'clicking a screen enlarges it')
 D.screenshot(path='shots/f13-focus.png')
 # B stops
 B.locator('.call-sharing [data-c=share]').click(); B.wait_for_timeout(2500)

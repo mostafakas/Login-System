@@ -500,7 +500,7 @@ service cloud.firestore {
       // from a 1:1 call any colleague — that call then becomes a call of several people.
       // A guest who was let in may do what the others do in the call, except invite people, hand out the link or record.
       allow update: if callerOk() && cid() in resource.data.members
-        && onlyChanged(['joined', 'beat', 'status', 'startedAt', 'live', 'liveFor', 'outcome', 'endedAt', 'endedBy', 'members', 'invitedAt', 'invitedBy', 'group', 'declinedAt', 'leftAt', 'sharing', 'recBy', 'rec', 'tr', 'names', 'guestKey', 'guestList'])
+        && onlyChanged(['joined', 'beat', 'status', 'startedAt', 'live', 'liveFor', 'outcome', 'endedAt', 'endedBy', 'members', 'invitedAt', 'invitedBy', 'group', 'declinedAt', 'leftAt', 'sharing', 'cams', 'recBy', 'rec', 'tr', 'names', 'guestKey', 'guestList'])
         // recording: one at a time — you can start it unless someone still in the call is recording
         && (!('recBy' in affected()) || nc().recBy == '' || (!anon() && nc().recBy == me()
             && (resource.data.get('recBy', '') in ['', me()] || !(resource.data.get('recBy', '') in resource.data.joined))))
@@ -508,6 +508,9 @@ service cloud.firestore {
         // screen sharing: at most 3 at once, and you can only put yourself on the list
         && (!('sharing' in affected()) || (nc().sharing is list && nc().sharing.size() <= 3
             && nc().sharing.toSet().difference(resource.data.get('sharing', []).toSet()).hasOnly([cid()])))
+        // cameras: at most 6 on, and you can only turn on your own
+        && (!('cams' in affected()) || (nc().cams is list && nc().cams.size() <= 6
+            && nc().cams.toSet().difference(resource.data.get('cams', []).toSet()).hasOnly([cid()])))
         // the guest link: made once, by someone talking in the call
         && (!('guestKey' in affected()) || (!anon() && resource.data.get('guestKey', '') == '' && nc().guestKey is string
             && nc().guestKey.size() >= 16 && nc().guestKey.size() <= 40 && me() in resource.data.joined && resource.data.live == true))

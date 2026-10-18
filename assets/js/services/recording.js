@@ -12,7 +12,7 @@ import { userError } from '../core/ui.js';
 import { callService, publicConfig } from './authsvc.js';
 import { nameOf } from './directory.js';
 import { track } from './activity.js';
-import { currentCall, onCallState, audioStreams, screensNow, myScreen, fmtDur } from './calls.js';
+import { currentCall, onCallState, audioStreams, screensNow, myScreen, camerasNow, myCamera, fmtDur } from './calls.js';
 
 const PART_MS = 4 * 60000;          // one uploaded part every 4 minutes (a crash loses at most one part)
 const FLUSH_MS = 20000;             // transcript lines are saved every 20 seconds (few Firestore writes)
@@ -53,15 +53,18 @@ function wireAudio() {
     try { const src = rec.ctx.createMediaStreamSource(stream); src.connect(rec.dest); rec.sources.set(id, src); } catch {}
   });
 }
+/** what the video shows: the shared screens (up to 3); with no screen, the cameras (up to 6) */
 function screenVideos() {
-  const list = [...screensNow()];
+  let list = [...screensNow()];
   const mine = myScreen(); if (mine) list.unshift({ email: session.email, stream: mine });
+  list = list.slice(0, 3);
+  if (!list.length) { list = [...camerasNow()]; const cam = myCamera(); if (cam) list.unshift({ email: session.email, stream: cam, cam: true }); list = list.slice(0, 6).map(x => ({ ...x, cam: true })); }
   const keep = new Set();
-  const out = list.slice(0, 3).map(({ email, stream }) => {
+  const out = list.map(({ email, stream, cam }) => {
     keep.add(stream.id);
     let v = rec.videos.get(stream.id);
     if (!v) { v = Object.assign(document.createElement('video'), { muted: true, playsInline: true, autoplay: true }); v.srcObject = stream; v.play().catch(() => {}); rec.videos.set(stream.id, v); }
-    return { email, v };
+    return { email, v, cam: !!cam };
   });
   [...rec.videos.keys()].forEach(k => { if (!keep.has(k)) { const v = rec.videos.get(k); v.srcObject = null; rec.videos.delete(k); } });
   return out;
@@ -73,7 +76,8 @@ function draw() {
   const shots = screenVideos().filter(x => x.v.videoWidth);
   if (shots.length) {
     rec.hadScreen = true;
-    const cells = shots.length === 1 ? [[0, 0, W, H]] : shots.length === 2 ? [[0, 0, W / 2, H], [W / 2, 0, W / 2, H]] : [[0, 0, W, H / 2], [0, H / 2, W / 2, H / 2], [W / 2, H / 2, W / 2, H / 2]];
+    const cells = shots[0].cam ? camCells(shots.length, W, H)
+      : shots.length === 1 ? [[0, 0, W, H]] : shots.length === 2 ? [[0, 0, W / 2, H], [W / 2, 0, W / 2, H]] : [[0, 0, W, H / 2], [0, H / 2, W / 2, H / 2], [W / 2, H / 2, W / 2, H / 2]];
     shots.forEach(({ email, v }, i) => {
       const [x, y, w, h] = cells[i]; const r = Math.min(w / v.videoWidth, h / v.videoHeight);
       const dw = v.videoWidth * r, dh = v.videoHeight * r;
@@ -91,6 +95,13 @@ function draw() {
     g.font = '20px sans-serif'; g.fillStyle = '#7f88c9';
     g.fillText('● REC  ' + fmtDur((now() - rec.startedAt) / 1000), W / 2, H / 2 + 70);
   }
+}
+/** cameras on a grid: 1 · 2 side by side · 3–4 as 2×2 · 5–6 as 3×2 */
+function camCells(n, W, H) {
+  const cols = n <= 1 ? 1 : n <= 4 ? 2 : 3, rows = n <= 2 ? 1 : 2;
+  const w = W / cols, h = H / rows, out = [];
+  for (let i = 0; i < n; i++) out.push([(i % cols) * w, Math.floor(i / cols) * h, w, h]);
+  return out;
 }
 function newPart() {
   if (!rec || rec.stopping) return;

@@ -14,6 +14,7 @@ import { track } from './activity.js';
 
 export const MAX_IN_CALL = 6;           // people talking at once in a group call
 export const MAX_SHARING = 3;           // screens shown at the same time
+export const MAX_CAMS = 6;              // cameras on at the same time (everyone in a full call)
 export const RING_FOR = 45000;          // nobody answered by then → missed
 const BEAT_EVERY = 15000, STALE = 50000;  // "still in the call" heartbeat; silent longer than STALE = gone
 const STUN = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }];
@@ -199,7 +200,7 @@ export async function hangUp(reason = '') {
       const outcome = d.startedAt ? 'done' : (reason === 'missed' ? 'missed' : 'cancelled');
       tx.update(ref, { live: false, liveFor: [], status: 'ended', outcome, joined: left, beat, endedAt: now(), endedBy: me });
       log = { id: c.id, outcome: outcome === 'cancelled' ? 'missed' : outcome, dur: d.startedAt ? Math.round((now() - d.startedAt) / 1000) : 0, group: !!d.group, with: d.group ? (d.members || []) : [], rec: !!d.rec, tr: !!d.tr, gn: guestNames(d) };
-    } else tx.update(ref, { joined: left, beat, [`leftAt.${ek(me)}`]: now(), sharing: (d.sharing || []).filter(e => e !== me && left.includes(e)), ...(d.recBy === me ? { recBy: '' } : {}) });
+    } else tx.update(ref, { joined: left, beat, [`leftAt.${ek(me)}`]: now(), sharing: (d.sharing || []).filter(e => e !== me && left.includes(e)), cams: (d.cams || []).filter(e => e !== me && left.includes(e)), ...(d.recBy === me ? { recBy: '' } : {}) });
   }).catch(e => console.warn('hang up', e && e.message));
   if (log) finishLog(c, log);
 }
@@ -295,6 +296,9 @@ function enter(id, call, stream, offerTo) {
     const nShare = (d.sharing || []).length;
     if (cur.screen && nShare !== cur.shareN) cur.peers.forEach(tuneScreen);   // more / fewer screens: adjust the quality
     cur.shareN = nShare;
+    const nCam = (d.cams || []).length;
+    if (cur.cam && nCam !== cur.camN) cur.peers.forEach(tuneCam);
+    cur.camN = nCam;
     const alive = (d.joined || []).filter(e => now() - Number((d.beat || {})[ek(e)] || 0) < STALE);
     [...cur.peers.keys()].forEach(e => { if (!alive.includes(e)) closePeer(e); });   // left / dropped
     if (!d.group && d.startedAt && !alive.some(e => e !== me)) { hangUp(); return; }   // the other side is gone
@@ -307,7 +311,7 @@ function enter(id, call, stream, offerTo) {
     const c = cur.call || {};
     const upd = { [`beat.${ek(me)}`]: now() };
     const dead = (c.joined || []).filter(e => e !== me && now() - Number((c.beat || {})[ek(e)] || 0) > STALE);
-    if (dead.length) { upd.joined = (c.joined || []).filter(e => !dead.includes(e)); upd.sharing = (c.sharing || []).filter(e => !dead.includes(e)); }
+    if (dead.length) { upd.joined = (c.joined || []).filter(e => !dead.includes(e)); upd.sharing = (c.sharing || []).filter(e => !dead.includes(e)); upd.cams = (c.cams || []).filter(e => !dead.includes(e)); }
     // someone dropped me while my device was quiet (sleep, a network gap): I'm still here — back on the list
     if (!(c.joined || []).includes(me) && c.live) upd.joined = [...(upd.joined || c.joined || []), me];
     updateDoc(doc(db, 'calls', id), upd).catch(() => {});
@@ -340,6 +344,7 @@ function teardown(remoteEnded = false) {
   c.peers.forEach((_, e) => closePeerOf(c, e));
   c.stream.getTracks().forEach(t => t.stop());
   if (c.screen) c.screen.getTracks().forEach(t => t.stop());
+  if (c.cam) c.cam.getTracks().forEach(t => t.stop());
   // handshake messages nobody picked up (they left first): don't leave them behind
   setTimeout(() => c.sent.forEach(sid => deleteDoc(doc(db, `calls/${c.id}/signals`, sid)).catch(() => {})), 1500);
   try { c.actx && c.actx.close(); } catch {}
@@ -356,10 +361,14 @@ async function newPeer(email) {
   const audio = document.createElement('audio');
   audio.autoplay = true; audio.setAttribute('playsinline', '');
   (document.getElementById('call-audio') || document.body.appendChild(Object.assign(document.createElement('div'), { id: 'call-audio', hidden: true }))).appendChild(audio);
-  const p = { pc, audio, state: 'connecting', iceQ: [], iceOut: [], iceTimer: 0, remoteSet: false, born: now(), initiator: false, tries: 0, screen: null };
+  const p = { pc, audio, state: 'connecting', iceQ: [], iceOut: [], iceTimer: 0, remoteSet: false, born: now(), initiator: false, tries: 0, screen: null, cam: null };
   cur.stream.getTracks().forEach(t => pc.addTrack(t, cur.stream));
   pc.ontrack = (ev) => {
-    if (ev.track.kind === 'video') { p.screen = new MediaStream([ev.track]); ev.track.onunmute = () => emit(); emit(); return; }   // their screen (when they share)
+    if (ev.track.kind === 'video') {   // lane 1 = their screen (when they share), lane 2 = their camera (when it is on)
+      const lane = videoLanes(p).indexOf(ev.transceiver);
+      if (lane === 1) p.cam = new MediaStream([ev.track]); else p.screen = new MediaStream([ev.track]);
+      ev.track.onunmute = () => emit(); emit(); return;
+    }
     const st = ev.streams[0] || new MediaStream([ev.track]);
     audio.srcObject = st; audio.play().catch(() => {}); addMeter(email, st);
   };
@@ -395,8 +404,21 @@ async function send(to, kind, data) {
   cur.sent.push(ref.id);
   await setDoc(ref, { from: session.email, to, kind, data: JSON.stringify(data), atMs: now(), at: serverTimestamp() });
 }
-/** the video lane of a connection (for screen sharing) */
-const videoLane = (p) => p.pc.getTransceivers().find(t => (t.receiver && t.receiver.track && t.receiver.track.kind) === 'video');
+/** the video lanes of a connection: [screen, camera] — both agreed at the start, then filled with replaceTrack */
+const videoLanes = (p) => p.pc.getTransceivers().filter(t => (t.receiver && t.receiver.track && t.receiver.track.kind) === 'video');
+const videoLane = (p) => videoLanes(p)[0];
+const camLane = (p) => videoLanes(p)[1];
+async function sendCamTo(p) {
+  const t = camLane(p); if (!t) return;
+  try { await t.sender.replaceTrack(cur && cur.cam ? cur.cam.getVideoTracks()[0] : null); } catch (e) { console.warn('camera', e && e.message); }
+  tuneCam(p);
+}
+function tuneCam(p) {
+  const t = camLane(p); if (!t || !t.sender || !cur) return;
+  // a mesh call sends my camera to everyone: fewer bits each as the call grows
+  const n = cur.peers.size;
+  try { const prm = t.sender.getParameters(); if (!prm.encodings || !prm.encodings.length) prm.encodings = [{}]; prm.encodings[0].maxBitrate = n <= 1 ? 700000 : n <= 3 ? 380000 : 240000; prm.encodings[0].maxFramerate = n <= 3 ? 20 : 15; t.sender.setParameters(prm).catch(() => {}); } catch {}
+}
 async function sendScreenTo(p) {
   const t = videoLane(p); if (!t) return;
   try { await t.sender.replaceTrack(cur && cur.screen ? cur.screen.getVideoTracks()[0] : null); } catch (e) { console.warn('screen', e && e.message); }
@@ -411,8 +433,10 @@ function tuneScreen(p) {
 async function call1(email, tries = 0) {
   const p = await newPeer(email);
   p.initiator = true; p.tries = tries;
-  p.pc.addTransceiver('video', { direction: 'sendrecv' });
+  p.pc.addTransceiver('video', { direction: 'sendrecv' });   // screen
+  p.pc.addTransceiver('video', { direction: 'sendrecv' });   // camera
   if (cur && cur.screen) sendScreenTo(p);
+  if (cur && cur.cam) sendCamTo(p);
   const offer = await p.pc.createOffer({ offerToReceiveAudio: true });
   await p.pc.setLocalDescription(offer);
   await send(email, 'offer', { type: offer.type, sdp: offer.sdp });
@@ -425,8 +449,9 @@ async function onSignal(sig) {
     if (cur.peers.has(from)) closePeer(from);   // they reconnected
     const p = await newPeer(from);
     await p.pc.setRemoteDescription(data); p.remoteSet = true;
-    const vt = videoLane(p); if (vt) vt.direction = 'sendrecv';   // so I can show my screen to them too, later
+    videoLanes(p).forEach(vt => { vt.direction = 'sendrecv'; });   // so I can show my screen / camera to them too, later
     if (cur && cur.screen) await sendScreenTo(p);
+    if (cur && cur.cam) await sendCamTo(p);
     const ans = await p.pc.createAnswer();
     await p.pc.setLocalDescription(ans);
     await send(from, 'answer', { type: ans.type, sdp: ans.sdp });
@@ -496,6 +521,95 @@ export function screensNow() {
   if (!cur) return [];
   const on = (cur.call && cur.call.sharing) || [];
   return on.filter(e => e !== session.email).map(e => ({ email: e, stream: (cur.peers.get(e) || {}).screen || null })).filter(x => x.stream);
+}
+
+// ---------------------------------------------------------------- cameras
+export const canUseCamera = () => !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.RTCPeerConnection);
+const camConstraints = (facing) => ({ video: { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 15, max: 20 }, facingMode: facing }, audio: false });
+async function getCam(facing) {
+  try { return await navigator.mediaDevices.getUserMedia(camConstraints(facing)); }
+  catch (e) {
+    if (e && (e.name === 'NotFoundError' || e.name === 'OverconstrainedError')) throw userError('مفيش كاميرا على الجهاز ده.', 'There is no camera on this device.');
+    if (e && e.name === 'NotReadableError') throw userError('الكاميرا شغالة في برنامج تاني (زي Zoom أو Teams). اقفله وجرّب تاني.', 'The camera is busy in another app (Zoom, Teams…). Close it and try again.');
+    throw userError('اسمح للموقع يستخدم الكاميرا (من علامة القفل جنب العنوان) وجرّب تاني.', 'Allow camera access (lock icon next to the address) and try again.');
+  }
+}
+/** turn my camera on: everyone in the call sees it */
+export async function startCamera(facing = 'user') {
+  if (!cur || cur.cam || cur.camBusy) return;
+  if (!canUseCamera()) throw userError('المتصفح ده مش بيدعم الكاميرا.', 'This browser does not support the camera.');
+  const id = cur.id, me = session.email;
+  const on = ((cur.call && cur.call.cams) || []).filter(e => e !== me);
+  if (on.length >= MAX_CAMS) throw userError(`فيه ${MAX_CAMS} كاميرات مفتوحة — ده الحد.`, `${MAX_CAMS} cameras are on — that is the limit.`);
+  cur.camBusy = true;
+  let cam;
+  try { cam = await getCam(facing); } finally { if (cur) cur.camBusy = false; }
+  try {
+    await runTransaction(db, async (tx) => {
+      const ref = doc(db, 'calls', id);
+      const s = await tx.get(ref); const d = s.exists() ? s.data() : null;
+      if (!d || !d.live) throw userError('المكالمة خلصت.', 'The call has ended.');
+      const list = (d.cams || []).filter(e => e !== me && (d.joined || []).includes(e));
+      if (list.length >= MAX_CAMS) throw userError(`فيه ${MAX_CAMS} كاميرات مفتوحة — ده الحد.`, `${MAX_CAMS} cameras are on — that is the limit.`);
+      tx.update(ref, { cams: [...list, me] });
+    });
+  } catch (e) { cam.getTracks().forEach(t => t.stop()); throw e; }
+  if (!cur || cur.id !== id) { cam.getTracks().forEach(t => t.stop()); return; }
+  cur.cam = cam; cur.camFacing = facing;
+  cam.getVideoTracks()[0].onended = () => stopCamera();   // unplugged / blocked
+  await Promise.all([...cur.peers.values()].map(sendCamTo));
+  track_('call.camera');
+  emit();
+}
+export async function stopCamera() {
+  if (!cur || !cur.cam) return;
+  const cam = cur.cam, id = cur.id, me = session.email;
+  cur.cam = null;
+  cam.getTracks().forEach(t => { t.onended = null; t.stop(); });
+  await Promise.all([...cur.peers.values()].map(sendCamTo));
+  await runTransaction(db, async (tx) => {
+    const ref = doc(db, 'calls', id);
+    const s = await tx.get(ref); const d = s.exists() ? s.data() : null;
+    if (!d || !d.live) return;
+    tx.update(ref, { cams: (d.cams || []).filter(e => e !== me) });
+  }).catch(() => {});
+  emit();
+}
+/** mobile: front ↔ back camera */
+export async function switchCamera() {
+  if (!cur || !cur.cam) return;
+  const facing = cur.camFacing === 'environment' ? 'user' : 'environment';
+  const old = cur.cam;
+  old.getTracks().forEach(t => { t.onended = null; t.stop(); });   // some phones open one camera at a time
+  let cam, got = facing;
+  try { cam = await getCam(facing); }
+  catch (e) {
+    got = cur.camFacing || 'user';   // no other camera: back to the one we had
+    try { cam = await getCam(got); } catch { cur.cam = old; stopCamera().catch(() => {}); throw e; }
+  }
+  if (!cur) { cam.getTracks().forEach(t => t.stop()); return; }
+  cur.cam = cam; cur.camFacing = got;
+  cam.getVideoTracks()[0].onended = () => stopCamera();
+  await Promise.all([...cur.peers.values()].map(sendCamTo));
+  emit();
+}
+export const myCamera = () => (cur && cur.cam) || null;
+export const cameraFacing = () => (cur && cur.camFacing) || 'user';
+/** the cameras on right now (not mine): [{ email, stream }] */
+export function camerasNow() {
+  if (!cur) return [];
+  const on = (cur.call && cur.call.cams) || [];
+  return on.filter(e => e !== session.email).map(e => ({ email: e, stream: (cur.peers.get(e) || {}).cam || null })).filter(x => x.stream);
+}
+/** everything to show on the video stage: others' screens, others' cameras, my camera (preview) */
+export function videoTiles() {
+  if (!cur) return [];
+  const me = session.email;
+  return [
+    ...screensNow().map(x => ({ key: 's:' + x.email, kind: 'screen', email: x.email, stream: x.stream })),
+    ...camerasNow().map(x => ({ key: 'c:' + x.email, kind: 'cam', email: x.email, stream: x.stream })),
+    ...(cur.cam ? [{ key: 'me', kind: 'cam', email: me, stream: cur.cam, mine: true }] : [])   // my own preview last
+  ];
 }
 
 export function setMuted(on) {

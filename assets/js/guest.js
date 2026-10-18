@@ -8,7 +8,8 @@ import { session, syncClock, now } from './core/session.js';
 import { L, esc } from './core/utils.js';
 import { avatar, toastErr } from './core/ui.js';
 import {
-  joinCall, hangUp, setMuted, currentCall, onCallState, screensNow, shareScreen, stopScreen, canShareScreen, isTalking, fmtDur,
+  joinCall, hangUp, setMuted, currentCall, onCallState, videoTiles, shareScreen, stopScreen, canShareScreen, isTalking, fmtDur,
+  startCamera, stopCamera, switchCamera, canUseCamera,
   callName, guestEmailFor, lastEndedCall
 } from './services/calls.js';
 import './services/recording.js';   // my words go into the call's transcript like everyone else's
@@ -107,22 +108,27 @@ function waiting(n) {
 
 // ---------------------------------------------------------------- in the call
 const tiles = new Map();
+const hasTouch = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
 function drawScreens() {
-  const list = screensNow();
+  const list = videoTiles();
   screensBox.classList.toggle('hidden', !list.length);
-  const ids = list.map(x => x.email);
-  [...tiles.keys()].forEach(e => { if (!ids.includes(e)) { tiles.get(e).el.remove(); tiles.delete(e); } });
-  list.forEach(({ email, stream }) => {
-    let t = tiles.get(email);
+  screensBox.classList.toggle('many', list.length > 2);
+  const keys = list.map(x => x.key);
+  [...tiles.keys()].forEach(k => { if (!keys.includes(k)) { tiles.get(k).el.remove(); tiles.delete(k); } });
+  list.forEach((it, i) => {
+    let t = tiles.get(it.key);
     if (!t) {
-      const el = document.createElement('div'); el.className = 'screen-tile';
+      const el = document.createElement('div'); el.className = `screen-tile ${it.kind === 'cam' ? 'cam' : ''} ${it.mine ? 'mine' : ''}`;
       el.innerHTML = `<video autoplay playsinline muted></video><span class="screen-name"></span>`;
       el.ondblclick = () => el.requestFullscreen && el.requestFullscreen().catch(() => {});
-      t = { el, video: el.querySelector('video'), stream: null }; tiles.set(email, t); screensBox.appendChild(el);
+      t = { el, video: el.querySelector('video'), stream: null }; tiles.set(it.key, t);
     }
+    if (screensBox.children[i] !== t.el) screensBox.insertBefore(t.el, screensBox.children[i] || null);
     const c = currentCall();
-    t.el.querySelector('.screen-name').textContent = L(`شاشة ${String(callName(c && c.call, email)).split(' ')[0]}`, `${String(callName(c && c.call, email)).split(' ')[0]}'s screen`);
-    if (t.stream !== stream) { t.stream = stream; t.video.srcObject = stream; t.video.play().catch(() => {}); }
+    const first = String(callName(c && c.call, it.email)).split(' ')[0];
+    t.el.querySelector('.screen-name').textContent = it.kind === 'screen' ? L(`شاشة ${first}`, `${first}'s screen`) : it.mine ? L('إنت', 'You') : first;
+    t.el.classList.toggle('talking', it.kind === 'cam' && isTalking(it.email));
+    if (t.stream !== it.stream) { t.stream = it.stream; t.video.srcObject = it.stream; t.video.play().catch(() => {}); }
   });
 }
 function draw() {
@@ -145,7 +151,9 @@ function draw() {
     }).join('')}</div>
     <div class="call-actions">
       <button class="btn btn-icon call-btn ${c.muted ? 'on' : ''}" data-g="mute" title="${L('المايك', 'Microphone')}"><i class="fas ${c.muted ? 'fa-microphone-slash' : 'fa-microphone'}"></i></button>
-      ${canShareScreen() ? `<button class="btn btn-icon call-btn ${c.screen ? 'on' : ''}" data-g="share" title="${L('اعرض شاشتك', 'Share your screen')}"><i class="fas fa-desktop"></i></button>` : ''}
+      ${canUseCamera() ? `<button class="btn btn-icon call-btn ${c.cam ? 'on' : ''}" data-g="cam" title="${L('الكاميرا', 'Camera')}"><i class="fas ${c.cam ? 'fa-video' : 'fa-video-slash'}"></i></button>` : ''}
+      ${c.cam && hasTouch ? `<button class="btn btn-icon call-btn" data-g="flip" title="${L('الكاميرا الأمامية / الخلفية', 'Front / back camera')}"><i class="fas fa-camera-rotate"></i></button>` : ''}
+      ${canShareScreen() && !hasTouch ? `<button class="btn btn-icon call-btn ${c.screen ? 'on' : ''}" data-g="share" title="${L('اعرض شاشتك', 'Share your screen')}"><i class="fas fa-desktop"></i></button>` : ''}
       <button class="btn btn-icon call-btn end" data-g="end" title="${L('خروج', 'Leave')}"><i class="fas fa-phone-slash"></i></button>
     </div></div>`);
   if (!clock) clock = setInterval(() => {
@@ -160,6 +168,8 @@ box.addEventListener('click', (e) => {
   const c = currentCall(); if (!c) return;
   if (b.dataset.g === 'mute') setMuted(!c.muted);
   else if (b.dataset.g === 'share') (c.screen ? stopScreen() : shareScreen()).catch(toastErr);
+  else if (b.dataset.g === 'cam') { b.disabled = true; (c.cam ? stopCamera() : startCamera()).catch(toastErr).finally(() => { b.disabled = false; }); }
+  else if (b.dataset.g === 'flip') switchCamera().catch(toastErr);
   else if (b.dataset.g === 'end') hangUp();
 });
 onCallState(() => draw());

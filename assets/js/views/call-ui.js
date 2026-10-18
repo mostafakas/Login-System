@@ -14,7 +14,8 @@ import {
   startCall, joinCall, declineCall, hangUp, setMuted, currentCall, onCallState, watchMyCalls, dropStale, isTalking,
   lastEndedCall, fmtDur, RING_FOR, MAX_IN_CALL, touchedHere, addToCall, invitedAtOf, endForAll, myBeatStale,
   callName, guestLink, watchGuests, admitGuest, denyGuest, isGuestEmail, startRoom, canHostRoom,
-  shareScreen, stopScreen, canShareScreen, screensNow, MAX_SHARING
+  shareScreen, stopScreen, canShareScreen, screensNow, MAX_SHARING,
+  startCamera, stopCamera, switchCamera, canUseCamera, videoTiles, MAX_CAMS
 } from '../services/calls.js';
 
 const nm = (e, c) => callName(c || (currentCall() || {}).call, e);   // employees by profile, guests by the name kept in the call
@@ -178,6 +179,8 @@ function drawPanel() {
       else if (a === 'add') addPeople();
       else if (a === 'rec') { (isRecording() ? stopRecording() : startRecording()).catch(toastErr); }
       else if (a === 'share') { const cc = currentCall(); (cc && cc.screen ? stopScreen() : shareScreen()).catch(toastErr); }
+      else if (a === 'cam') { const cc = currentCall(); b.disabled = true; (cc && cc.cam ? stopCamera() : startCamera()).catch(toastErr).finally(() => { b.disabled = false; }); }
+      else if (a === 'flip') switchCamera().catch(toastErr);
       else if (a === 'chat') location.hash = `#/chat/${encodeURIComponent((currentCall() || {}).call.chatId)}`;
     });
   }
@@ -224,6 +227,8 @@ function drawPanel() {
     <div class="call-actions">
       <button class="btn btn-icon call-btn ${c.muted ? 'on' : ''}" data-c="mute" title="${c.muted ? L('افتح المايك', 'Unmute') : L('اقفل المايك', 'Mute')}"><i class="fas ${c.muted ? 'fa-microphone-slash' : 'fa-microphone'}"></i></button>
       ${canRecord() && call.startedAt ? `<button class="btn btn-icon call-btn ${isRecording() ? 'rec-on' : ''}" data-c="rec" title="${isRecording() ? L('وقف التسجيل', 'Stop recording') : L('سجّل المكالمة', 'Record the call')}" ${recOther ? 'disabled' : ''}><i class="fas ${isRecording() ? 'fa-stop' : 'fa-circle'}"></i></button>` : ''}
+      ${canUseCamera() && call.startedAt ? `<button class="btn btn-icon call-btn ${c.cam ? 'on' : ''}" data-c="cam" title="${c.cam ? L('اقفل الكاميرا', 'Turn camera off') : L(`افتح الكاميرا (${(call.cams || []).length}/${MAX_CAMS})`, `Turn camera on (${(call.cams || []).length}/${MAX_CAMS})`)}"><i class="fas ${c.cam ? 'fa-video' : 'fa-video-slash'}"></i></button>` : ''}
+      ${c.cam && hasTouch ? `<button class="btn btn-icon call-btn" data-c="flip" title="${L('الكاميرا الأمامية / الخلفية', 'Front / back camera')}"><i class="fas fa-camera-rotate"></i></button>` : ''}
       ${canShareScreen() ? `<button class="btn btn-icon call-btn ${c.screen ? 'on' : ''}" data-c="share" title="${c.screen ? L('وقف عرض شاشتك', 'Stop sharing your screen') : L(`اعرض شاشتك (${(call.sharing || []).length}/${MAX_SHARING})`, `Share your screen (${(call.sharing || []).length}/${MAX_SHARING})`)}"><i class="fas ${c.screen ? 'fa-display' : 'fa-desktop'}"></i></button>` : ''}
       ${(call.joined || []).includes(me) ? `<button class="btn btn-icon call-btn" data-c="add" title="${L('إضافة حد للمكالمة', 'Add someone to the call')}"><i class="fas fa-user-plus"></i></button>` : ''}
       ${(call.joined || []).includes(me) && call.startedAt ? `<button class="btn btn-icon call-btn" data-c="guest" title="${L('ضيف من برّه (من غير حساب) — لينك', 'A guest without an account — link')}"><i class="fas fa-link"></i></button>` : ''}
@@ -309,13 +314,15 @@ async function addPeople() {
 
 // ---------------------------------------------------------------- the screens being shown (several at once)
 let stage = null, focus = '', collapsed = false;
-const tiles = new Map();   // email → { el, video, stream }
+const hasTouch = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+const tiles = new Map();   // tile key → { el, video, stream }
+/** the video stage: shared screens and cameras (mine as a small mirrored preview) */
 function drawStage() {
-  const list = currentCall() ? screensNow() : [];
+  const list = currentCall() ? videoTiles() : [];
   if (!list.length) { if (stage) { stage.remove(); stage = null; } tiles.clear(); focus = ''; collapsed = false; return; }
   if (!stage) {
     stage = document.createElement('div'); stage.className = 'screen-stage';
-    stage.innerHTML = `<div class="screen-head"><i class="fas fa-display"></i><b class="grow" id="ss-title"></b>
+    stage.innerHTML = `<div class="screen-head"><i class="fas fa-display" id="ss-icon"></i><b class="grow" id="ss-title"></b>
       <button class="btn btn-ghost btn-icon btn-sm" data-s="full" title="${L('ملء الشاشة', 'Full screen')}"><i class="fas fa-expand"></i></button>
       <button class="btn btn-ghost btn-icon btn-sm" data-s="min" title="${L('صغّر / كبّر', 'Collapse / expand')}"><i class="fas fa-window-minimize"></i></button></div>
       <div class="screen-grid" id="ss-grid"></div>`;
@@ -330,23 +337,32 @@ function drawStage() {
     stage.addEventListener('dblclick', (e) => { const tile = e.target.closest('[data-tile]'); if (tile && tile.requestFullscreen) tile.requestFullscreen().catch(() => {}); });
   }
   const grid = stage.querySelector('#ss-grid');
-  const emails = list.map(x => x.email);
-  [...tiles.keys()].forEach(e => { if (!emails.includes(e)) { tiles.get(e).el.remove(); tiles.delete(e); } });
-  list.forEach(({ email, stream }) => {
-    let t = tiles.get(email);
+  const keys = list.map(x => x.key);
+  [...tiles.keys()].forEach(k => { if (!keys.includes(k)) { tiles.get(k).el.remove(); tiles.delete(k); } });
+  list.forEach((it, i) => {
+    let t = tiles.get(it.key);
+    const first = String(nm(it.email)).split(' ')[0];
     if (!t) {
-      const el = document.createElement('div'); el.className = 'screen-tile'; el.dataset.tile = email;
-      el.innerHTML = `<video autoplay playsinline muted></video><span class="screen-name">${avatar(who(email), 'xs')} ${esc(L(`شاشة ${String(nm(email)).split(' ')[0]}`, `${String(nm(email)).split(' ')[0]}'s screen`))}</span>`;
+      const el = document.createElement('div'); el.className = `screen-tile ${it.kind === 'cam' ? 'cam' : ''} ${it.mine ? 'mine' : ''}`; el.dataset.tile = it.key;
+      el.innerHTML = `<video autoplay playsinline muted></video><span class="screen-name">${it.kind === 'screen' ? avatar(who(it.email), 'xs') + ' ' + esc(L(`شاشة ${first}`, `${first}'s screen`)) : esc(it.mine ? L('إنت', 'You') : first)}</span>`;
       t = { el, video: el.querySelector('video'), stream: null };
-      tiles.set(email, t); grid.appendChild(el);
+      tiles.set(it.key, t);
     }
-    if (t.stream !== stream) { t.stream = stream; t.video.srcObject = stream; t.video.play().catch(() => {}); }
+    if (grid.children[i] !== t.el) grid.insertBefore(t.el, grid.children[i] || null);   // screens first, then cameras
+    if (t.stream !== it.stream) { t.stream = it.stream; t.video.srcObject = it.stream; t.video.play().catch(() => {}); }
+    t.el.classList.toggle('talking', it.kind === 'cam' && isTalking(it.email));
   });
   if (focus && !tiles.has(focus)) focus = '';
   stage.classList.toggle('collapsed', collapsed);
-  grid.className = `screen-grid n${Math.min(list.length, 3)} ${focus ? 'focused' : ''}`;
-  tiles.forEach((t, e) => t.el.classList.toggle('main', e === focus));
-  stage.querySelector('#ss-title').textContent = list.length > 1 ? L(`${list.length} شاشات معروضة — اضغط على شاشة عشان تكبّرها`, `${list.length} screens — click one to enlarge`) : L(`${String(nm(list[0].email)).split(' ')[0]} بيعرض شاشته`, `${String(nm(list[0].email)).split(' ')[0]} is sharing`);
+  const screens = list.filter(x => x.kind === 'screen');
+  stage.classList.toggle('cams-only', !screens.length);
+  // screens: the big layouts · cameras only: an even grid
+  grid.className = `screen-grid ${screens.length ? (list.length > 3 ? 'many' : 'n' + list.length) : 'cams c' + Math.min(list.length, 6)} ${focus ? 'focused' : ''}`;
+  tiles.forEach((t, k) => t.el.classList.toggle('main', k === focus));
+  stage.querySelector('#ss-icon').className = `fas ${screens.length ? 'fa-display' : 'fa-video'}`;
+  stage.querySelector('#ss-title').textContent = screens.length > 1 ? L(`${screens.length} شاشات معروضة — اضغط على أي واحدة عشان تكبّرها`, `${screens.length} screens — click one to enlarge`)
+    : screens.length ? L(`${String(nm(screens[0].email)).split(' ')[0]} بيعرض شاشته`, `${String(nm(screens[0].email)).split(' ')[0]} is sharing`)
+    : L('الكاميرات — اضغط على أي واحدة عشان تكبّرها', 'Cameras — click one to enlarge');
 }
 
 // ---------------------------------------------------------------- started once after sign-in

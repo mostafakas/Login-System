@@ -53,7 +53,7 @@ function tabJobs(el) {
           <div class="row between gap-8"><span class="badge ${j.status === 'open' ? 'ok' : j.status === 'paused' ? 'warn' : ''}">${esc((JOB_STATUS[j.status] || JOB_STATUS.draft)())}</span>${fresh ? `<span class="badge info"><i class="fas fa-circle"></i> ${num(fresh)} ${L('جديد', 'new')}</span>` : ''}</div>
           <a href="#/recruit/job/${esc(j.id)}" class="rc-job-title">${esc(j.title)}</a>
           <div class="xs muted">${esc([j.department, pick(JOB_TYPES, j.type), pick(LEVELS, j.level)].filter(Boolean).join(' · '))}</div>
-          <div class="rc-mini">${STAGES.slice(0, 8).map(s => { const n = act.filter(x => x.stage === s.id).length; return `<span title="${esc(L(s.ar, s.en))}" class="${n ? 'on' : ''}"><i class="fas ${s.icon}"></i>${n ? num(n) : ''}</span>`; }).join('')}</div>
+          <div class="rc-mini">${STAGES.slice(0, 3).map(s => { const n = act.filter(x => x.stage === s.id).length; return `<span title="${esc(L(s.ar, s.en))}" class="${n ? 'on' : ''}"><i class="fas ${s.icon}"></i>${n ? num(n) : ''}</span>`; }).join('')}</div>
           <div class="row between xs muted"><span>${L(`${num(a.length)} متقدم`, `${num(a.length)} applicants`)}</span><span>${L(`اتعيّن ${num(hired)} من ${num(j.openings || 1)}`, `Hired ${num(hired)} of ${num(j.openings || 1)}`)}</span></div>
           <div class="row gap-8 wrap mt-4"><a class="btn btn-sm btn-primary" href="#/recruit/job/${esc(j.id)}"><i class="fas fa-table-columns"></i> ${L('المتقدمين', 'Applicants')}</a>
             <button class="btn btn-sm" data-links="${esc(j.id)}"><i class="fas fa-link"></i> ${L('لينكات التقديم', 'Apply links')}</button>

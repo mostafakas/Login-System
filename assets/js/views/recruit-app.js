@@ -6,7 +6,7 @@ import { session, now } from '../core/session.js';
 import { activePeople, nameOf } from '../services/directory.js';
 import {
   STAGES, stageLabel, STATUS_LABEL, sourceOf, ROUNDS, MODES, RECS, REJECT_REASONS, OFFER_STATUS, TEMPLATE_KINDS, Q_TYPES, BUILTIN, DEFAULT_CRITERIA,
-  pick, critLabel, fails, failsRule, offerStatus, interviewLink, taskLink,
+  ROUND_CHOICES, pick, critLabel, fails, failsRule, offerStatus, interviewLink, taskLink,
   getJob, watchApp, watchLog, otherApps, updateApp, moveStage, rejectApp, withdrawApp, reopenApp, markSeen, addNote, refreshScore, computeScore,
   watchInterviewsOf, saveInterview, setInterviewStatus, saveScorecard, linkInterviewCall, deleteInterview,
   watchTasksOf, watchBank, sendTask, gradeTask, resetTask, deleteTask, saveBankTask, uploadFile, openFile,
@@ -24,7 +24,7 @@ const fullWhen = (ms) => new Date(ms).toLocaleString(loc(isAr ? 'ar' : 'en'), { 
 const cairoInput = (d, t) => { if (!d || !t) return 0; const [y, mo, da] = d.split('-').map(Number); const [h, mi] = t.split(':').map(Number); const guess = Date.UTC(y, mo - 1, da, h, mi); const off = new Date(guess).toLocaleString('en-US', { timeZone: TZ, hour12: false, hour: '2-digit' }); const diff = (Number(off) - h + 24) % 24; return guess - (diff > 12 ? diff - 24 : diff) * 3600000; };
 const toInputs = (ms) => { if (!ms) return ['', '']; const p = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date(ms)); const g = (t) => (p.find(x => x.type === t) || {}).value; return [`${g('year')}-${g('month')}-${g('day')}`, `${g('hour') === '24' ? '00' : g('hour')}:${g('minute')}`]; };
 const waLink = (phone) => { let d = String(phone || '').replace(/\D/g, ''); if (d.startsWith('0')) d = '2' + d; return `https://wa.me/${d}`; };
-const ROUND_KIND = { phone: 'phone', hr: 'hr', tech: 'tech', final: 'final' };
+const ROUND_KIND = { phone: 'phone', hr: 'hr', tech: 'tech', final: 'final' };   // interview → its email template
 
 export async function renderApp(root, id) {
   let app = null, job = null, ivs = [], tasks = [], log = [], others = [], tab = 'info', settings = {};
@@ -188,11 +188,11 @@ export async function renderApp(root, id) {
     else if (e.target.closest('#omail')) composer({ app, job, settings, kind: 'offer' });
     else if (e.target.closest('#ohire')) hire();
   });
-  const defaultKind = () => ({ new: 'received', screen: 'received', phone: 'phone', hr: 'hr', task: 'task', tech: 'tech', final: 'final', offer: 'offer' }[app.stage] || 'other');
+  const defaultKind = () => ({ new: 'received', hr: 'hr', tech: 'tech' }[app.stage] || 'other');
   /** after moving to an interview / task stage: offer the next step */
   const suggestNext = async (stage) => {
-    const round = { phone: 'phone', hr: 'hr', tech: 'tech', final: 'final' }[stage];
-    if (!round && stage !== 'task') return;
+    const round = { hr: 'hr', tech: 'tech' }[stage];
+    if (!round) return;
     const { livePop } = await import('../core/ui.js');
     const el = livePop({ icon: round ? 'fa-calendar-plus' : 'fa-laptop-code', cls: 'info', title: round ? L('اتنقل — تحب تحجز الإنترفيو؟', 'Moved — book the interview?') : L('اتنقل — تحب تبعتله تاسك؟', 'Moved — send a task?'), href: '#', action: round ? L('احجز', 'Book') : L('ابعت تاسك', 'Send task'), ttl: 10000 });
     const lnk = el.querySelector('a');
@@ -224,13 +224,13 @@ export async function renderApp(root, id) {
     m.$('#rg').onclick = (ev) => busy(ev.currentTarget, async () => { try { await rejectApp(app, m.$('#rr').value, m.$('#rn').value); const mail = m.$('#rm').checked; m.close(); if (mail) composer({ app, job, settings, kind: 'reject' }); } catch (ex) { toastErr(ex); } });
   }
   function interviewModal(iv, round = '') {
-    const r = iv ? iv.round : (round || { phone: 'phone', hr: 'hr', tech: 'tech', final: 'final' }[app.stage] || 'hr');
+    const r = iv ? iv.round : (round || { hr: 'hr', tech: 'tech' }[app.stage] || (app.stage === 'new' ? 'hr' : 'tech'));
     const [d0, t0] = toInputs(iv && iv.at);
     const chosen = new Set((iv && iv.interviewers) || [session.email]);
     const ppl = activePeople().sort((a, b) => (chosen.has(b.email) - chosen.has(a.email)) || String(a.name).localeCompare(String(b.name), 'ar'));
     const m = modal({ title: iv ? L('تعديل الإنترفيو', 'Edit interview') : L('حجز إنترفيو', 'Book interview'), icon: 'fa-calendar-plus', size: 'wide',
       body: `<div class="form-grid">
-        <div class="field"><label>${L('النوع', 'Round')}</label><select class="select" id="ir">${ROUNDS.map(([k, a, e2]) => `<option value="${k}" ${r === k ? 'selected' : ''}>${esc(L(a, e2))}</option>`).join('')}</select></div>
+        <div class="field"><label>${L('النوع', 'Round')}</label><select class="select" id="ir">${(ROUND_CHOICES.some(x => x[0] === r) ? ROUND_CHOICES : [...ROUND_CHOICES, ROUNDS.find(x => x[0] === r)].filter(Boolean)).map(([k, a, e2]) => `<option value="${k}" ${r === k ? 'selected' : ''}>${esc(L(a, e2))}</option>`).join('')}</select></div>
         <div class="field"><label>${L('الطريقة', 'Mode')}</label><select class="select" id="im">${MODES.map(([k, a, e2]) => `<option value="${k}" ${((iv && iv.mode) || (r === 'phone' ? 'phone' : 'office')) === k ? 'selected' : ''}>${esc(L(a, e2))}</option>`).join('')}</select></div>
         <div class="field"><label>${L('اليوم', 'Day')}</label><input class="input" type="date" id="id" value="${esc(d0)}"></div>
         <div class="field"><label>${L('الساعة', 'Time')}</label><input class="input" type="time" id="it" value="${esc(t0)}"></div>
@@ -247,7 +247,7 @@ export async function renderApp(root, id) {
       try {
         const saved = await saveInterview(app, { ...(iv || {}), round: m.$('#ir').value, mode: m.$('#im').value, at: cairoInput(m.$('#id').value, m.$('#it').value), minutes: m.$('#iml').value, location: m.$('#im').value === 'office' ? m.$('#il').value : '', interviewers: [...chosen], notes: m.$('#in').value });
         m.close(); toast(iv ? L('اتحفظ', 'Saved') : L('الإنترفيو اتحجز', 'Interview booked'));
-        if (!iv && app.stage !== saved.round && ['phone', 'hr', 'tech', 'final'].includes(saved.round) && STAGES.findIndex(s => s.id === saved.round) > STAGES.findIndex(s => s.id === app.stage)) moveStage(app, saved.round).catch(() => {});
+        if (!iv && app.stage !== saved.round && ['hr', 'tech'].includes(saved.round) && STAGES.findIndex(s => s.id === saved.round) > STAGES.findIndex(s => s.id === app.stage)) moveStage(app, saved.round).catch(() => {});
         if (!iv && app.email) composer({ app, job, settings, kind: ROUND_KIND[saved.round] || 'hr', iv: saved });
         nav('ivs');
       } catch (ex) { toastErr(ex); }
@@ -312,7 +312,6 @@ export async function renderApp(root, id) {
         const data = { title: m.$('#tt').value, body: m.$('#tbd').value, files, hours: mode === 'h' ? m.$('#th').value : 0, dueMs: due };
         const id = await sendTask(app, data);
         if (m.$('#tsb').checked) saveBankTask({ title: data.title, body: data.body, hours: Number(data.hours) || 48, files }).catch(() => {});
-        if (app.stage !== 'task' && STAGES.findIndex(s => s.id === 'task') > STAGES.findIndex(s => s.id === app.stage)) moveStage(app, 'task').catch(() => {});
         m.close(); nav('tasks');
         composer({ app, job, settings, kind: 'task', task: { id, ...data } });
       } catch (ex) { toastErr(ex); }
@@ -332,7 +331,7 @@ export async function renderApp(root, id) {
     m.$('#gsv').onclick = (ev) => busy(ev.currentTarget, async () => { const v = m.$('#gs').value; if (v === '') { toast(L('اكتب الدرجة', 'Enter the grade'), '', 'info'); return; } try { await gradeTask(t, v, m.$('#gr').value); m.close(); toast(L('اتحفظ', 'Saved')); refreshScore(app, job).catch(() => {}); } catch (ex) { toastErr(ex); } });
   }
   async function saveOfferNow(btn) {
-    await busy(btn, async () => { try { await saveOffer(app, { salary: root.querySelector('#os').value, start: root.querySelector('#ost').value, probation: root.querySelector('#opr').value, notes: root.querySelector('#on').value, status: root.querySelector('#ost2').value }); toast(L('العرض اتحفظ', 'Offer saved')); if (app.stage !== 'offer' && app.status === 'active') moveStage(app, 'offer').catch(() => {}); } catch (ex) { toastErr(ex); } });
+    await busy(btn, async () => { try { await saveOffer(app, { salary: root.querySelector('#os').value, start: root.querySelector('#ost').value, probation: root.querySelector('#opr').value, notes: root.querySelector('#on').value, status: root.querySelector('#ost2').value }); toast(L('العرض اتحفظ', 'Offer saved')); } catch (ex) { toastErr(ex); } });
   }
   async function hire() {
     const { openEditor } = await import('./employees.js');

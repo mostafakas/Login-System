@@ -156,6 +156,7 @@ function drawPanel() {
   if (!panel) {
     panel = document.createElement('div'); panel.className = 'call-panel'; panel.setAttribute('role', 'region');
     document.body.appendChild(panel);
+    makeDraggable(panel);
     panel.addEventListener('click', (e) => {
       const b = e.target.closest('[data-c]'); if (!b) return;
       const a = b.dataset.c;
@@ -210,7 +211,7 @@ function drawPanel() {
   const failed = [...c.peers.values()].some(p => p.state === 'failed');
   panel.classList.toggle('min', minimized);
   panel.innerHTML = `
-    <div class="call-top"><span class="call-dot ${ringing ? 'ringing' : ''}"></span><div class="grow min0"><b class="truncate">${esc(title || '')}</b>
+    <div class="call-top" data-drag title="${L('اسحب عشان تحرّك', 'Drag to move')}"><i class="fas fa-grip-vertical call-grip"></i><span class="call-dot ${ringing ? 'ringing' : ''}"></span><div class="grow min0"><b class="truncate">${esc(title || '')}</b>
       <small class="num" id="call-clock">${ringing ? L('بيرن…', 'Ringing…') : fmtDur((now() - call.startedAt) / 1000)}${call.group ? ` · ${others.length + 1}/${MAX_IN_CALL}` : ''}</small></div>
       ${canOpenChat ? `<button class="btn btn-ghost btn-icon btn-sm" data-c="chat" title="${L('الشات', 'Chat')}"><i class="fas fa-comment-dots"></i></button>` : ''}
       <button class="btn btn-ghost btn-icon btn-sm" data-c="min" title="${minimized ? L('كبّر', 'Expand') : L('صغّر', 'Minimize')}"><i class="fas ${minimized ? 'fa-up-right-and-down-left-from-center' : 'fa-down-left-and-up-right-to-center'}"></i></button></div>
@@ -226,19 +227,53 @@ function drawPanel() {
     ${endMenu ? `<div class="call-endmenu"><button class="btn btn-sm btn-danger" data-c="endall"><i class="fas fa-phone-slash"></i> ${L('إنهاء المكالمة للكل', 'End the call for everyone')}</button><button class="btn btn-sm" data-c="leave"><i class="fas fa-right-from-bracket"></i> ${L('خروج بس', 'Just leave')}</button><button class="btn btn-sm btn-ghost" data-c="endx">${L('رجوع', 'Back')}</button></div>` : ''}
     <div class="call-actions">
       <button class="btn btn-icon call-btn ${c.muted ? 'on' : ''}" data-c="mute" title="${c.muted ? L('افتح المايك', 'Unmute') : L('اقفل المايك', 'Mute')}"><i class="fas ${c.muted ? 'fa-microphone-slash' : 'fa-microphone'}"></i></button>
-      ${canRecord() && call.startedAt ? `<button class="btn btn-icon call-btn ${isRecording() ? 'rec-on' : ''}" data-c="rec" title="${isRecording() ? L('وقف التسجيل', 'Stop recording') : L('سجّل المكالمة', 'Record the call')}" ${recOther ? 'disabled' : ''}><i class="fas ${isRecording() ? 'fa-stop' : 'fa-circle'}"></i></button>` : ''}
-      ${canUseCamera() && call.startedAt ? `<button class="btn btn-icon call-btn ${c.cam ? 'on' : ''}" data-c="cam" title="${c.cam ? L('اقفل الكاميرا', 'Turn camera off') : L(`افتح الكاميرا (${(call.cams || []).length}/${MAX_CAMS})`, `Turn camera on (${(call.cams || []).length}/${MAX_CAMS})`)}"><i class="fas ${c.cam ? 'fa-video' : 'fa-video-slash'}"></i></button>` : ''}
-      ${c.cam && hasTouch ? `<button class="btn btn-icon call-btn" data-c="flip" title="${L('الكاميرا الأمامية / الخلفية', 'Front / back camera')}"><i class="fas fa-camera-rotate"></i></button>` : ''}
-      ${canShareScreen() ? `<button class="btn btn-icon call-btn ${c.screen ? 'on' : ''}" data-c="share" title="${c.screen ? L('وقف عرض شاشتك', 'Stop sharing your screen') : L(`اعرض شاشتك (${(call.sharing || []).length}/${MAX_SHARING})`, `Share your screen (${(call.sharing || []).length}/${MAX_SHARING})`)}"><i class="fas ${c.screen ? 'fa-display' : 'fa-desktop'}"></i></button>` : ''}
-      ${(call.joined || []).includes(me) ? `<button class="btn btn-icon call-btn" data-c="add" title="${L('إضافة حد للمكالمة', 'Add someone to the call')}"><i class="fas fa-user-plus"></i></button>` : ''}
-      ${(call.joined || []).includes(me) && call.startedAt ? `<button class="btn btn-icon call-btn" data-c="guest" title="${L('ضيف من برّه (من غير حساب) — لينك', 'A guest without an account — link')}"><i class="fas fa-link"></i></button>` : ''}
+      ${!minimized && canUseCamera() && call.startedAt ? `<button class="btn btn-icon call-btn ${c.cam ? 'on' : ''}" data-c="cam" title="${c.cam ? L('اقفل الكاميرا', 'Turn camera off') : L(`افتح الكاميرا (${(call.cams || []).length}/${MAX_CAMS})`, `Turn camera on (${(call.cams || []).length}/${MAX_CAMS})`)}"><i class="fas ${c.cam ? 'fa-video' : 'fa-video-slash'}"></i></button>` : ''}
+      ${!minimized && c.cam && hasTouch ? `<button class="btn btn-icon call-btn" data-c="flip" title="${L('الكاميرا الأمامية / الخلفية', 'Front / back camera')}"><i class="fas fa-camera-rotate"></i></button>` : ''}
+      ${!minimized && canShareScreen() ? `<button class="btn btn-icon call-btn ${c.screen ? 'on' : ''}" data-c="share" title="${c.screen ? L('وقف عرض شاشتك', 'Stop sharing your screen') : L(`اعرض شاشتك (${(call.sharing || []).length}/${MAX_SHARING})`, `Share your screen (${(call.sharing || []).length}/${MAX_SHARING})`)}"><i class="fas ${c.screen ? 'fa-display' : 'fa-desktop'}"></i></button>` : ''}
       <button class="btn btn-icon call-btn end" data-c="end" title="${L('إنهاء المكالمة', 'Hang up')}"><i class="fas fa-phone-slash"></i></button>
-    </div>`;
+    </div>
+    ${minimized ? '' : `<div class="call-tools">
+      ${canRecord() && call.startedAt ? `<button class="call-tool ${isRecording() ? 'rec-on' : ''}" data-c="rec" ${recOther ? 'disabled' : ''}><i class="fas ${isRecording() ? 'fa-stop' : 'fa-circle'}"></i><span>${isRecording() ? L('وقف التسجيل', 'Stop rec.') : L('تسجيل', 'Record')}</span></button>` : ''}
+      ${(call.joined || []).includes(me) ? `<button class="call-tool" data-c="add"><i class="fas fa-user-plus"></i><span>${L('إضافة', 'Add')}</span></button>` : ''}
+      ${(call.joined || []).includes(me) && call.startedAt ? `<button class="call-tool" data-c="guest"><i class="fas fa-link"></i><span>${L('لينك ضيف', 'Guest link')}</span></button>` : ''}
+    </div>`}`;
+  if (panel.style.left) { const r = panel.getBoundingClientRect(); placePanel(panel, r.left, r.top); }   // moved by hand: keep it on screen as it grows
   if (!clock) clock = setInterval(() => { const cc = currentCall(); const el = document.getElementById('call-clock'); if (cc && el && cc.call.startedAt) el.textContent = fmtDur((now() - cc.call.startedAt) / 1000) + (cc.call.group ? ` · ${(cc.call.joined || []).length}/${MAX_IN_CALL}` : ''); }, 1000);
   // the caller hears a ring-back tone until someone answers
   if (ringing && call.from === me && !ringback) { play('ringback'); ringback = setInterval(() => { const cc = currentCall(); if (cc && !cc.call.startedAt) play('ringback'); }, 3000); }
   if (!ringing && ringback) { clearInterval(ringback); ringback = 0; }
 }
+
+// ---------------------------------------------------------------- moving the call box (drag its top bar; the place is remembered)
+const POS_KEY = 'am_callpos';
+function placePanel(el, x, y) {
+  const r = el.getBoundingClientRect();
+  const nx = Math.max(8, Math.min(window.innerWidth - r.width - 8, x)), ny = Math.max(8, Math.min(window.innerHeight - r.height - 8, y));
+  Object.assign(el.style, { left: nx + 'px', top: ny + 'px', right: 'auto', bottom: 'auto', insetInlineStart: 'auto' });
+  return [nx, ny];
+}
+function makeDraggable(el) {
+  let saved = null; try { saved = JSON.parse(localStorage.getItem(POS_KEY) || 'null'); } catch {}
+  if (saved && Number.isFinite(saved.x)) requestAnimationFrame(() => placePanel(el, saved.x, saved.y));
+  let start = null;
+  el.addEventListener('pointerdown', (e) => {
+    const h = e.target.closest('[data-drag]'); if (!h || e.target.closest('button,a,input') || e.button > 0) return;
+    const r = el.getBoundingClientRect();
+    start = { dx: e.clientX - r.left, dy: e.clientY - r.top, id: e.pointerId };
+    el.setPointerCapture(e.pointerId); el.classList.add('dragging'); e.preventDefault();
+  });
+  el.addEventListener('pointermove', (e) => { if (start && e.pointerId === start.id) placePanel(el, e.clientX - start.dx, e.clientY - start.dy); });
+  const end = (e) => {
+    if (!start || e.pointerId !== start.id) return;
+    start = null; el.classList.remove('dragging');
+    const r = el.getBoundingClientRect();
+    try { localStorage.setItem(POS_KEY, JSON.stringify({ x: r.left, y: r.top })); } catch {}
+  };
+  el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end);
+  // double-click the bar: back to the usual corner
+  el.addEventListener('dblclick', (e) => { if (!e.target.closest('[data-drag]') || e.target.closest('button')) return; ['left', 'top', 'right', 'bottom', 'insetInlineStart'].forEach(k => { el.style[k] = ''; }); try { localStorage.removeItem(POS_KEY); } catch {} });
+}
+window.addEventListener('resize', () => { if (panel && panel.style.left) { const r = panel.getBoundingClientRect(); placePanel(panel, r.left, r.top); } });
 
 /** Online meeting (admins, project managers, sales): a topic, colleagues if you like, then the link for anyone else */
 export function openRoomDialog() {

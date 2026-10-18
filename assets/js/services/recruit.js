@@ -22,15 +22,14 @@ export const canRecruit = () => isHR();
 // ---------------------------------------------------------------- vocab
 export const STAGES = [
   { id: 'new', ar: 'جديد', en: 'New', icon: 'fa-inbox' },
-  { id: 'screen', ar: 'فرز', en: 'Screening', icon: 'fa-filter' },
-  { id: 'phone', ar: 'مكالمة تليفون', en: 'Phone call', icon: 'fa-phone' },
   { id: 'hr', ar: 'إنترفيو HR', en: 'HR interview', icon: 'fa-user-tie' },
-  { id: 'task', ar: 'تاسك', en: 'Task', icon: 'fa-laptop-code' },
-  { id: 'tech', ar: 'إنترفيو فني', en: 'Technical interview', icon: 'fa-gears' },
-  { id: 'final', ar: 'إنترفيو نهائي', en: 'Final interview', icon: 'fa-handshake' },
-  { id: 'offer', ar: 'عرض', en: 'Offer', icon: 'fa-file-signature' },
+  { id: 'tech', ar: 'إنترفيو تكنيكال', en: 'Technical interview', icon: 'fa-gears' },
   { id: 'hired', ar: 'اتعيّن', en: 'Hired', icon: 'fa-circle-check' }
 ];
+/** stages of an earlier version → the nearest one now */
+const OLD_STAGE = { screen: 'new', phone: 'new', task: 'hr', final: 'tech', offer: 'tech' };
+export const normStage = (id) => OLD_STAGE[id] || (STAGES.some(s => s.id === id) ? id : 'new');
+const norm = (a) => (a ? { ...a, stage: normStage(a.stage) } : a);
 export const stageOf = (id) => STAGES.find(s => s.id === id) || STAGES[0];
 export const stageLabel = (id) => { const s = stageOf(id); return L(s.ar, s.en); };
 export const STATUS_LABEL = {
@@ -53,7 +52,8 @@ export const LEVELS = [['intern', 'متدرب', 'Intern'], ['junior', 'Junior', 
 export const JOB_TYPES = [['fulltime', 'دوام كامل', 'Full-time'], ['parttime', 'دوام جزئي', 'Part-time'], ['remote', 'ريموت', 'Remote'], ['hybrid', 'هايبرد', 'Hybrid'], ['internship', 'تدريب', 'Internship'], ['freelance', 'فريلانس', 'Freelance']];
 export const pick = (list, id) => { const x = list.find(r => r[0] === id); return x ? L(x[1], x[2]) : (id || ''); };
 export const JOB_STATUS = { draft: () => L('مسودة', 'Draft'), open: () => L('مفتوحة', 'Open'), paused: () => L('متوقفة', 'Paused'), closed: () => L('اتقفلت', 'Closed') };
-export const ROUNDS = [['phone', 'مكالمة تليفون', 'Phone call'], ['hr', 'إنترفيو HR', 'HR interview'], ['tech', 'إنترفيو فني', 'Technical interview'], ['final', 'إنترفيو نهائي', 'Final interview']];
+export const ROUNDS = [['hr', 'إنترفيو HR', 'HR interview'], ['tech', 'إنترفيو تكنيكال', 'Technical interview'], ['phone', 'مكالمة تليفون', 'Phone call'], ['final', 'إنترفيو نهائي', 'Final interview']];
+export const ROUND_CHOICES = ROUNDS.slice(0, 2);   // what a new interview can be (older ones keep their names)
 export const MODES = [['office', 'في المكتب', 'In the office'], ['online', 'أونلاين', 'Online'], ['phone', 'تليفون', 'Phone']];
 export const RECS = [['strong_yes', 'أكيد نعم', 'Strong yes', 'ok'], ['yes', 'نعم', 'Yes', 'ok'], ['no', 'لا', 'No', 'bad'], ['strong_no', 'أكيد لا', 'Strong no', 'bad']];
 export const Q_TYPES = [
@@ -153,13 +153,13 @@ export async function deleteJob(job) {
 }
 
 // ---------------------------------------------------------------- applications
-export const watchApps = (jobId, cb) => watch(query(col('applications'), where('jobId', '==', jobId)), rows => cb(rows.filter(a => a.status !== 'draft')), () => cb([]));
-export const watchAllApps = (cb) => watch(query(col('applications'), orderBy('createdAt', 'desc'), limit(400)), rows => cb(rows.filter(a => a.status !== 'draft')), () => cb([]));
+export const watchApps = (jobId, cb) => watch(query(col('applications'), where('jobId', '==', jobId)), rows => cb(rows.filter(a => a.status !== 'draft').map(norm)), () => cb([]));
+export const watchAllApps = (cb) => watch(query(col('applications'), orderBy('createdAt', 'desc'), limit(400)), rows => cb(rows.filter(a => a.status !== 'draft').map(norm)), () => cb([]));
 export const watchUnseen = (cb) => watch(query(col('applications'), where('seen', '==', false)), rows => cb(rows.filter(a => a.status === 'active')), () => cb([]));
-export const watchApp = (id, cb) => watch(doc(db, 'applications', id), cb);
+export const watchApp = (id, cb) => watch(doc(db, 'applications', id), d => cb(norm(d)));
 export const watchLog = (id, cb) => watch(query(col(`applications/${id}/log`), orderBy('atMs', 'desc'), limit(200)), cb, () => cb([]));
 /** the same person on other jobs (by phone) */
-export const otherApps = async (app) => (await list(query(col('applications'), where('phoneKey', '==', app.phoneKey)))).filter(a => a.id !== app.id && a.status !== 'draft');
+export const otherApps = async (app) => (await list(query(col('applications'), where('phoneKey', '==', app.phoneKey)))).filter(a => a.id !== app.id && a.status !== 'draft').map(norm);
 
 export function addLog(appId, entry) {
   return addDoc(col(`applications/${appId}/log`), { ...entry, by: session.email, byName: nameOf(session.email), at: serverTimestamp(), atMs: now() });

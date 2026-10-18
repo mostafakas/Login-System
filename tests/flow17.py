@@ -105,8 +105,9 @@ ok('أحمد سامي' in H.locator('.rc-hero').inner_text(), 'applicant page op
 ok(db(H)[f'applications/{aid}'].get('seen') is True, 'opened → marked seen')
 ok(H.locator('.rc-ans.bad').count() >= 1, 'failed answer highlighted')
 H.screenshot(path='shots/f17-app.png', full_page=True)
-H.locator('.rc-stage[data-stage=screen]').click(); H.wait_for_timeout(800)
-ok(db(H)[f'applications/{aid}']['stage'] == 'screen', 'moved to screening')
+H.locator('.rc-stage[data-stage=hr]').click(); H.wait_for_timeout(800)
+ok(db(H)[f'applications/{aid}']['stage'] == 'hr', 'moved to «إنترفيو HR»')
+ok(H.locator('.rc-stage').count() == 4, 'only 4 stages: new · HR · technical · hired')
 
 # 4) book an online interview → the email is ready with the candidate's link
 H.locator('[data-a=iv]').first.click(); H.wait_for_timeout(600)

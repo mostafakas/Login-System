@@ -1482,9 +1482,9 @@ div.call-hint { cursor: default; }
 .rc-mini span.on { background: var(--brand-soft); color: var(--brand); }
 .rc-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--brand); margin-inline-end: 6px; vertical-align: middle; }
 .rc-row { cursor: pointer; }
-.rc-board { grid-template-columns: repeat(9, minmax(215px, 1fr)); }
+.rc-board { grid-template-columns: repeat(4, minmax(240px, 1fr)); }
 .rc-col.rc-new { border-top-color: var(--brand); } .rc-col.rc-screen, .rc-col.rc-phone { border-top-color: var(--info); }
-.rc-col.rc-hr, .rc-col.rc-task, .rc-col.rc-tech, .rc-col.rc-final { border-top-color: var(--warn); }
+.rc-col.rc-hr { border-top-color: var(--info); } .rc-col.rc-tech { border-top-color: var(--warn); }
 .rc-col.rc-offer { border-top-color: #8b5cf6; } .rc-col.rc-hired { border-top-color: var(--ok); }
 .rc-col header i { color: var(--muted); }
 .rc-card.fresh { border-inline-start-color: var(--brand); }
@@ -1565,3 +1565,30 @@ div.call-hint { cursor: default; }
 .screen-grid.cams.focused .screen-tile.main { grid-column: 1; grid-row: 1 / span 6; }
 .screen-grid.cams.focused .screen-tile:not(.main) { grid-column: 2; }
 .guest-screens.many { grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 380px)); justify-content: center; }
+
+/* ---------- the call box: tidier, and it can be moved ---------- */
+.call-panel { width: min(360px, calc(100vw - 24px)); padding: 12px 14px 14px; gap: 12px; }
+.call-top { cursor: grab; user-select: none; touch-action: none; margin: -4px -6px 0; padding: 4px 6px; border-radius: 12px; }
+.call-top:hover { background: rgba(255,255,255,.05); }
+.call-panel.dragging { animation: none; box-shadow: 0 26px 70px rgba(0,0,0,.5); }
+.call-panel.dragging .call-top { cursor: grabbing; }
+.call-grip { opacity: .4; font-size: 12px; }
+.call-top b { font-size: 15px; }
+.call-actions { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
+.call-btn { width: 48px; height: 48px; font-size: 18px; transition: background .15s, transform .1s; }
+.call-btn:hover:not(:disabled) { background: rgba(255,255,255,.2); }
+.call-btn.on:hover { background: #e9ecff; }
+.call-btn.end { width: 64px; border-radius: 999px; }
+.call-btn.end:hover { background: #dc2626; }
+.call-btn:active { transform: scale(.94); }
+.call-tools { display: flex; justify-content: center; gap: 6px; flex-wrap: wrap; padding-top: 10px; border-top: 1px solid rgba(255,255,255,.08); }
+.call-tool { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px; border-radius: 999px; border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.06); color: #fff; font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; transition: background .15s; }
+.call-tool:hover:not(:disabled) { background: rgba(255,255,255,.14); }
+.call-tool i { font-size: 12px; opacity: .9; }
+.call-tool .fa-circle { color: #f87171; }
+.call-tool.rec-on { background: #ef4444; border-color: #ef4444; animation: ringpulse-soft 1.4s ease-in-out infinite; }
+.call-tool.rec-on i { color: #fff; }
+.call-tool:disabled { opacity: .4; cursor: default; }
+.call-trnote { justify-content: center; }
+.call-panel.min .call-btn.end { width: 44px; }
+.call-panel.min .call-actions { flex-wrap: nowrap; }

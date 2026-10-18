@@ -68,7 +68,8 @@ export default async function render(root, { params }) {
 }
 
 /** Create / edit employee dialog */
-export async function openEditor(email) {
+/** opts.prefill: values for a new employee (e.g. from a hired applicant) · opts.onCreated(email) after the account is made */
+export async function openEditor(email, opts = {}) {
   const isNew = !email;
   const u = isNew ? {} : (person(email) || await read('users', email) || {});
   const priv = isNew ? {} : (await read('employees_private', email).catch(() => null) || {});
@@ -207,6 +208,7 @@ export async function openEditor(email) {
     foot: `<button class="btn" data-close>${L('إلغاء', 'Cancel')}</button><button class="btn btn-primary" id="save"><i class="fas fa-floppy-disk"></i> ${isNew ? L('إنشاء الحساب', 'Create account') : L('حفظ', 'Save')}</button>`
   });
   const f = m.$('#ef');
+  if (isNew && opts.prefill) Object.entries(opts.prefill).forEach(([k, v]) => { const el = f.elements[k]; if (el && v != null && v !== '') el.value = v; });
   let photo = u.photo || '';
   m.$('#ph').onchange = async (e) => { try { photo = await imageToDataUrl(e.target.files[0], 240, 0.8); m.$('[data-pane=basic] .avatar').outerHTML = avatar({ ...u, photo }, 'lg'); } catch { toast(L('الصورة مش صالحة', 'Invalid image'), '', 'bad'); } };
   m.$$('#et .tab').forEach(b => b.onclick = () => { m.$$('#et .tab').forEach(x => x.classList.toggle('active', x === b)); m.$$('[data-pane]').forEach(p => p.classList.toggle('hidden', p.dataset.pane !== b.dataset.p)); });
@@ -375,6 +377,7 @@ export async function openEditor(email) {
         b.set(doc(col('audit_log')), { action: 'user.create', target: newEmail, by: session.email, at: serverTimestamp() });
         await b.commit();
         m.close();
+        if (opts.onCreated) { try { opts.onCreated(newEmail); } catch (x) { console.warn(x); } }
         if (!pw) {
           modal({
             title: L('تم ربط الحساب', 'Account linked'), icon: 'fa-link', size: 'narrow',

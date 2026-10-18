@@ -1,4 +1,5 @@
 // A guest without an account joins a call from a link: guest.html#c=<callId>&k=<key>.
+// An interview link (guest.html#i=<secret>) waits here until HR starts the interview, then becomes that call's link.
 // They sign in anonymously, write their name and wait at the door (calls/{id}/guests/{uid}); once someone in the call
 // lets them in, they talk like everyone else (voice, screens, their words go into the transcript). Nothing else of
 // the system is open to them.
@@ -15,13 +16,37 @@ import './services/recording.js';   // my words go into the call's transcript li
 const box = document.getElementById('g');
 const screensBox = document.getElementById('g-screens');
 const params = new URLSearchParams(location.hash.slice(1));
-const callId = params.get('c') || '', key = params.get('k') || '';
+let callId = params.get('c') || '', key = params.get('k') || '';
+const interviewId = params.get('i') || '';
+let ivTitle = '';
 let stage = 'form', joined = false, clock = 0;
 
 const card = (html) => { box.innerHTML = `<div class="card guest-card"><div class="card-body">${html}</div></div>`; };
 const done = (icon, title, text) => { stage = 'done'; screensBox.classList.add('hidden'); screensBox.innerHTML = ''; card(`<div class="guest-msg"><i class="fas ${icon}"></i><h2>${esc(title)}</h2>${text ? `<p class="muted">${esc(text)}</p>` : ''}</div>`); };
 
+const fmtWhen = (ms) => new Date(ms).toLocaleString(L('ar-EG', 'en-GB'), { timeZone: 'Africa/Cairo', weekday: 'long', day: 'numeric', month: 'long', hour: 'numeric', minute: '2-digit' });
+/** an interview link: show when it is, wait until HR starts it, then carry on like a call link */
+async function interviewWait() {
+  try { await signInAnonymously(auth); }
+  catch (e) { done('fa-triangle-exclamation', L('مش قادر أدخلك', 'Could not sign you in'), L('الدخول كضيف مش مفعّل في السيستم. بلّغ اللي بعتلك اللينك.', 'Guest sign-in is not enabled. Tell the person who sent you the link.')); return; }
+  let first = true;
+  const off = watch(doc(db, 'interview_links', interviewId), (d) => {
+    if (!d) { off(); done('fa-link-slash', L('اللينك ده مش شغال', 'This link does not work'), L('يمكن الإنترفيو اتلغى أو اتغيّر. راجع الإيميل أو كلّم الـ HR.', 'The interview may have been cancelled or changed. Check your email or contact HR.')); return; }
+    if (d.callId && d.key) {
+      off(); callId = d.callId; key = d.key; ivTitle = d.title || '';
+      if (!first) import('./core/sounds.js').then(m => m.play('meeting')).catch(() => {});
+      start(); return;
+    }
+    first = false;
+    card(`<div class="guest-msg"><i class="fas fa-calendar-check" style="color:var(--brand)"></i><h2>${esc(d.title || L('إنترفيو', 'Interview'))}</h2>
+      <p class="muted">${d.at ? esc(fmtWhen(d.at)) : ''}</p>
+      <p class="small">${L('الإنترفيو لسه ما بدأش. خلّي الصفحة دي مفتوحة — أول ما يبدأ هتقدر تدخل على طول من غير ما تعمل حاجة.', 'The interview has not started yet. Keep this page open — as soon as it starts you can join right away.')}</p>
+      <p class="xs muted"><i class="fas fa-microphone"></i> ${L('جهّز المايك والسماعة، والمتصفح هيطلب إذن المايك.', 'Have your microphone and headset ready; the browser will ask for microphone access.')}</p></div>`);
+  }, () => done('fa-link-slash', L('اللينك ده مش شغال', 'This link does not work'), ''));
+}
+
 async function start() {
+  if (interviewId && (!callId || !key)) { interviewWait(); return; }
   if (!callId || !key) { done('fa-link-slash', L('اللينك ده ناقص', 'This link is incomplete'), L('اطلب لينك جديد من اللي بعتهولك.', 'Ask the sender for a new link.')); return; }
   try { await signInAnonymously(auth); }
   catch (e) { done('fa-triangle-exclamation', L('مش قادر أدخلك', 'Could not sign you in'), L('الدخول كضيف مش مفعّل في السيستم. بلّغ اللي بعتلك اللينك.', 'Guest sign-in is not enabled. Tell the person who sent you the link.')); console.warn(e); return; }
@@ -39,7 +64,7 @@ async function start() {
 function form() {
   stage = 'form';
   let saved = ''; try { saved = localStorage.getItem('am_guest_name') || ''; } catch {}
-  card(`<h2 class="guest-h">${L('مكالمة صوتية', 'Voice call')}</h2>
+  card(`<h2 class="guest-h">${esc(ivTitle) || L('مكالمة صوتية', 'Voice call')}</h2>
     <p class="muted small">${L('اكتب اسمك، وحد من اللي في المكالمة هيسمحلك تدخل.', 'Write your name; someone in the call will let you in.')}</p>
     <div class="field mt-16"><label>${L('اسمك', 'Your name')}</label><input class="input" id="gn" maxlength="60" autocomplete="name" value="${esc(saved)}"></div>
     <p class="xs muted mt-8"><i class="fas fa-circle-info"></i> ${L('المكالمة ممكن تتسجّل، والكلام بيتكتب تلقائياً في محضر.', 'The call may be recorded, and what is said is written down automatically.')}</p>

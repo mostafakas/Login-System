@@ -32,6 +32,7 @@ const ROUTES = [
 
   { id: 'employees', group: 'hr', icon: 'fa-users', ar: 'الموظفين', en: 'Employees', when: isHR, load: () => import('./views/employees.js') },
   { id: 'daily', group: 'hr', icon: 'fa-user-clock', ar: 'الحضور اليومي', en: 'Daily attendance', when: isHR, load: () => import('./views/daily.js') },
+  { id: 'recruit', group: 'hr', icon: 'fa-user-tie', ar: 'التوظيف', en: 'Recruitment', when: isHR, load: () => import('./views/recruit.js'), badge: 'recruit' },
   { id: 'schedules', group: 'hr', icon: 'fa-calendar-days', ar: 'الجداول', en: 'Schedules', when: () => isHR() || isLeader(), load: () => import('./views/schedules.js') },
 
   { id: 'payroll', group: 'finance', icon: 'fa-money-check-dollar', ar: 'الرواتب', en: 'Payroll', when: isFinance, load: () => import('./views/payroll.js') },
@@ -46,7 +47,7 @@ const GROUPS = {
 };
 
 let current = null; // { id, cleanup }
-let inboxCount = 0, chatCount = 0, annCount = 0, taskCount = 0, evalCount = 0;
+let inboxCount = 0, chatCount = 0, annCount = 0, taskCount = 0, evalCount = 0, recruitCount = 0;
 const allowed = (r) => !r.when || r.when();
 
 function renderNav() {
@@ -89,6 +90,7 @@ function renderUserChip() {
 function setBadges() {
   document.querySelectorAll('[data-badge="inbox"]').forEach(b => { b.textContent = inboxCount; b.classList.toggle('hidden', !inboxCount); });
   document.querySelectorAll('[data-badge="ann"]').forEach(b => { b.textContent = annCount; b.classList.toggle('hidden', !annCount); });
+  document.querySelectorAll('[data-badge="recruit"]').forEach(b => { b.textContent = recruitCount > 99 ? '99+' : recruitCount; b.classList.toggle('hidden', !recruitCount); });
   document.querySelectorAll('[data-badge="eval"]').forEach(b => { b.textContent = evalCount; b.classList.toggle('hidden', !evalCount); });
   document.querySelectorAll('[data-badge="tasks"]').forEach(b => { b.textContent = taskCount > 99 ? '99+' : taskCount; b.classList.toggle('hidden', !taskCount); });
   const n = unreadCount();
@@ -325,6 +327,8 @@ async function boot() {
   onNotifications(setBadges);
   if (isLeader() || isAdmin() || isPM() || isHR()) import('./services/evaluations.js').then(ev => ev.watchPending(rows => { evalCount = rows.length; setBadges(); })).catch(e => console.warn('reviews', e && e.message));
   if (canApprove()) watchInbox(rows => { inboxCount = rows.length; setBadges(); });
+  // new applications from the public apply page (not opened yet)
+  if (isHR()) import('./services/recruit.js').then(r => r.watchUnseen(rows => { recruitCount = rows.length; setBadges(); })).catch(e => console.warn('recruit', e && e.message));
   renderNav();
   startClock();
   initTabs(ROUTES, allowed);

@@ -4,7 +4,7 @@
 // No time limit. Without a TURN relay a few strict networks may not connect; a relay can be added later in
 // settings/public.iceServers without code changes.
 import { db, doc, col, watch, query, where, updateDoc, setDoc, deleteDoc, runTransaction, serverTimestamp } from '../core/fb.js';
-import { session, now, isAdmin, isPM, hasCRM } from '../core/session.js';   // now(): server-corrected clock — devices with a wrong clock agree
+import { session, now, isAdmin, isPM, hasCRM, isHR } from '../core/session.js';   // now(): server-corrected clock — devices with a wrong clock agree
 import { L } from '../core/utils.js';
 import { userError } from '../core/ui.js';
 import { publicConfig, callService } from './authsvc.js';
@@ -78,7 +78,7 @@ export async function startCall(chat, people = null) {
 
 /** Online meeting (not tied to a chat): admins, project managers and sales (CRM access / sales manager) open a call
  *  of their own, then invite anyone — colleagues (optional) and people without an account through the guest link. */
-export const canHostRoom = () => isAdmin() || isPM() || hasCRM() || session.role === 'sales_manager';
+export const canHostRoom = () => isAdmin() || isPM() || hasCRM() || session.role === 'sales_manager' || isHR();   // HR: interviews
 export async function startRoom({ topic = '', people = [] } = {}) {
   if (cur) throw userError('إنت في مكالمة دلوقتي. اقفلها الأول.', 'You are already in a call. Hang up first.');
   if (!canHostRoom()) throw userError('الميتنج الأونلاين للأدمن ومدير المشروعات والسيلز بس.', 'Online meetings are for admins, project managers and sales only.');

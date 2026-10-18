@@ -11,6 +11,8 @@
  *               account's Drive; employees see one only after the admin approves their request
  *   • fileUp / fileGet — chat files, task attachments and payroll receipts are kept in this account's Google Drive
  *               (free 15 GB) instead of Firestore, so they no longer eat Firebase's free daily quota
+ *   • rUp / rGet — recruitment files: CVs and files from the public apply page, files of take-home tasks (the candidate
+ *               is signed in anonymously and may only add files to their own application / task); HR opens them
  *
  * Setup: see README.md in this folder. Secrets live in Script Properties, never in this file:
  *   SERVICE_ACCOUNT = the whole JSON key from Firebase Console → Project settings → Service accounts
@@ -46,6 +48,8 @@ function doPost(e) {
       case 'recUp': return json_(recUp_(body));
       case 'recGet': return json_(recGet_(body));
       case 'trBuild': return json_(trBuild_(body));
+      case 'rUp': return json_(rUp_(body));
+      case 'rGet': return json_(rGet_(body));
       default: return json_({ ok: false, error: 'unknown-action' });
     }
   } catch (err) {
@@ -258,6 +262,68 @@ function fileGet_(b) {
   return { ok: true, name: meta.name || file.getName(), mime: meta.mime || blob.getContentType(), data: Utilities.base64Encode(blob.getBytes()) };
 }
 
+// ---------------------------------------------------------------- recruitment files
+// kind 'app'  → applications/{ref}: the applicant (anonymous, while their application is still a draft) or HR
+// kind 'task' → cand_tasks/{ref}: the candidate who opened the task link (until the deadline) or HR
+// kind 'bank' → files HR attaches to a task (task_bank/{ref} or a task being sent)
+const R_MAX_FILES = 12;
+function recruitCaller_(idToken) {
+  if (!idToken) throw new Error('unauthenticated:no-token');
+  let c;
+  try { c = verifyClaims_(idToken, true); }
+  catch (e) { const me = caller_(idToken); if (!isHR_(me)) throw new Error('forbidden'); return { hr: true, email: me.email }; }   // the slower check for employees
+  if (c.email) { const me = caller_(idToken); if (!isHR_(me)) throw new Error('forbidden'); return { hr: true, email: me.email }; }
+  return { hr: false, uid: String(c.sub) };
+}
+function rUp_(b) {
+  const me = recruitCaller_(b.idToken);
+  const kind = String(b.kind || ''), ref = String(b.ref || '');
+  if (['app', 'task', 'bank'].indexOf(kind) < 0 || !ref || ref.length > 200 || !/^[A-Za-z0-9_\-]+$/.test(ref) || !b.data) throw new Error('bad-request');
+  if (!me.hr) {
+    if (kind === 'app') {
+      const a = getDoc_('applications/' + ref);
+      if (!a || a.uid !== me.uid || a.status !== 'draft') throw new Error('forbidden');
+    } else if (kind === 'task') {
+      const t = getDoc_('cand_tasks/' + ref);
+      if (!t || t.uid !== me.uid || t.status !== 'opened' || Date.now() > Number(t.deadlineMs || 0) + 600000) throw new Error('forbidden');
+    } else throw new Error('forbidden');
+    // a cap per application / task, so a link can't be used to fill the Drive
+    const cache = CacheService.getScriptCache(), ck = 'rup_' + kind + '_' + ref;
+    const n = Number(cache.get(ck) || 0);
+    if (n >= R_MAX_FILES) throw new Error('forbidden:too-many-files');
+    cache.put(ck, String(n + 1), 21600);
+  }
+  const bytes = Utilities.base64Decode(String(b.data));
+  if (bytes.length > MAX_FILE_BYTES) throw new Error('too-large');
+  const name = String(b.name || 'file').replace(/[\\/]/g, '_').slice(0, 180);
+  const mime = String(b.mime || 'application/octet-stream').slice(0, 120);
+  let file;
+  try {
+    file = kindFolder_('recruit').createFile(Utilities.newBlob(bytes, mime, name));
+    file.setDescription('recruit:' + kind + ':' + ref + ':' + (me.hr ? me.email : 'candidate'));
+  } catch (e) { throw new Error('drive-error:' + String(e.message || e).slice(0, 200)); }
+  return { ok: true, driveId: file.getId(), size: bytes.length };
+}
+/** HR opens any recruitment file; a candidate only the files attached to their own task */
+function rGet_(b) {
+  const me = recruitCaller_(b.idToken);
+  const id = String(b.driveId || '');
+  if (!id || id.length > 200) throw new Error('bad-request');
+  let file;
+  try { file = DriveApp.getFileById(id); } catch (e) { throw new Error('not-found'); }
+  const desc = String(file.getDescription() || '');
+  if (desc.indexOf('recruit:') !== 0) throw new Error('forbidden');
+  if (!me.hr) {
+    const ref = String(b.ref || '');
+    const t = String(b.kind) === 'task' && ref && /^[A-Za-z0-9_\-]+$/.test(ref) ? getDoc_('cand_tasks/' + ref) : null;
+    if (!t || t.uid !== me.uid) throw new Error('forbidden');
+    const mine = (t.files || []).concat(t.subFiles || []).some(f => f && f.driveId === id);
+    if (!mine) throw new Error('forbidden');
+  }
+  const blob = file.getBlob();
+  return { ok: true, name: file.getName(), mime: blob.getContentType(), data: Utilities.base64Encode(blob.getBytes()) };
+}
+
 // ---------------------------------------------------------------- call recordings & transcripts
 // Recordings come in parts of a few minutes (a crash loses at most one part). They and the transcript live in this
 // account's Drive; call_records/{callId} lists them. Only the admin, and people the admin approved, can open them.
@@ -404,13 +470,19 @@ function firebaseKeys_(force) {
   return keys;
 }
 function verifyIdToken_(token) {
+  const c = verifyClaims_(token, false);
+  return String(c.email).toLowerCase();
+}
+/** check a Firebase ID token's signature and claims; anonymous sign-ins (no email) only when allowAnon */
+function verifyClaims_(token, allowAnon) {
   const parts = String(token).split('.');
   if (parts.length !== 3) throw new Error('unauthenticated:format');
   const header = b64urlJson_(parts[0]), claims = b64urlJson_(parts[1]);
   const now = Math.floor(Date.now() / 1000);
   if (header.alg !== 'RS256') throw new Error('unauthenticated:alg');
   if (claims.aud !== PROJECT_ID || claims.iss !== 'https://securetoken.google.com/' + PROJECT_ID) throw new Error('unauthenticated:project');
-  if (!claims.sub || !claims.email) throw new Error('unauthenticated:claims');
+  const anon = !!(claims.firebase && claims.firebase.sign_in_provider === 'anonymous');
+  if (!claims.sub || (!claims.email && !(allowAnon && anon))) throw new Error('unauthenticated:claims');
   if (Number(claims.exp) < now - 30) throw new Error('unauthenticated:expired');
   if (Number(claims.iat) > now + 300) throw new Error('unauthenticated:clock');
   if (typeof BigInt !== 'function') throw new Error('unauthenticated:no-bigint');
@@ -426,7 +498,7 @@ function verifyIdToken_(token) {
   const t = '3031300d060960864801650304020105000420' + digest;
   const expected = '0001' + 'ff'.repeat(k - 3 - t.length / 2) + '00' + t;
   if (em !== expected) throw new Error('unauthenticated:signature');
-  return String(claims.email).toLowerCase();
+  return claims;
 }
 
 function lookupLogin_(email) {

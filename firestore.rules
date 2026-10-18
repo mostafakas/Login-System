@@ -480,7 +480,7 @@ service cloud.firestore {
     function cid() { return anon() ? guestId() : me(); }
     function callerOk() { return anon() || active(); }
     // online meetings (a call not tied to a chat): admins, project managers and sales (CRM access / sales manager)
-    function roomHost() { return active() && (role() in ['admin', 'pm', 'sales_manager'] || prof().get('permissions', {}).get('crm', false) == true); }
+    function roomHost() { return active() && (role() in ['admin', 'pm', 'sales_manager', 'hr', 'supervisor'] || prof().get('permissions', {}).get('crm', false) == true); }
     match /calls/{id} {
       function nc() { return request.resource.data; }
       allow read: if callerOk() && (cid() in resource.data.members || cid() in resource.data.get('liveFor', []) || resource.data.get('from', '') == cid() || isAdmin());
@@ -570,6 +570,58 @@ service cloud.firestore {
         && request.resource.data.reason is string && request.resource.data.reason.size() <= 500;
       allow update: if isAdmin();
       allow delete: if isAdmin() || (active() && resource.data.by == me() && resource.data.status == 'pending');
+    }
+
+    // ---------- recruitment (HR & admin; candidates apply / do tasks from public links, signed in anonymously) ----------
+    match /jobs/{id} { allow read, write: if isHR(); }
+    // what the apply page shows (no salary)
+    match /job_posts/{id} {
+      allow get: if resource.data.open == true || isHR();
+      allow list, write: if isHR();
+    }
+    // one person × one job; the id is jobId_phone, so applying twice with the same phone is refused
+    match /applications/{id} {
+      function na() { return request.resource.data; }
+      function postOf(j) { return get(/databases/$(database)/documents/job_posts/$(j)).data; }
+      function short(v, n) { return v is string && v.size() <= n; }
+      // (a missing document reads as "not applied yet"; someone else's is refused → "already applied")
+      allow get: if isHR() || (anon() && (resource == null || resource.data.uid == request.auth.uid));
+      allow list, delete: if isHR();
+      allow create: if isHR() || (anon() && na().uid == request.auth.uid && na().status == 'draft' && na().stage == 'new' && na().seen == false
+        && id == na().jobId + '_' + na().phoneKey && postOf(na().jobId).open == true && na().createdAt == request.time
+        && short(na().name, 100) && na().name.size() >= 2 && short(na().phone, 30) && na().phoneKey is string && na().phoneKey.matches('^[0-9]{8,15}$')
+        && short(na().email, 120) && short(na().source, 20) && na().answers is map && na().answers.size() <= 45 && na().files is map && na().files.size() == 0
+        && na().keys().hasOnly(['jobId', 'jobTitle', 'name', 'phone', 'phoneKey', 'email', 'city', 'currentTitle', 'years', 'salary', 'available', 'linkedin', 'portfolio',
+                                'answers', 'files', 'source', 'stage', 'status', 'uid', 'seen', 'score', 'lang', 'createdAt', 'createdMs', 'updatedAt']));
+      // the applicant finishes their own application (files uploaded → submitted); nothing after that
+      allow update: if isHR() || (anon() && resource.data.uid == request.auth.uid && resource.data.status == 'draft'
+        && affected().hasOnly(['files', 'status', 'submittedAt', 'updatedAt']) && na().status in ['draft', 'active'] && na().files is map && na().files.size() <= 45);
+      match /log/{l} { allow read, write: if isHR(); }
+    }
+    match /interviews/{id} { allow read, write: if isHR(); }
+    // the candidate's interview link (the id is the secret): when it starts, the online meeting to join
+    match /interview_links/{id} {
+      allow get: if request.auth != null;
+      allow list, write: if isHR();
+    }
+    match /task_bank/{id} { allow read, write: if isHR(); }
+    match /email_templates/{id} { allow read, write: if isHR(); }
+    // a task sent to a candidate (the id is the link's secret). The first opening claims it (and starts the clock when
+    // the deadline counts from opening); then the candidate may save and hand in until the deadline (+10 min grace).
+    match /cand_tasks/{id} {
+      function nt() { return request.resource.data; }
+      function windowOk() { return resource.data.get('hours', 0) > 0
+        ? (nt().deadlineMs is number && nt().deadlineMs >= nowMs() + resource.data.hours * 3600000 - 300000 && nt().deadlineMs <= nowMs() + resource.data.hours * 3600000 + 300000)
+        : (nt().deadlineMs == resource.data.dueMs && resource.data.dueMs > nowMs()); }
+      allow get: if isHR() || anon();
+      allow list, create, delete: if isHR();
+      allow update: if isHR()
+        || (anon() && resource.data.uid == '' && resource.data.status == 'sent' && affected().hasOnly(['uid', 'status', 'openedAt', 'deadlineMs'])
+            && nt().uid == request.auth.uid && nt().status == 'opened' && nt().openedAt == request.time && windowOk())
+        || (anon() && resource.data.uid == request.auth.uid && resource.data.status == 'opened' && nowMs() <= resource.data.deadlineMs + 600000
+            && affected().hasOnly(['answer', 'links', 'subFiles', 'status', 'submittedAt', 'savedAt'])
+            && nt().answer is string && nt().answer.size() <= 20000 && nt().links is list && nt().links.size() <= 10 && nt().subFiles is list && nt().subFiles.size() <= 10
+            && (nt().status == 'opened' || (nt().status == 'submitted' && nt().submittedAt == request.time)));
     }
 
     // ---------- meeting invitations ----------

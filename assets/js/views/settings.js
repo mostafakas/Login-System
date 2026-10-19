@@ -1,5 +1,5 @@
 // Settings: work hours, remote & permissions, leave types, holidays, workflows, payroll rules, system tools.
-import { L, esc, num, fmtDate, isAr, fmtTime } from '../core/utils.js';
+import { L, esc, num, fmtDate, isAr, fmtTime, ymd } from '../core/utils.js';
 import { publicConfig, savePublicConfig, callService, siteUrl } from '../services/authsvc.js';
 import { toast, toastErr, busy, confirmDialog, empty, loader, modal } from '../core/ui.js';
 import { isAdmin, session, now } from '../core/session.js';
@@ -82,20 +82,66 @@ export default async function render(root, { params = [] } = {}) {
       draw();
     },
     holidays() {
-      let days = { ...holidays };
+      // every change is saved at once (add · edit · delete): nothing is lost by forgetting a "Save" button.
+      // The schedule, attendance, absences and reports are worked out from this list, so moving a holiday to
+      // another day fixes them for everyone — past days included.
       const year = new Date(now()).getFullYear();
+      let editing = '';
+      let shown = { ...holidays };   // what's on screen; updated right after each save
+      const today = ymd(now());
+      const dayName = (k) => new Date(k + 'T12:00:00Z').toLocaleDateString(isAr ? 'ar-EG-u-nu-latn' : 'en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+      const persist = async (days, msg) => {
+        await saveHolidays(days);
+        shown = { ...days };
+        window.dispatchEvent(new Event('am:data-changed'));   // reports / attendance work it out again
+        toast(msg || L('اتحفظ', 'Saved'));
+      };
       const draw = () => {
+        const days = { ...shown };
         const keys = Object.keys(days).sort();
+        const years = [...new Set(keys.map(k => k.slice(0, 4)))];
         pane.innerHTML = `<div class="card"><div class="card-head"><h3>${L('العطلات الرسمية', 'Public holidays')}</h3>
             <button class="btn btn-sm btn-soft" id="tpl"><i class="fas fa-flag"></i> ${L(`إضافة العطلات الثابتة لسنة ${year}`, `Add fixed holidays for ${year}`)}</button></div>
-          <div class="card-body"><form class="row-wrap" id="add"><input class="input" type="date" name="d" required style="width:180px"><input class="input grow" name="n" placeholder="${L('اسم العطلة', 'Holiday name')}" required style="min-width:200px"><button class="btn btn-primary"><i class="fas fa-plus"></i> ${L('إضافة', 'Add')}</button></form>
-          <p class="xs muted mt-8">${L('العطلات الدينية (الأعياد ورأس السنة الهجرية والمولد) بتتغير كل سنة — ضيفها بعد إعلان الحكومة.', 'Religious holidays move each year — add them once announced.')}</p></div>
-          ${keys.length ? `<div class="list">${keys.map(k => `<div class="list-item"><span class="icon-tile neutral"><i class="fas fa-flag"></i></span><div class="grow"><b class="small">${esc(days[k])}</b><div class="xs muted">${esc(fmtDate(k))}</div></div><button class="btn btn-ghost btn-sm btn-icon" data-del="${k}" aria-label="delete"><i class="fas fa-trash"></i></button></div>`).join('')}</div>` : empty('fa-flag', L('مفيش عطلات مضافة', 'No holidays yet'))}
-          ${saveBar()}</div>`;
-        pane.querySelector('#add').onsubmit = (e) => { e.preventDefault(); const f = e.target; days[f.d.value] = f.n.value.trim(); draw(); };
-        pane.querySelector('#tpl').onclick = () => { FIXED_EG_HOLIDAYS.forEach(([md, n]) => { days[`${year}-${md}`] = days[`${year}-${md}`] || n; }); draw(); };
-        pane.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { delete days[b.dataset.del]; draw(); });
-        pane.querySelector('#save').onclick = (e) => busy(e.currentTarget, async () => { try { await saveHolidays(days); toast(L('تم الحفظ', 'Saved')); } catch (ex) { toastErr(ex); } });
+          <div class="card-body"><form class="row-wrap" id="add"><input class="input" type="date" name="d" required style="width:180px"><input class="input grow" name="n" maxlength="80" placeholder="${L('اسم العطلة', 'Holiday name')}" required style="min-width:200px"><button class="btn btn-primary"><i class="fas fa-plus"></i> ${L('إضافة', 'Add')}</button></form>
+          <p class="xs muted mt-8">${L('الإضافة والتعديل والمسح بيتحفظوا على طول. لو العطلة اترحّلت ليوم تاني، دوس ✏️ وغيّر التاريخ — الجدول والحضور والغياب والتقارير بيتحسبوا من جديد للكل، حتى لو اليوم عدّى.', 'Adding, editing and deleting save at once. If a holiday moved to another day, press ✏️ and change the date — the schedule, attendance, absences and reports are worked out again for everyone, even for past days.')}</p>
+          <p class="xs muted">${L('العطلات الدينية (الأعياد ورأس السنة الهجرية والمولد) بتتغير كل سنة — ضيفها بعد إعلان الحكومة.', 'Religious holidays move each year — add them once announced.')}</p></div>
+          ${keys.length ? years.reverse().map(y => `<div class="hol-year">${y}</div><div class="list">${keys.filter(k => k.startsWith(y)).map(k => editing === k
+            ? `<form class="list-item hol-edit" data-form="${k}"><span class="icon-tile"><i class="fas fa-pen"></i></span><input class="input" type="date" name="d" value="${k}" required style="width:170px"><input class="input grow" name="n" maxlength="80" value="${esc(days[k])}" required>
+                <button class="btn btn-primary btn-sm" type="submit"><i class="fas fa-check"></i> ${L('حفظ', 'Save')}</button><button class="btn btn-ghost btn-sm" type="button" data-cancel>${L('إلغاء', 'Cancel')}</button></form>`
+            : `<div class="list-item"><span class="icon-tile ${k < today ? 'neutral' : ''}"><i class="fas fa-flag"></i></span><div class="grow"><b class="small">${esc(days[k])}</b><div class="xs muted">${esc(dayName(k))}${k < today ? ` · ${L('عدّى', 'past')}` : ''}</div></div>
+                <button class="btn btn-ghost btn-sm btn-icon" data-edit="${k}" title="${L('تعديل الاسم أو التاريخ', 'Edit name or date')}" aria-label="edit"><i class="fas fa-pen"></i></button>
+                <button class="btn btn-ghost btn-sm btn-icon" data-del="${k}" title="${L('مسح', 'Delete')}" aria-label="delete" style="color:var(--bad)"><i class="fas fa-trash"></i></button></div>`).join('')}</div>`).join('')
+          : empty('fa-flag', L('مفيش عطلات مضافة', 'No holidays yet'))}</div>`;
+        pane.querySelector('#add').onsubmit = (e) => {
+          e.preventDefault(); const f = e.target; const d = f.d.value, n = f.n.value.trim();
+          if (!d || !n) return;
+          const next = { ...shown };
+          if (next[d] && !confirm(L(`فيه عطلة يوم ${d} بالفعل (${next[d]}). تستبدلها؟`, `There is already a holiday on ${d} (${next[d]}). Replace it?`))) return;
+          next[d] = n;
+          busy(f.querySelector('button'), async () => { try { await persist(next, L('العطلة اتضافت', 'Holiday added')); draw(); } catch (ex) { toastErr(ex); } });
+        };
+        pane.querySelector('#tpl').onclick = (e) => busy(e.currentTarget, async () => {
+          const next = { ...shown };
+          FIXED_EG_HOLIDAYS.forEach(([md, n]) => { const k = `${year}-${md}`; const moved = Object.keys(next).some(x => x.startsWith(String(year)) && String(next[x]).includes(n)); if (!next[k] && !moved) next[k] = n; });
+          try { await persist(next); draw(); } catch (ex) { toastErr(ex); }
+        });
+        pane.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => { editing = b.dataset.edit; draw(); const i = pane.querySelector('.hol-edit [name=d]'); if (i) i.focus(); });
+        pane.querySelectorAll('[data-cancel]').forEach(b => b.onclick = () => { editing = ''; draw(); });
+        pane.querySelectorAll('[data-form]').forEach(f => f.onsubmit = (e) => {
+          e.preventDefault();
+          const old = f.dataset.form, d = f.d.value, n = f.n.value.trim();
+          if (!d || !n) return;
+          const next = { ...shown };
+          if (d !== old && next[d] && !confirm(L(`فيه عطلة يوم ${d} بالفعل (${next[d]}). تستبدلها؟`, `There is already a holiday on ${d} (${next[d]}). Replace it?`))) return;
+          delete next[old]; next[d] = n;
+          busy(f.querySelector('[type=submit]'), async () => { try { await persist(next, d !== old ? L(`العطلة اترحّلت ليوم ${d}`, `Holiday moved to ${d}`) : L('اتحفظ', 'Saved')); editing = ''; draw(); } catch (ex) { toastErr(ex); } });
+        });
+        pane.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+          const k = b.dataset.del;
+          if (!(await confirmDialog({ title: L('مسح العطلة', 'Delete holiday'), message: `${shown[k]} — ${dayName(k)}`, okText: L('مسح', 'Delete'), okClass: 'btn-danger' }))) return;
+          const next = { ...shown }; delete next[k];
+          try { await persist(next, L('العطلة اتمسحت', 'Holiday deleted')); draw(); } catch (ex) { toastErr(ex); }
+        });
       };
       draw();
     },

@@ -117,7 +117,7 @@ export async function loadPolicy() {
   }
   watch(ref('settings', 'general'), d => { if (d) { merge(policy, d); policy.workflow = { ...DEFAULT_POLICY.workflow, ...(d.workflow || {}) }; } subs.forEach(f => f()); });
   watch(ref('settings', 'leave'), d => { if (d && Array.isArray(d.types) && d.types.length) leaveTypes = d.types; subs.forEach(f => f()); });
-  watch(ref('settings', 'holidays'), d => { holidays = (d && d.days) || {}; subs.forEach(f => f()); });
+  watch(ref('settings', 'holidays'), d => { holidays = (d && d.days) || {}; window.dispatchEvent(new Event('am:data-changed')); subs.forEach(f => f()); });   // a moved holiday: reports work the days out again
 }
 const audit = (a, d) => import('../services/activity.js').then(m => m.track(a, { detail: d })).catch(() => {});
 export async function savePolicy(part) { await setDoc(ref('settings', 'general'), { ...part, updatedAt: serverTimestamp() }, { merge: true }); audit('settings.update', Object.keys(part).join(', ')); }

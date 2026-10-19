@@ -154,8 +154,20 @@ export async function deleteJob(job) {
 
 // ---------------------------------------------------------------- applications
 /** cb(applications, unfinished) — unfinished = started on the apply page but not sent (e.g. the CV upload failed) */
-export const watchApps = (jobId, cb) => watch(query(col('applications'), where('jobId', '==', jobId)), rows => cb(rows.filter(a => a.status !== 'draft').map(norm), rows.filter(a => a.status === 'draft').map(norm)), () => cb([], []));
-export const watchAllApps = (cb) => watch(query(col('applications'), orderBy('createdAt', 'desc'), limit(400)), rows => cb(rows.filter(a => a.status !== 'draft').map(norm), rows.filter(a => a.status === 'draft').map(norm)), () => cb([], []));
+export const watchApps = (jobId, cb, onErr) => watch(query(col('applications'), where('jobId', '==', jobId)), rows => cb(rows.filter(a => a.status !== 'draft').map(norm), rows.filter(a => a.status === 'draft').map(norm)), (e) => { cb([], []); onErr && onErr(e); });
+/** newest first, sorted here (not in the query) so an application whose createdAt is missing still shows */
+const appTime = (a) => toMs(a.createdAt) || a.createdMs || toMs(a.updatedAt) || 0;
+export const watchAllApps = (cb, onErr) => watch(query(col('applications'), limit(600)), rows => {
+  rows = rows.slice().sort((x, y) => appTime(y) - appTime(x));
+  cb(rows.filter(a => a.status !== 'draft').map(norm), rows.filter(a => a.status === 'draft').map(norm));
+}, (e) => { cb([], []); onErr && onErr(e); });
+/** why a list came back empty — shown on the screen instead of a silent "no applicants" */
+export const readError = (e) => {
+  const c = String((e && e.code) || '').replace('firestore/', '');
+  if (c === 'permission-denied') return L('السيستم رفض قراءة المتقدمين (صلاحيات). اتأكد إن ملف الـ rules الأخير اتنشر في Firebase وإنك داخل بحساب HR أو أدمن.', 'Reading applicants was refused (permissions). Make sure the latest rules are published in Firebase and you are signed in as HR or admin.');
+  if (c === 'resource-exhausted') return L('Firebase وصل لحد القراءة المجاني النهارده — هيرجع يشتغل بكره.', 'Firebase hit today\'s free read limit — it will work again tomorrow.');
+  return L(`مش قادر يقرا المتقدمين دلوقتي (${c || 'error'}) — جرّب تحدّث الصفحة.`, `Could not read applicants (${c || 'error'}) — try refreshing.`);
+};
 export const watchUnseen = (cb) => watch(query(col('applications'), where('seen', '==', false)), rows => cb(rows.filter(a => a.status === 'active')), () => cb([]));
 export const watchApp = (id, cb) => watch(doc(db, 'applications', id), d => cb(norm(d)));
 export const watchLog = (id, cb) => watch(query(col(`applications/${id}/log`), orderBy('atMs', 'desc'), limit(200)), cb, () => cb([]));

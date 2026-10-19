@@ -6,7 +6,7 @@ import { departments, nameOf } from '../services/directory.js';
 import {
   STAGES, stageLabel, STATUS_LABEL, SOURCES, sourceOf, LEVELS, JOB_TYPES, JOB_STATUS, ROUNDS, MODES, Q_TYPES, BUILTIN, DEFAULT_FIELDS, DEFAULT_CRITERIA,
   RECS, REJECT_REASONS, TEMPLATE_KINDS, PH, pick, critLabel, fails, applyLink, newId,
-  watchJobs, saveJob, setJobStatus, deleteJob, getJob, watchApps, watchAllApps, acceptDraft, addApplicant, moveStage, uploadFile, computeScore,
+  watchJobs, saveJob, setJobStatus, deleteJob, getJob, watchApps, watchAllApps, readError, acceptDraft, addApplicant, moveStage, uploadFile, computeScore,
   watchUpcoming, watchBank, saveBankTask, deleteBankTask, watchRecentTasks, watchTemplates, saveTemplate, deleteTemplate, resetTemplate,
   getRecruitSettings, saveRecruitSettings
 } from '../services/recruit.js';
@@ -16,6 +16,7 @@ const TABS = [
   ['jobs', 'fa-briefcase', 'الوظايف', 'Jobs'], ['people', 'fa-users', 'المتقدمين', 'Applicants'], ['interviews', 'fa-calendar-check', 'الإنترفيوهات', 'Interviews'],
   ['tasks', 'fa-laptop-code', 'التاسكات', 'Tasks'], ['templates', 'fa-envelope-open-text', 'قوالب الإيميل', 'Email templates'], ['settings', 'fa-sliders', 'الإعدادات', 'Settings']
 ];
+const errBox = (e) => e ? `<div class="alert bad mb-16" role="alert"><i class="fas fa-triangle-exclamation"></i><div>${esc(readError(e))}</div></div>` : '';
 export const fmtWhen = (ms, opts = {}) => ms ? new Date(ms).toLocaleString(isAr ? 'ar-EG-u-nu-latn' : 'en-GB', { timeZone: 'Africa/Cairo', day: 'numeric', month: 'short', ...opts }) : '';
 export const scoreBadge = (s) => s == null || s === '' ? '' : `<span class="badge ${s >= 75 ? 'ok' : s >= 50 ? 'warn' : 'bad'}" title="${L('التقييم الكلي', 'Overall score')}"><i class="fas fa-star"></i> ${num(s)}</span>`;
 export const srcIcon = (id) => { const s = sourceOf(id); return `<i class="${s[2]}" title="${esc(s[1])}"></i>`; };
@@ -41,11 +42,11 @@ function renderHome(root, tab) {
 }
 
 function tabJobs(el) {
-  let jobs = [], apps = [], unfinished = [], filter = 'live';
+  let jobs = [], apps = [], unfinished = [], filter = 'live', err = null;
   const draw = () => {
     const shown = jobs.filter(j => filter === 'all' || (filter === 'live' ? j.status !== 'closed' : j.status === 'closed'));
     const byJob = (id) => apps.filter(a => a.jobId === id);
-    el.innerHTML = `<div class="tk-head mb-16"><div class="seg" id="jf">${[['live', L('الشغالة', 'Active')], ['closed', L('اتقفلت', 'Closed')], ['all', L('الكل', 'All')]].map(([v, t]) => `<button data-f="${v}" class="${filter === v ? 'on' : ''}">${t}</button>`).join('')}</div>
+    el.innerHTML = `${errBox(err)}<div class="tk-head mb-16"><div class="seg" id="jf">${[['live', L('الشغالة', 'Active')], ['closed', L('اتقفلت', 'Closed')], ['all', L('الكل', 'All')]].map(([v, t]) => `<button data-f="${v}" class="${filter === v ? 'on' : ''}">${t}</button>`).join('')}</div>
       <button class="btn btn-primary" id="jnew"><i class="fas fa-plus"></i> ${L('وظيفة جديدة', 'New job')}</button></div>
       ${shown.length ? `<div class="rc-jobs">${shown.map(j => {
         const a = byJob(j.id), act = a.filter(x => x.status === 'active'), fresh = a.filter(x => x.seen === false && x.status === 'active').length, hired = a.filter(x => x.status === 'hired').length, half = unfinished.filter(x => x.jobId === j.id).length;
@@ -68,12 +69,12 @@ function tabJobs(el) {
     const ln = e.target.closest('[data-links]'); if (ln) linksModal(jobs.find(j => j.id === ln.dataset.links));
   };
   const u1 = watchJobs(r => { jobs = r; draw(); });
-  const u2 = watchAllApps((r, d) => { apps = r; unfinished = d || []; draw(); });
+  const u2 = watchAllApps((r, d) => { apps = r; unfinished = d || []; err = null; draw(); }, (e) => { err = e; draw(); });
   return () => { u1(); u2(); };
 }
 
 function tabPeople(el) {
-  let apps = [], jobs = [], q = '', fJob = '', fStage = '', fStatus = 'active';
+  let apps = [], jobs = [], q = '', fJob = '', fStage = '', fStatus = 'active', err = null;
   el.innerHTML = `<div class="tk-filters"><div class="search"><i class="fas fa-search"></i><input class="input" id="pq" placeholder="${L('ابحث بالاسم أو الموبايل أو الإيميل', 'Search name, phone or email')}"></div>
     <select class="select" id="pj"><option value="">${L('كل الوظايف', 'All jobs')}</option></select>
     <select class="select" id="ps"><option value="">${L('كل المراحل', 'All stages')}</option>${STAGES.map(s => `<option value="${s.id}">${esc(L(s.ar, s.en))}</option>`).join('')}</select>
@@ -82,7 +83,7 @@ function tabPeople(el) {
   const draw = () => {
     const s = q.toLowerCase();
     const rows = apps.filter(a => (!fJob || a.jobId === fJob) && (!fStage || a.stage === fStage) && (!fStatus || a.status === fStatus) && (!s || `${a.name} ${a.phone} ${a.email} ${a.currentTitle}`.toLowerCase().includes(s)));
-    el.querySelector('#pt').innerHTML = rows.length ? `<table class="table"><thead><tr><th>${L('الاسم', 'Name')}</th><th>${L('الوظيفة', 'Job')}</th><th>${L('المرحلة', 'Stage')}</th><th>${L('التقييم', 'Score')}</th><th>${L('المصدر', 'Source')}</th><th>${L('قدّم', 'Applied')}</th></tr></thead><tbody>
+    el.querySelector('#pt').innerHTML = err ? `<div class="card-body">${errBox(err)}</div>` : rows.length ? `<table class="table"><thead><tr><th>${L('الاسم', 'Name')}</th><th>${L('الوظيفة', 'Job')}</th><th>${L('المرحلة', 'Stage')}</th><th>${L('التقييم', 'Score')}</th><th>${L('المصدر', 'Source')}</th><th>${L('قدّم', 'Applied')}</th></tr></thead><tbody>
       ${rows.map(a => `<tr class="rc-row" data-open="${esc(a.id)}"><td><div class="person"><span><b>${a.seen === false ? '<span class="rc-dot"></span>' : ''}${esc(a.name)}</b><span>${esc(a.currentTitle || a.phone || '')}</span></span></div></td>
         <td>${esc(a.jobTitle || '')}</td><td>${a.status === 'active' ? esc(stageLabel(a.stage)) : `<span class="badge ${a.status === 'hired' ? 'ok' : 'bad'}">${esc((STATUS_LABEL[a.status] || STATUS_LABEL.active)())}</span>`}</td>
         <td>${scoreBadge(a.score)}</td><td>${srcIcon(a.source)}</td><td class="xs muted nowrap">${esc(fmtWhen(a.createdMs))}</td></tr>`).join('')}</tbody></table>`
@@ -93,7 +94,7 @@ function tabPeople(el) {
   el.querySelector('#ps').onchange = (e) => { fStage = e.target.value; draw(); };
   el.querySelector('#pst').onchange = (e) => { fStatus = e.target.value; draw(); };
   el.querySelector('#pt').onclick = (e) => { const r = e.target.closest('[data-open]'); if (r) location.hash = `#/recruit/app/${r.dataset.open}`; };
-  const u1 = watchAllApps(r => { apps = r; draw(); });
+  const u1 = watchAllApps(r => { apps = r; err = null; draw(); }, (e) => { err = e; draw(); });
   const u2 = watchJobs(r => { jobs = r; const sel = el.querySelector('#pj'); sel.innerHTML = `<option value="">${L('كل الوظايف', 'All jobs')}</option>` + jobs.map(j => `<option value="${esc(j.id)}" ${j.id === fJob ? 'selected' : ''}>${esc(j.title)}</option>`).join(''); });
   return () => { u1(); u2(); };
 }
@@ -330,7 +331,7 @@ export function linksModal(job) {
 
 // ---------------------------------------------------------------- one job: the board
 function renderBoard(root, jobId) {
-  let job = null, apps = [], drafts = [], view = 'board', q = '', okOnly = false, showClosed = false, dragId = '';
+  let job = null, apps = [], drafts = [], view = 'board', q = '', okOnly = false, showClosed = false, dragId = '', bErr = null;
   const picked = new Set();
   try { view = localStorage.getItem('am_rc_view') || 'board'; } catch {}
   root.innerHTML = loader();
@@ -344,7 +345,7 @@ function renderBoard(root, jobId) {
       <div class="row gap-8"><label class="rc-pick" title="${L('للمقارنة', 'Compare')}"><input type="checkbox" data-pick="${esc(a.id)}" ${picked.has(a.id) ? 'checked' : ''}></label><b class="grow truncate">${a.seen === false ? '<span class="rc-dot"></span>' : ''}${esc(a.name)}</b>${scoreBadge(a.score)}</div>
       <div class="xs muted truncate">${esc([a.currentTitle, a.years !== '' && a.years != null ? L(`${a.years} سنين`, `${a.years} yrs`) : ''].filter(Boolean).join(' · ') || a.phone || '')}</div>
       <div class="row gap-8 xs muted">${srcIcon(a.source)}<span>${esc(fmtWhen(a.createdMs))}</span>${f.length ? `<span class="badge bad" title="${esc(f.join('\n'))}"><i class="fas fa-xmark"></i> ${L('مش مستوفي', 'Not qualified')}</span>` : ''}${(a.recs || []).length ? `<span>${a.recs.map(r => r.includes('yes') ? '👍' : '👎').join('')}</span>` : ''}</div></div>`; };
-    root.innerHTML = `<div class="rc-page">
+    root.innerHTML = `<div class="rc-page">${errBox(bErr)}
       <div class="tk-head mb-16"><div class="col gap-4 min0"><a href="#/recruit/jobs" class="xs muted"><i class="fas fa-arrow-${isAr ? 'right' : 'left'}"></i> ${L('الوظايف', 'Jobs')}</a>
         <h2 class="rc-h truncate">${esc(job.title)} <span class="badge ${job.status === 'open' ? 'ok' : job.status === 'paused' ? 'warn' : ''}">${esc((JOB_STATUS[job.status] || JOB_STATUS.draft)())}</span></h2></div>
         <div class="row gap-8 wrap"><button class="btn btn-sm" id="bl"><i class="fas fa-link"></i> ${L('لينكات التقديم', 'Apply links')}</button><button class="btn btn-sm" id="ba"><i class="fas fa-user-plus"></i> ${L('إضافة متقدم', 'Add applicant')}</button>
@@ -399,7 +400,7 @@ function renderBoard(root, jobId) {
     if (col.dataset.stage === 'hired') { toast(L('التعيين بيتم من صفحة المتقدم (العرض ← حوّله لموظف)', 'Hiring is done from the applicant page (Offer → make employee)'), '', 'info'); draw(); return; }
     try { await moveStage(a, col.dataset.stage); } catch (ex) { toastErr(ex); }
   });
-  const u1 = watchApps(jobId, (r, d) => { apps = r; drafts = d || []; [...picked].forEach(id => { if (!apps.some(a => a.id === id)) picked.delete(id); }); if (job) draw(); });
+  const u1 = watchApps(jobId, (r, d) => { apps = r; drafts = d || []; bErr = null; [...picked].forEach(id => { if (!apps.some(a => a.id === id)) picked.delete(id); }); if (job) draw(); }, (e) => { bErr = e; if (job) draw(); });
   getJob(jobId).then(j => { job = j ? { ...j, id: jobId } : null; draw(); }).catch(() => { job = null; draw(); });
   return () => u1();
 }

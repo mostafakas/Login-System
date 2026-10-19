@@ -153,8 +153,9 @@ export async function deleteJob(job) {
 }
 
 // ---------------------------------------------------------------- applications
-export const watchApps = (jobId, cb) => watch(query(col('applications'), where('jobId', '==', jobId)), rows => cb(rows.filter(a => a.status !== 'draft').map(norm)), () => cb([]));
-export const watchAllApps = (cb) => watch(query(col('applications'), orderBy('createdAt', 'desc'), limit(400)), rows => cb(rows.filter(a => a.status !== 'draft').map(norm)), () => cb([]));
+/** cb(applications, unfinished) — unfinished = started on the apply page but not sent (e.g. the CV upload failed) */
+export const watchApps = (jobId, cb) => watch(query(col('applications'), where('jobId', '==', jobId)), rows => cb(rows.filter(a => a.status !== 'draft').map(norm), rows.filter(a => a.status === 'draft').map(norm)), () => cb([], []));
+export const watchAllApps = (cb) => watch(query(col('applications'), orderBy('createdAt', 'desc'), limit(400)), rows => cb(rows.filter(a => a.status !== 'draft').map(norm), rows.filter(a => a.status === 'draft').map(norm)), () => cb([], []));
 export const watchUnseen = (cb) => watch(query(col('applications'), where('seen', '==', false)), rows => cb(rows.filter(a => a.status === 'active')), () => cb([]));
 export const watchApp = (id, cb) => watch(doc(db, 'applications', id), d => cb(norm(d)));
 export const watchLog = (id, cb) => watch(query(col(`applications/${id}/log`), orderBy('atMs', 'desc'), limit(200)), cb, () => cb([]));
@@ -201,6 +202,11 @@ export async function withdrawApp(app, note = '') {
 export async function reopenApp(app) {
   await updateApp(app, { status: 'active', rejectReason: '', rejectNote: '' });
   await addLog(app.id, { type: 'reopened', text: L('رجع للمراحل', 'Back in the process') });
+}
+/** an application left unfinished on the apply page → a normal applicant (HR asks for what is missing) */
+export async function acceptDraft(app) {
+  await updateApp(app, { status: 'active', seen: true, stage: 'new', fromDraft: true });
+  await addLog(app.id, { type: 'created', text: L('التقديم ما كملش من صفحة التقديم — اتضاف للمتقدمين', 'Unfinished on the apply page — added to the applicants') });
 }
 export const markSeen = (app) => (app.seen === false ? updateDoc(doc(db, 'applications', app.id), { seen: true }).catch(() => {}) : Promise.resolve());
 export const addNote = (app, text) => { const t = clean(text, 3000); if (!t) return Promise.resolve(); return addLog(app.id, { type: 'note', text: t }); };

@@ -133,13 +133,19 @@ function render(job) {
           createdAt: serverTimestamp(), createdMs: Date.now(), updatedAt: serverTimestamp()
         });
       }
-      const up = {};
+      // the files: one that fails (too big, the service is down…) never loses the application — HR sees what's missing
+      const up = {}, missing = [];
       const keys = Object.keys(files);
       for (let i = 0; i < keys.length; i++) {
         go.innerHTML = `<span class="spinner" style="width:18px;height:18px;border-width:2px"></span> ${L(`بيرفع الملفات (${i + 1}/${keys.length})…`, `Uploading files (${i + 1}/${keys.length})…`)}`;
-        up[keys[i]] = await uploadFile('app', id, files[keys[i]]);
+        try { up[keys[i]] = await uploadFile('app', id, files[keys[i]]); }
+        catch (ex) {
+          if (ex && ex.code === 'too-large') { reset(); return fail(ex.userMessage || L('الملف أكبر من 5 ميجا.', 'The file is larger than 5 MB.')); }
+          try { up[keys[i]] = await uploadFile('app', id, files[keys[i]]); }   // once more
+          catch (ex2) { console.warn('upload', ex2); missing.push(String(files[keys[i]].name || keys[i]).slice(0, 120)); }
+        }
       }
-      await updateDoc(ref, { files: up, status: 'active', submittedAt: serverTimestamp(), updatedAt: serverTimestamp() });
+      await updateDoc(ref, { files: up, status: 'active', submittedAt: serverTimestamp(), updatedAt: serverTimestamp(), ...(missing.length ? { missingFiles: missing } : {}) });
       msg('fa-circle-check', L(`وصلنا تقديمك يا ${v('name').split(' ')[0]}`, `Thank you, ${v('name').split(' ')[0]} — application received`),
         L('فريق الموارد البشرية هيراجع طلبك، ولو فيه خطوة جاية هنتواصل معاك على الموبايل أو الإيميل.', 'Our HR team will review it and contact you by phone or email about the next step.'), 'ok');
     } catch (ex) {

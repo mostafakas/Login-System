@@ -598,7 +598,8 @@ service cloud.firestore {
                                 'answers', 'files', 'source', 'stage', 'status', 'uid', 'seen', 'score', 'lang', 'createdAt', 'createdMs', 'updatedAt']));
       // the applicant finishes their own application (files uploaded → submitted); nothing after that
       allow update: if isHR() || (anon() && resource.data.uid == request.auth.uid && resource.data.status == 'draft'
-        && affected().hasOnly(['files', 'status', 'submittedAt', 'updatedAt']) && na().status in ['draft', 'active'] && na().files is map && na().files.size() <= 45);
+        && affected().hasOnly(['files', 'status', 'submittedAt', 'updatedAt', 'missingFiles']) && na().status in ['draft', 'active'] && na().files is map && na().files.size() <= 45
+        && (!('missingFiles' in na()) || (na().missingFiles is list && na().missingFiles.size() <= 45)));
       match /log/{l} { allow read, write: if isHR(); }
     }
     match /interviews/{id} { allow read, write: if isHR(); }

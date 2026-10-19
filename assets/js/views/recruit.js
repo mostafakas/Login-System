@@ -6,7 +6,7 @@ import { departments, nameOf } from '../services/directory.js';
 import {
   STAGES, stageLabel, STATUS_LABEL, SOURCES, sourceOf, LEVELS, JOB_TYPES, JOB_STATUS, ROUNDS, MODES, Q_TYPES, BUILTIN, DEFAULT_FIELDS, DEFAULT_CRITERIA,
   RECS, REJECT_REASONS, TEMPLATE_KINDS, PH, pick, critLabel, fails, applyLink, newId,
-  watchJobs, saveJob, setJobStatus, deleteJob, getJob, watchApps, watchAllApps, addApplicant, moveStage, uploadFile, computeScore,
+  watchJobs, saveJob, setJobStatus, deleteJob, getJob, watchApps, watchAllApps, acceptDraft, addApplicant, moveStage, uploadFile, computeScore,
   watchUpcoming, watchBank, saveBankTask, deleteBankTask, watchRecentTasks, watchTemplates, saveTemplate, deleteTemplate, resetTemplate,
   getRecruitSettings, saveRecruitSettings
 } from '../services/recruit.js';
@@ -41,16 +41,16 @@ function renderHome(root, tab) {
 }
 
 function tabJobs(el) {
-  let jobs = [], apps = [], filter = 'live';
+  let jobs = [], apps = [], unfinished = [], filter = 'live';
   const draw = () => {
     const shown = jobs.filter(j => filter === 'all' || (filter === 'live' ? j.status !== 'closed' : j.status === 'closed'));
     const byJob = (id) => apps.filter(a => a.jobId === id);
     el.innerHTML = `<div class="tk-head mb-16"><div class="seg" id="jf">${[['live', L('الشغالة', 'Active')], ['closed', L('اتقفلت', 'Closed')], ['all', L('الكل', 'All')]].map(([v, t]) => `<button data-f="${v}" class="${filter === v ? 'on' : ''}">${t}</button>`).join('')}</div>
       <button class="btn btn-primary" id="jnew"><i class="fas fa-plus"></i> ${L('وظيفة جديدة', 'New job')}</button></div>
       ${shown.length ? `<div class="rc-jobs">${shown.map(j => {
-        const a = byJob(j.id), act = a.filter(x => x.status === 'active'), fresh = a.filter(x => x.seen === false && x.status === 'active').length, hired = a.filter(x => x.status === 'hired').length;
+        const a = byJob(j.id), act = a.filter(x => x.status === 'active'), fresh = a.filter(x => x.seen === false && x.status === 'active').length, hired = a.filter(x => x.status === 'hired').length, half = unfinished.filter(x => x.jobId === j.id).length;
         return `<article class="card rc-job"><div class="card-body col gap-8">
-          <div class="row between gap-8"><span class="badge ${j.status === 'open' ? 'ok' : j.status === 'paused' ? 'warn' : ''}">${esc((JOB_STATUS[j.status] || JOB_STATUS.draft)())}</span>${fresh ? `<span class="badge info"><i class="fas fa-circle"></i> ${num(fresh)} ${L('جديد', 'new')}</span>` : ''}</div>
+          <div class="row between gap-8"><span class="badge ${j.status === 'open' ? 'ok' : j.status === 'paused' ? 'warn' : ''}">${esc((JOB_STATUS[j.status] || JOB_STATUS.draft)())}</span><span class="row gap-4">${half ? `<span class="badge warn" title="${L('تقديمات ما اكتملتش', 'Unfinished applications')}"><i class="fas fa-hourglass-half"></i> ${num(half)}</span>` : ''}${fresh ? `<span class="badge info"><i class="fas fa-circle"></i> ${num(fresh)} ${L('جديد', 'new')}</span>` : ''}</span></div>
           <a href="#/recruit/job/${esc(j.id)}" class="rc-job-title">${esc(j.title)}</a>
           <div class="xs muted">${esc([j.department, pick(JOB_TYPES, j.type), pick(LEVELS, j.level)].filter(Boolean).join(' · '))}</div>
           <div class="rc-mini">${STAGES.slice(0, 3).map(s => { const n = act.filter(x => x.stage === s.id).length; return `<span title="${esc(L(s.ar, s.en))}" class="${n ? 'on' : ''}"><i class="fas ${s.icon}"></i>${n ? num(n) : ''}</span>`; }).join('')}</div>
@@ -68,7 +68,7 @@ function tabJobs(el) {
     const ln = e.target.closest('[data-links]'); if (ln) linksModal(jobs.find(j => j.id === ln.dataset.links));
   };
   const u1 = watchJobs(r => { jobs = r; draw(); });
-  const u2 = watchAllApps(r => { apps = r; draw(); });
+  const u2 = watchAllApps((r, d) => { apps = r; unfinished = d || []; draw(); });
   return () => { u1(); u2(); };
 }
 
@@ -330,7 +330,7 @@ export function linksModal(job) {
 
 // ---------------------------------------------------------------- one job: the board
 function renderBoard(root, jobId) {
-  let job = null, apps = [], view = 'board', q = '', okOnly = false, showClosed = false, dragId = '';
+  let job = null, apps = [], drafts = [], view = 'board', q = '', okOnly = false, showClosed = false, dragId = '';
   const picked = new Set();
   try { view = localStorage.getItem('am_rc_view') || 'board'; } catch {}
   root.innerHTML = loader();
@@ -361,6 +361,10 @@ function renderBoard(root, jobId) {
         ${active.sort((a, b) => (b.score ?? -1) - (a.score ?? -1)).map(a => { const f = fails(a, job); const over = job.salaryMax && a.salary > job.salaryMax; return `<tr class="rc-row" data-open="${esc(a.id)}"><td><input type="checkbox" data-pick="${esc(a.id)}" ${picked.has(a.id) ? 'checked' : ''}></td>
           <td><div class="person"><span><b>${a.seen === false ? '<span class="rc-dot"></span>' : ''}${esc(a.name)}</b><span>${esc(a.currentTitle || a.phone || '')}</span></span></div>${f.length ? `<span class="badge bad" title="${esc(f.join('\n'))}">${L('مش مستوفي', 'Not qualified')}</span>` : ''}</td>
           <td>${esc(stageLabel(a.stage))}</td><td>${scoreBadge(a.score)}</td><td class="num">${a.years === '' || a.years == null ? '—' : esc(a.years)}</td><td class="num ${over ? 'bad-txt' : ''}">${a.salary ? num(a.salary) : '—'}</td><td class="xs">${esc(a.available || '—')}</td><td>${srcIcon(a.source)}</td><td class="xs muted nowrap">${esc(fmtWhen(a.createdMs))}</td></tr>`; }).join('')}</tbody></table></div></div>`}
+      ${drafts.length ? `<section class="card mt-16"><div class="card-head"><h3><i class="fas fa-hourglass-half"></i> ${L('تقديمات ما اكتملتش', 'Unfinished applications')} (${num(drafts.length)})</h3></div><div class="card-body col gap-8">
+        <p class="xs muted">${L('ناس بدأوا التقديم من اللينك وبياناتهم وصلت، بس التقديم ما اتبعتش للآخر (غالباً رفع الـ CV ما نجحش). تقدر تضيفهم للمتقدمين وتطلب منهم الـ CV.', 'People who started on the apply link and whose details arrived, but who did not finish (usually the CV upload failed). Add them to the applicants and ask for the CV.')}</p>
+        ${drafts.sort((a, b) => (b.createdMs || 0) - (a.createdMs || 0)).map(a => `<div class="rec-row"><div class="grow min0"><b class="truncate">${esc(a.name || '—')}</b><div class="xs muted truncate" dir="auto">${esc([a.phone, a.email, fmtWhen(a.createdMs, { hour: 'numeric', minute: '2-digit' })].filter(Boolean).join(' · '))}</div></div>
+          <button class="btn btn-sm btn-primary" data-accept="${esc(a.id)}"><i class="fas fa-user-plus"></i> ${L('ضيفه للمتقدمين', 'Add to applicants')}</button></div>`).join('')}</div></section>` : ''}
       ${closed.length ? `<details class="card mt-16" ${showClosed ? 'open' : ''} id="bcl"><summary class="card-head" style="cursor:pointer"><h3><i class="fas fa-user-xmark"></i> ${L('مرفوضين وانسحبوا', 'Rejected & withdrew')} (${num(closed.length)})</h3></summary><div class="card-body col gap-8">
         ${closed.map(a => `<a class="rec-row" href="#/recruit/app/${esc(a.id)}"><div class="grow min0"><b class="truncate">${esc(a.name)}</b><div class="xs muted truncate">${esc(stageLabel(a.stage))}${a.rejectReason ? ' · ' + esc(pick(REJECT_REASONS, a.rejectReason)) : ''}</div></div><span class="badge bad">${esc((STATUS_LABEL[a.status] || STATUS_LABEL.rejected)())}</span></a>`).join('')}</div></details>` : ''}
     </div>`;
@@ -369,6 +373,8 @@ function renderBoard(root, jobId) {
     const pk = e.target.closest('[data-pick]');
     if (pk) { e.stopPropagation(); const id = pk.dataset.pick; if (pk.checked) { if (picked.size >= 3) { pk.checked = false; toast(L('تقدر تقارن لحد 3', 'Compare up to 3'), '', 'info'); return; } picked.add(id); } else picked.delete(id); draw(); return; }
     if (e.target.closest('.rc-pick')) return;
+    const ac = e.target.closest('[data-accept]');
+    if (ac) { const a = drafts.find(x => x.id === ac.dataset.accept); if (a) busy(ac, async () => { try { await acceptDraft(a); toast(L('اتضاف — تقدر تفتحه من «جديد»', 'Added — find them under "New"')); } catch (ex) { toastErr(ex); } }); return; }
     const o = e.target.closest('[data-open]'); if (o) { location.hash = `#/recruit/app/${o.dataset.open}`; return; }
     if (e.target.closest('#bl')) { linksModal(job); return; }
     if (e.target.closest('#be')) { jobEditor(job, () => getJob(jobId).then(j => { if (j) { job = { ...j, id: jobId }; draw(); } })); return; }
@@ -393,7 +399,7 @@ function renderBoard(root, jobId) {
     if (col.dataset.stage === 'hired') { toast(L('التعيين بيتم من صفحة المتقدم (العرض ← حوّله لموظف)', 'Hiring is done from the applicant page (Offer → make employee)'), '', 'info'); draw(); return; }
     try { await moveStage(a, col.dataset.stage); } catch (ex) { toastErr(ex); }
   });
-  const u1 = watchApps(jobId, r => { apps = r; [...picked].forEach(id => { if (!apps.some(a => a.id === id)) picked.delete(id); }); if (job) draw(); });
+  const u1 = watchApps(jobId, (r, d) => { apps = r; drafts = d || []; [...picked].forEach(id => { if (!apps.some(a => a.id === id)) picked.delete(id); }); if (job) draw(); });
   getJob(jobId).then(j => { job = j ? { ...j, id: jobId } : null; draw(); }).catch(() => { job = null; draw(); });
   return () => u1();
 }

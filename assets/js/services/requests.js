@@ -141,6 +141,13 @@ async function overlapping(email, from, to, types) {
   return mine.filter(r => types.includes(r.type) && !['rejected', 'cancelled'].includes(r.status) && (r.startDate <= to) && ((r.endDate || r.startDate) >= from));
 }
 
+/** late / early permissions this month (not counting rejected or cancelled ones) */
+export async function excusesInMonth(email, monthKey) {
+  const mine = await list(query(col('requests'), where('email', '==', email)));
+  return mine.filter(r => r.type === 'excuse' && !['rejected', 'cancelled'].includes(r.status) && (r.startDate || '').slice(0, 7) === monthKey);
+}
+export const excuseLimit = () => Number(policy.excusesPerMonth ?? 1) || 0;
+
 export async function submitRequest(input) {
   window.dispatchEvent(new Event('am:data-changed'));
   const me = session.profile || {};
@@ -187,9 +194,11 @@ export async function submitRequest(input) {
     req.startDate = input.date; req.endDate = input.date; req.excuseKind = input.excuseKind || 'late';
     req.fromTime = input.fromTime; req.toTime = input.toTime; req.minutes = mins;
     const monthKey = input.date.slice(0, 7);
-    const used = (await list(query(col('requests'), where('email', '==', email))))
-      .filter(r => r.type === 'excuse' && !['rejected', 'cancelled'].includes(r.status) && (r.startDate || '').slice(0, 7) === monthKey)
-      .reduce((s, r) => s + (r.minutes || 0), 0);
+    const sameMonth = await excusesInMonth(email, monthKey);
+    const limit = excuseLimit();
+    if (limit && sameMonth.length >= limit) throw userError(limit === 1 ? `إذن التأخير / الانصراف مرة واحدة بس في الشهر، وإنت طلبته قبل كده في الشهر ده (يوم ${sameMonth[0].startDate}).` : `مسموح بـ ${limit} أذونات بس في الشهر، وإنت طلبتهم كلهم.`,
+      limit === 1 ? `Only one late / early permission a month — you already asked for one this month (${sameMonth[0].startDate}).` : `Only ${limit} permissions a month — you have used them all.`);
+    const used = sameMonth.reduce((s, r) => s + (r.minutes || 0), 0);
     const cap = Number(policy.excuseHoursPerMonth || 0) * 60;
     if (cap && used + mins > cap) throw userError(`تخطيت الحد الشهري للأذونات (${policy.excuseHoursPerMonth} ساعات).`, `Monthly permission limit exceeded (${policy.excuseHoursPerMonth} hours).`);
   }

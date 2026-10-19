@@ -14,6 +14,7 @@ export const DEFAULT_POLICY = {
   remoteNeedsApproval: true,
   defaultRemoteQuota: 4,          // remote days per month
   excuseHoursPerMonth: 4,
+  excusesPerMonth: 1,        // late / early permission requests a month (0 = no limit)
   lateTiers: [                    // deduction per late day (fraction of a day's pay)
     { after: 15, day: 0.25 },
     { after: 60, day: 0.5 },

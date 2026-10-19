@@ -56,12 +56,13 @@ export default async function render(root, { params = [] } = {}) {
       pane.innerHTML = `<div class="card"><form class="card-body form-grid" id="f">
         ${sw('remoteNeedsApproval', L('الأونلاين محتاج موافقة', 'Remote work needs approval'), policy.remoteNeedsApproval, L('لو مقفولة، الموظف يقدر يختار أونلاين في أي يوم ويتخصم من حصته.', 'If off, employees may pick remote any day; it counts against their quota.'))}
         ${numField('defaultRemoteQuota', L('حصة الأونلاين الافتراضية (أيام/شهر)', 'Default remote quota (days/month)'), policy.defaultRemoteQuota, L('تقدر تغيّرها لكل موظف من ملفه.', 'Can be overridden per employee.'), 'min="0" max="31"')}
+        ${numField('excusesPerMonth', L('عدد أذونات التأخير / الانصراف في الشهر', 'Late / early permissions per month'), policy.excusesPerMonth ?? 1, L('0 = من غير حد.', '0 = no limit.'), 'min="0" max="31"')}
         ${numField('excuseHoursPerMonth', L('حد الأذونات الشهري (ساعات)', 'Monthly permission limit (hours)'), policy.excuseHoursPerMonth, '', 'min="0" max="40"')}
         <div class="field"><label>${L('إيميل الموارد البشرية', 'HR email')}</label><input class="input" name="hrEmail" type="email" dir="ltr" value="${esc(policy.hrEmail || '')}"></div>
       </form>${saveBar()}</div>`;
       pane.querySelector('#save').onclick = (e) => busy(e.currentTarget, async () => {
         const f = pane.querySelector('#f');
-        try { await savePolicy({ remoteNeedsApproval: f.remoteNeedsApproval.checked, defaultRemoteQuota: Number(f.defaultRemoteQuota.value) || 0, excuseHoursPerMonth: Number(f.excuseHoursPerMonth.value) || 0, hrEmail: f.hrEmail.value.trim() }); toast(L('تم الحفظ', 'Saved')); } catch (ex) { toastErr(ex); }
+        try { await savePolicy({ remoteNeedsApproval: f.remoteNeedsApproval.checked, defaultRemoteQuota: Number(f.defaultRemoteQuota.value) || 0, excuseHoursPerMonth: Number(f.excuseHoursPerMonth.value) || 0, excusesPerMonth: Math.max(0, Number(f.excusesPerMonth.value) || 0), hrEmail: f.hrEmail.value.trim() }); toast(L('تم الحفظ', 'Saved')); } catch (ex) { toastErr(ex); }
       });
     },
     leave() {

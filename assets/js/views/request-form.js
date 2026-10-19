@@ -3,7 +3,7 @@ import { L, esc, ymd, addDays, imageToDataUrl, addMonths, money, fmtMonth } from
 import { modal, toast, toastErr, busy } from '../core/ui.js';
 import { REQUEST_TYPES, leaveTypes, policy, typeLabel, hoursFor, activeRequestTypes } from '../core/policy.js';
 import { session, now } from '../core/session.js';
-import { submitRequest, getBalance, remaining, countWorkingDays, advancePlan } from '../services/requests.js';
+import { submitRequest, getBalance, remaining, countWorkingDays, advancePlan, excusesInMonth, excuseLimit } from '../services/requests.js';
 import { play } from '../core/sounds.js';
 
 export function openRequestForm(type = 'leave', preset = {}) {
@@ -49,8 +49,12 @@ export function openRequestForm(type = 'leave', preset = {}) {
         info.innerHTML = `<i class="fas fa-circle-info"></i><span>${L('أيام العمل:', 'Working days:')} <b class="num">${days}</b>${t === 'remote' ? ` · ${L('حصتك الشهرية:', 'Monthly quota:')} <b class="num">${quota}</b>` : ''}</span>`;
         info.className = 'alert info';
       } else if (t === 'excuse') {
-        info.innerHTML = `<i class="fas fa-circle-info"></i><span>${L('الحد الشهري للأذونات:', 'Monthly permission limit:')} <b class="num">${policy.excuseHoursPerMonth}</b> ${L('ساعات', 'hours')}</span>`;
-        info.className = 'alert info';
+        const limit = excuseLimit();
+        const month = ((form.date && form.date.value) || ymd(now())).slice(0, 7);
+        const used = limit ? (await excusesInMonth(session.email, month).catch(() => [])).length : 0;
+        const full = limit && used >= limit;
+        info.innerHTML = `<i class="fas ${full ? 'fa-ban' : 'fa-circle-info'}"></i><span>${limit ? (full ? L(`استخدمت الإذن بتاع الشهر ده (${used}/${limit}) — مش هتقدر تطلب تاني لحد الشهر الجاي.`, `You used this month's permission (${used}/${limit}) — you can ask again next month.`) : L(`مسموح بـ ${limit === 1 ? 'إذن واحد' : limit + ' أذونات'} في الشهر · استخدمت ${used}`, `${limit} permission(s) a month · used ${used}`)) + ' · ' : ''}${L('بحد أقصى', 'up to')} <b class="num">${policy.excuseHoursPerMonth}</b> ${L('ساعات', 'hours')}</span>`;
+        info.className = `alert ${full ? 'bad' : 'info'}`;
       } else if (t === 'advance' && Number(form.amount.value) > 0 && form.startMonth.value) {
         // the plan, live: monthly installment and the last month it is deducted
         const p = advancePlan(Number(form.amount.value), Math.min(24, Number(form.installments.value) || 1), form.startMonth.value);

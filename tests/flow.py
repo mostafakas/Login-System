@@ -30,7 +30,7 @@ def step(name):
 
 # ---- employee
 a.login('emp1@almaster.tech'); step('emp login')
-pg.click('#start-btn'); pg.click('[data-mode="office"]'); pg.wait_for_timeout(1200)
+pg.click('#start-btn'); pg.click('[data-mode="office"]'); pg.click('[data-shift="9"]'); pg.wait_for_timeout(1200)
 pg.click('[data-st="Break"]'); pg.wait_for_timeout(1200); pg.click('[data-st="Online"]'); pg.wait_for_timeout(800); step('status changes')
 u = a.db('users/emp1@almaster.tech'); print('  status', u['status'], u['timeBank'])
 # leave request
@@ -38,7 +38,7 @@ pg.click('[data-rq="leave"]'); pg.wait_for_timeout(300)
 pg.fill('[name=startDate]', '2026-09-28'); pg.fill('[name=endDate]', '2026-09-30'); pg.fill('[name=reason]', 'ظروف عائلية'); pg.wait_for_timeout(500)
 a.shot('10-leave-form'); pg.click('#rq-send'); pg.wait_for_timeout(1200); step('leave submit')
 pg.click('[data-rq="remote"]'); pg.wait_for_timeout(300); pg.fill('[name=startDate]', '2026-10-01'); pg.fill('[name=endDate]', '2026-10-01'); pg.click('#rq-send'); pg.wait_for_timeout(1000); step('remote submit')
-pg.click('[data-rq="excuse"]'); pg.wait_for_timeout(300); pg.fill('[name=date]', '2026-09-21'); pg.fill('[name=fromTime]', '09:00'); pg.fill('[name=toTime]', '10:00'); pg.fill('[name=reason]', 'مشوار'); pg.click('#rq-send'); pg.wait_for_timeout(1000); step('excuse submit')
+pg.click('[data-rq="excuse:late"]'); pg.wait_for_timeout(300); pg.fill('[name=date]', '2026-09-21'); pg.fill('[name=fromTime]', '09:00'); pg.fill('[name=toTime]', '10:00'); pg.fill('[name=reason]', 'مشوار'); pg.click('#rq-send'); pg.wait_for_timeout(1000); step('excuse submit')
 reqs = {k: v for k, v in a.db().items() if k.startswith('requests/')}
 print('  requests:', [(v['type'], v['status'], v.get('days')) for v in reqs.values()])
 a.shot('11-home-after'); a.go('#/requests'); pg.wait_for_timeout(600); a.shot('12-my-requests'); step('my requests')
@@ -47,7 +47,7 @@ a.go('#/profile'); pg.wait_for_timeout(800); a.shot('14-profile'); step('profile
 
 # ---- emp2 starts remote without approval (auto request)
 a.login('emp2@almaster.tech'); step('emp2 login')
-pg.click('#start-btn'); pg.click('[data-mode="remote"]'); pg.wait_for_timeout(1800); a.shot('15-remote-pending'); step('emp2 remote start')
+pg.click('#start-btn'); pg.click('[data-mode="remote"]'); pg.click('[data-shift="9"]'); pg.wait_for_timeout(1800); a.shot('15-remote-pending'); step('emp2 remote start')
 print('  emp2 remotePending:', a.db('users/emp2@almaster.tech').get('remotePending'))
 # ---- leader
 a.login('leader@almaster.tech'); step('leader login')

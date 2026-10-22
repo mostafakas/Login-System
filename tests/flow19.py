@@ -1,4 +1,4 @@
-"""Late / early permission: once a month (setting), the form says so, the second one in the same month is refused."""
+"""Late-arrival and early-leave permissions: each once a month (setting), the form says so, a second one of the same kind is refused."""
 import sys, os, time; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from harness import seed_payload, BASE, serve, route
 from playwright.sync_api import sync_playwright
@@ -17,16 +17,17 @@ day = time.strftime('%Y-%m-%d', time.gmtime(time.time() + 3 * 3600))
 nxt = time.strftime('%Y-%m', time.gmtime(time.time() + 3 * 3600 + 32 * 86400)) + '-05'
 sub = lambda d, k='late': pg.evaluate("""async ([d, k]) => { const m = await import('/assets/js/services/requests.js'); try { await m.submitRequest({ type: 'excuse', date: d, fromTime: k === 'late' ? '09:00' : '16:00', toTime: k === 'late' ? '10:00' : '17:00', excuseKind: k, reason: 'test' }); return 'ok'; } catch (e) { return e.userMessage || e.message; } }""", [d, k])
 ok(sub(day) == 'ok', 'first permission this month accepted')
-r = sub(day, 'early')
-ok('مرة واحدة' in r, f'a second one (even early leave) in the same month refused ({r})')
+r = sub(day)
+ok('مرة واحدة' in r, f'a second late-arrival permission in the same month refused ({r})')
+ok(sub(day, 'early') == 'ok', 'an early-leave permission has its own monthly limit')
 ok(sub(nxt) == 'ok', 'next month is fine')
 # the form tells them
 pg.evaluate("h => location.hash = h", '#/requests'); pg.wait_for_timeout(1200)
-pg.evaluate("async () => { const m = await import('/assets/js/views/request-form.js'); m.openRequestForm('excuse'); }")
+pg.evaluate("async () => { const m = await import('/assets/js/views/request-form.js'); m.openRequestForm('excuse:late'); }")
 pg.wait_for_timeout(1500)
 txt = pg.locator('.modal').inner_text() if pg.locator('.modal').count() else ''
 print('form:', txt[:300].replace('\n', ' | '))
-ok('استخدمت الإذن' in txt, 'request form says this month\'s permission is used')
+ok('استخدمت إذن تأخير' in txt, 'request form says this month\'s permission is used')
 # cancelling frees it
 pg.evaluate("""async () => { const fb = await import('/assets/js/core/fb.js'); const m = await import('/assets/js/services/requests.js'); const s = await import('/assets/js/core/session.js');
   const rows = (await fb.list(fb.query(fb.col('requests'), fb.where('email', '==', s.session.email)))).filter(r => r.type === 'excuse' && r.startDate.slice(0, 7) === new Date().toISOString().slice(0, 7));

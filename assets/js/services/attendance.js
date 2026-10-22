@@ -4,7 +4,7 @@ import {
   db, doc, col, writeBatch, serverTimestamp, toMs, read, list, query, where, addDoc, getDoc, setDoc, listF, updateDoc
 } from '../core/fb.js';
 import { session, now, isHR, seesAll, isFinance, syncClock } from '../core/session.js';
-import { policy, dayKey, planFor, withShift, LATE_SHIFT } from '../core/policy.js';
+import { policy, dayKey, planFor, withShift, shiftById } from '../core/policy.js';
 import { cairoMs, addDays, L } from '../core/utils.js';
 import { userError } from '../core/ui.js';
 
@@ -16,13 +16,21 @@ export const NO_MEETING = { meetingWith: [], meetingExternal: '', meetingTopic: 
 /** who closed someone else's day: HR, or the employee's direct leader */
 const closerRole = () => (isHR() ? 'hr' : 'leader');
 
+/**
+ * When the day's time starts counting: someone who picked a shift and started before it (e.g. in at 08:40 on the
+ * 09:00 shift) is counted from the shift's start. 0 = from the moment the day started.
+ */
+export function countFrom(u) {
+  const s = u && u.dayKey ? shiftById(u.shift) : null;
+  return s ? cairoMs(u.dayKey, s.start) : 0;
+}
+/** Elapsed counted time of the current status, from its last change (never before the shift starts) */
+const runningSince = (u, at) => Math.max(toMs(u.lastChange) || u.lastChangeClient || at, countFrom(u));
+
 export function liveBank(u, at = now()) {
   const bank = { ...zeroBank(), ...(u && u.timeBank || {}) };
   const st = u && u.status;
-  if (st && st !== 'Offline' && COUNTED.includes(st)) {
-    const start = toMs(u.lastChange) || u.lastChangeClient || at;
-    bank[st] += Math.max(0, at - start);
-  }
+  if (st && st !== 'Offline' && COUNTED.includes(st)) bank[st] += Math.max(0, at - runningSince(u, at));
   return bank;
 }
 
@@ -55,13 +63,13 @@ export async function closeStaleDay(email, u, by = session.email) {
   window.dispatchEvent(new Event('am:data-changed'));
   const key = u.dayKey;
   const sched = await read('schedules', `${email}_${key.slice(0, 7)}`).catch(() => null);
-  const plan = withShift(planFor(key, sched, email), u.shift);
+  const plan = withShift(planFor(key, sched, email), u.shift, u.workLocation);
   const endCap = cairoMs(key, plan.end || policy.workEnd);
   const bank = { ...zeroBank(), ...(u.timeBank || {}) };
   const last = toMs(u.lastChange) || endCap;
   let add = 0;
   if (u.status && u.status !== 'Offline' && COUNTED.includes(u.status)) {
-    add = Math.max(0, endCap - last);
+    add = Math.max(0, endCap - Math.max(last, countFrom(u)));
     bank[u.status] += add;
   }
   const checkOut = Math.max(last, u.status !== 'Offline' ? endCap : last);
@@ -75,9 +83,9 @@ export async function closeStaleDay(email, u, by = session.email) {
   await b.commit();
 }
 
-/** Start (or resume) today. mode: 'office' | 'remote'; shift: '10' = the later 10:00–19:00 shift (new day only) */
+/** Start (or resume) today. mode: 'office' | 'remote'; shift: the picked shift's id ('8' | '9' | '10'; new day only, '' = fixed hours) */
 export async function startDay(mode, { remoteApproved = true, shift = '' } = {}) {
-  const sh = shift === LATE_SHIFT.id ? LATE_SHIFT.id : '';
+  const sh = shiftById(shift) ? String(shift) : '';
   window.dispatchEvent(new Event('am:data-changed'));
   const email = session.email;
   let u = await read('users', email);
@@ -104,7 +112,8 @@ export async function startDay(mode, { remoteApproved = true, shift = '' } = {})
       // closedBy goes back to '' — a day ended by HR/the leader must stay resumable by its owner
       b.update(dayRef, { closed: false, closedBy: '', checkOutMs: null, updatedAt: serverTimestamp() });
     } else {
-      // the work time counts from the moment the day starts (the grace period only spares the lateness)
+      // the work time counts from the moment the day starts, or from the picked shift's start if that is later
+      // (countFrom); the grace period only spares the lateness
       b.update(doc(db, 'users', email), {
         status: 'Online', lastChange: serverTimestamp(), lastChangeClient: Date.now(), timeBank: zeroBank(),
         dayKey: key, checkedOut: false, workLocation: mode, remotePending: mode === 'remote' && !remoteApproved, firstOnlineAt: serverTimestamp(), shift: sh, ...NO_MEETING
@@ -167,8 +176,7 @@ export async function changeStatus(email, newStatus, by = session.email, meeting
   }
   if (by !== email && u.dayKey !== dayKey(now())) throw userError('الموظف مش بادئ يوم النهارده، فمينفعش تغيّر حالته. لو فيه يوم قديم مفتوح اقفله الأول.', 'This employee has not started today, so their status cannot be changed. Close any open previous day first.');
   const at = now();
-  const start = toMs(u.lastChange) || u.lastChangeClient || at;
-  const dur = Math.max(0, at - start);
+  const dur = Math.max(0, at - runningSince(u, at));
   const bank = { ...zeroBank(), ...(u.timeBank || {}) };
   if (COUNTED.includes(old)) bank[old] += dur;
   const key = u.dayKey || dayKey(at);

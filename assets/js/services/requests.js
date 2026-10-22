@@ -6,7 +6,8 @@ import {
 } from '../core/fb.js';
 import { session, now, isHR, seesAll, isAdmin } from '../core/session.js';
 import {
-  policy, leaveType, leaveTypes, stagesFor, firstStatus, nextStatus, planFor, typeLabel, statusLabel, REQUEST_TYPES, isWorkingPlan
+  policy, leaveType, leaveTypes, stagesFor, firstStatus, nextStatus, planFor, typeLabel, statusLabel, REQUEST_TYPES, isWorkingPlan,
+  requestLabel, customType, wfKey, canPickShift, EXCUSE_KINDS
 } from '../core/policy.js';
 import { L, dateRange, normEmail, ymd, cairoMs, uid, hmToMin } from '../core/utils.js';
 import { userError } from '../core/ui.js';
@@ -141,10 +142,11 @@ async function overlapping(email, from, to, types) {
   return mine.filter(r => types.includes(r.type) && !['rejected', 'cancelled'].includes(r.status) && (r.startDate <= to) && ((r.endDate || r.startDate) >= from));
 }
 
-/** late / early permissions this month (not counting rejected or cancelled ones) */
-export async function excusesInMonth(email, monthKey) {
+/** permissions this month (not counting rejected or cancelled ones); kind = 'late' | 'early' only counts that kind */
+export async function excusesInMonth(email, monthKey, kind = '') {
   const mine = await list(query(col('requests'), where('email', '==', email)));
-  return mine.filter(r => r.type === 'excuse' && !['rejected', 'cancelled'].includes(r.status) && (r.startDate || '').slice(0, 7) === monthKey);
+  return mine.filter(r => r.type === 'excuse' && !['rejected', 'cancelled'].includes(r.status) && (r.startDate || '').slice(0, 7) === monthKey
+    && (!kind || (r.excuseKind || 'late') === kind));
 }
 export const excuseLimit = () => Number(policy.excusesPerMonth ?? 1) || 0;
 
@@ -154,6 +156,8 @@ export async function submitRequest(input) {
   const email = session.email;
   const type = input.type;
   if (!REQUEST_TYPES[type] || REQUEST_TYPES[type].retired) throw userError('نوع الطلب ده مش متاح.', 'This request type is not available.');
+  const ct = type === 'custom' ? customType(input.customType) : null;
+  if (type === 'custom' && (!ct || ct.active === false)) throw userError('نوع الطلب ده مش متاح.', 'This request type is not available.');
   const req = {
     email, name: me.name || email, leaderEmail: me.leaderEmail || '', department: me.department || '',
     type, reason: (input.reason || '').slice(0, 2000), createdMs: now(), createdAt: serverTimestamp(), updatedAt: serverTimestamp()
@@ -191,13 +195,17 @@ export async function submitRequest(input) {
     const [fh, fm] = input.fromTime.split(':').map(Number), [th, tm] = input.toTime.split(':').map(Number);
     const mins = (th * 60 + tm) - (fh * 60 + fm);
     if (mins <= 0) throw userError('وقت النهاية لازم يكون بعد البداية.', 'End time must be after start time.');
-    req.startDate = input.date; req.endDate = input.date; req.excuseKind = input.excuseKind || 'late';
+    const kind = EXCUSE_KINDS[input.excuseKind] ? input.excuseKind : 'late';
+    req.startDate = input.date; req.endDate = input.date; req.excuseKind = kind;
     req.fromTime = input.fromTime; req.toTime = input.toTime; req.minutes = mins;
     const monthKey = input.date.slice(0, 7);
+    // a late-arrival and an early-leave permission each have their own monthly limit; the hours cap covers both
     const sameMonth = await excusesInMonth(email, monthKey);
+    const sameKind = sameMonth.filter(r => (r.excuseKind || 'late') === kind);
     const limit = excuseLimit();
-    if (limit && sameMonth.length >= limit) throw userError(limit === 1 ? `إذن التأخير / الانصراف مرة واحدة بس في الشهر، وإنت طلبته قبل كده في الشهر ده (يوم ${sameMonth[0].startDate}).` : `مسموح بـ ${limit} أذونات بس في الشهر، وإنت طلبتهم كلهم.`,
-      limit === 1 ? `Only one late / early permission a month — you already asked for one this month (${sameMonth[0].startDate}).` : `Only ${limit} permissions a month — you have used them all.`);
+    const kAr = EXCUSE_KINDS[kind].ar, kEn = EXCUSE_KINDS[kind].en.toLowerCase();
+    if (limit && sameKind.length >= limit) throw userError(limit === 1 ? `${kAr} مرة واحدة بس في الشهر، وإنت طلبته قبل كده في الشهر ده (يوم ${sameKind[0].startDate}).` : `مسموح بـ ${limit} مرات بس من ${kAr} في الشهر، وإنت استخدمتهم كلهم.`,
+      limit === 1 ? `Only one ${kEn} a month — you already asked for one this month (${sameKind[0].startDate}).` : `Only ${limit} of ${kEn} a month — you have used them all.`);
     const used = sameMonth.reduce((s, r) => s + (r.minutes || 0), 0);
     const cap = Number(policy.excuseHoursPerMonth || 0) * 60;
     if (cap && used + mins > cap) throw userError(`تخطيت الحد الشهري للأذونات (${policy.excuseHoursPerMonth} ساعات).`, `Monthly permission limit exceeded (${policy.excuseHoursPerMonth} hours).`);
@@ -215,11 +223,23 @@ export async function submitRequest(input) {
     Object.assign(req, advancePlan(amount, Math.min(24, Number(input.installments) || 1), input.startMonth));
     req.startDate = ymd(now());
   }
+  if (type === 'custom') {
+    req.customType = ct.id; req.customLabel = { ar: ct.ar || '', en: ct.en || '' };
+    if (ct.dates === 'range') {
+      if (!input.startDate || !input.endDate) throw userError('اختار تاريخ البداية والنهاية.', 'Choose start and end dates.');
+      if (input.endDate < input.startDate) throw userError('تاريخ النهاية لازم يكون بعد البداية.', 'End date must be after the start date.');
+      req.startDate = input.startDate; req.endDate = input.endDate;
+    } else if (ct.dates === 'day') {
+      if (!input.date) throw userError('حدد اليوم.', 'Choose the day.');
+      req.startDate = input.date; req.endDate = input.date;
+    }
+    if (ct.attachment && !input.attachmentData) throw userError('الطلب ده محتاج مرفق.', 'This request needs an attachment.');
+  }
   if (type === 'letter') { req.letterKind = input.letterKind || 'employment'; req.addressedTo = input.addressedTo || ''; req.startDate = ymd(now()); }
   if (!req.startDate) req.startDate = ymd(now());
 
-  req.status = firstStatus(type, me);
-  req.stages = stagesFor(type, me);
+  req.status = firstStatus(wfKey(type, req.customType), me);
+  req.stages = stagesFor(wfKey(type, req.customType), me);
   req.history = [{ at: now(), by: email, byName: req.name, action: 'submitted', note: '' }];
 
   const r = doc(col('requests'));
@@ -229,11 +249,11 @@ export async function submitRequest(input) {
     req.attachmentId = aRef.id;
   }
   await settle(setDoc(r, req));
-  track('request.submit', { target: r.id, detail: typeLabel(type) + (req.startDate ? ` ${req.startDate}${req.endDate && req.endDate !== req.startDate ? '→' + req.endDate : ''}` : '') });
+  track('request.submit', { target: r.id, detail: requestLabel(req) + (req.startDate ? ` ${req.startDate}${req.endDate && req.endDate !== req.startDate ? '→' + req.endDate : ''}` : '') });
   if (req.status === 'approved') await applyApproval(r.id);
   else {
     const stage = req.status.replace('pending_', '');
-    notifyMany(approversFor(stage, req), L(`طلب جديد: ${typeLabel(type)}`, `New request: ${typeLabel(type)}`), `${req.name}`, '#/approvals', 'request');
+    notifyMany(approversFor(stage, req), L(`طلب جديد: ${requestLabel(req)}`, `New request: ${requestLabel(req)}`), `${req.name}`, '#/approvals', 'request');
   }
   return r.id;
 }
@@ -246,7 +266,7 @@ export async function cancelRequest(id) {
     status: 'cancelled', updatedAt: serverTimestamp(),
     history: arrayUnion({ at: now(), by: session.email, byName: (session.profile || {}).name || session.email, action: 'cancelled', note: '' })
   }));
-  track('request.cancel', { target: id, detail: typeLabel(r.type) });
+  track('request.cancel', { target: id, detail: requestLabel(r) });
 }
 
 // ---------- decide ----------
@@ -271,10 +291,10 @@ export async function decide(id, action, note = '', edits = null) {
   }
   const stage = r.status.replace('pending_', '');
   const entry = { at: now(), by: session.email, byName: (session.profile || {}).name || session.email, action: action === 'approve' ? `approved_${stage}` : `rejected_${stage}`, note };
-  track(action === 'approve' ? 'request.approve' : 'request.reject', { target: r.email, detail: `${typeLabel(r.type)} — ${r.name || r.email}` });
+  track(action === 'approve' ? 'request.approve' : 'request.reject', { target: r.email, detail: `${requestLabel(r)} — ${r.name || r.email}` });
   if (action === 'reject') {
     await settle(updateDoc(doc(db, 'requests', id), { status: 'rejected', updatedAt: serverTimestamp(), history: arrayUnion(entry), decidedBy: session.email }));
-    notify(r.email, L(`تم رفض طلبك: ${typeLabel(r.type)}`, `Request rejected: ${typeLabel(r.type)}`), note || '', '#/requests', 'rejected');
+    notify(r.email, L(`تم رفض طلبك: ${requestLabel(r)}`, `Request rejected: ${requestLabel(r)}`), note || '', '#/requests', 'rejected');
     return 'rejected';
   }
   const requester = person(r.email) || { leaderEmail: r.leaderEmail };
@@ -283,15 +303,15 @@ export async function decide(id, action, note = '', edits = null) {
   if (next !== 'approved') {
     await settle(updateDoc(doc(db, 'requests', id), { status: next, updatedAt: serverTimestamp(), history: arrayUnion(entry) }));
     const nextStage = next.replace('pending_', '');
-    notifyMany(approversFor(nextStage, r), L(`طلب محتاج موافقتك: ${typeLabel(r.type)}`, `Request needs your approval: ${typeLabel(r.type)}`), r.name, '#/approvals', 'request');
-    notify(r.email, L('طلبك اتوافق عليه واتنقل للمرحلة التالية', 'Your request was approved and moved to the next step'), `${typeLabel(r.type)} — ${statusLabel(next)}`, '#/requests', 'progress');
+    notifyMany(approversFor(nextStage, r), L(`طلب محتاج موافقتك: ${requestLabel(r)}`, `Request needs your approval: ${requestLabel(r)}`), r.name, '#/approvals', 'request');
+    notify(r.email, L('طلبك اتوافق عليه واتنقل للمرحلة التالية', 'Your request was approved and moved to the next step'), `${requestLabel(r)} — ${statusLabel(next)}`, '#/requests', 'progress');
     return next;
   }
   await applyApproval(id, entry);
   return 'approved';
 }
 function nextStatusFromStages(r) {
-  const stages = Array.isArray(r.stages) && r.stages.length ? r.stages : stagesFor(r.type, { leaderEmail: r.leaderEmail });
+  const stages = Array.isArray(r.stages) && r.stages.length ? r.stages : stagesFor(wfKey(r.type, r.customType), { leaderEmail: r.leaderEmail });
   const cur = r.status.replace('pending_', '');
   const i = stages.indexOf(cur);
   return i >= 0 && i < stages.length - 1 ? `pending_${stages[i + 1]}` : 'approved';
@@ -354,7 +374,8 @@ export async function applyApproval(id, entry) {
       const kind = r.excuseKind || 'late';
       const t = kind === 'late' ? r.toTime : r.fromTime;
       const inside = !!t && !!p.start && !!p.end && hmToMin(t) > hmToMin(p.start) && hmToMin(t) < hmToMin(p.end);
-      if (isWorkingPlan(p) && inside) {
+      // someone who picks a shift each morning keeps the day open: the reports excuse the permitted time instead
+      if (isWorkingPlan(p) && inside && !canPickShift(p)) {
         const prev = days[excuseDay] || null;
         days[excuseDay] = { ...(prev || {}), mode: p.mode, start: kind === 'late' ? t : p.start, end: kind === 'early' ? t : p.end,
           excuseId: id, excuseKind: kind, before: prev ? { start: prev.start || '', end: prev.end || '' } : null };
@@ -396,7 +417,7 @@ export async function applyApproval(id, entry) {
   const body = r0.type === 'excuse' && ['late', 'early'].includes(r0.excuseKind || 'late')
     ? ((r0.excuseKind || 'late') === 'late' ? L(`ميعاد حضورك يوم ${r0.startDate} بقى ${r0.toTime}`, `Your start time on ${r0.startDate} is now ${r0.toTime}`) : L(`ميعاد انصرافك يوم ${r0.startDate} بقى ${r0.fromTime}`, `Your end time on ${r0.startDate} is now ${r0.fromTime}`))
     : r0.type === 'advance' ? L(`${fin.amount} ج.م على ${fin.installments} قسط (${fin.perMonth} شهرياً) من ${fin.startMonth} لـ ${fin.endMonth}`, `${fin.amount} EGP in ${fin.installments} installments (${fin.perMonth}/month), ${fin.startMonth} → ${fin.endMonth}`) : (r0.startDate || '');
-  notify(email, L(`تم اعتماد طلبك: ${typeLabel(r0.type)}`, `Request approved: ${typeLabel(r0.type)}`), body, '#/requests', 'approved');
+  notify(email, L(`تم اعتماد طلبك: ${requestLabel(r0)}`, `Request approved: ${requestLabel(r0)}`), body, '#/requests', 'approved');
 }
 
 /** HR: revoke an approved leave/remote/mission (returns balance, clears schedule) */
@@ -440,7 +461,7 @@ export async function revokeRequest(id, note = '') {
       history: arrayUnion({ at: now(), by: session.email, byName: (session.profile || {}).name || session.email, action: 'revoked', note })
     });
   });
-  notify(email, L(`تم إلغاء طلب معتمد: ${typeLabel(r0.type)}`, `Approved request revoked: ${typeLabel(r0.type)}`), note, '#/requests', 'rejected');
+  notify(email, L(`تم إلغاء طلب معتمد: ${requestLabel(r0)}`, `Approved request revoked: ${requestLabel(r0)}`), note, '#/requests', 'rejected');
 }
 
 export async function setResponse(id, text) {

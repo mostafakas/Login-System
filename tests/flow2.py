@@ -33,7 +33,7 @@ st = sorted(v['status'] for k, v in a.db().items() if k.startswith('requests/'))
 # emp2 opens app next day: stale day auto-closed on start
 a.login('emp2@almaster.tech'); pg.wait_for_timeout(600); a.shot('91-stale'); 
 print('  stale notice visible:', pg.locator('#pad-card .alert.warn').count())
-pg.click('#start-btn'); pg.click('[data-mode="office"]'); pg.wait_for_timeout(1500); step('start after stale')
+pg.click('#start-btn'); pg.click('[data-mode="office"]'); pg.click('[data-shift="9"]'); pg.wait_for_timeout(1500); step('start after stale')
 d = a.db('attendance_days/emp2@almaster.tech_2026-09-25'); print('  closed stale:', d.get('closed'), d.get('autoClosed'), round(d.get('workMs',0)/3600000,2), 'h')
 
 # HR: edit employee, suspend, correction, adjust balance, revoke

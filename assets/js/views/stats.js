@@ -8,7 +8,7 @@ import { L, esc, num, fmtHours, fmtMin, fmtTime, fmtDay, fmtDate, money, minutes
 import { avatar, loader, empty, toast, toastErr, busy, confirmDialog } from '../core/ui.js';
 import { session, now, isAdmin } from '../core/session.js';
 import { read, toMs } from '../core/fb.js';
-import { policy, isWorkingPlan, leaveTypeLabel, typeLabel } from '../core/policy.js';
+import { policy, isWorkingPlan, leaveTypeLabel, typeLabel, shiftLabel } from '../core/policy.js';
 import { personMonth, summarize, teamMonth } from '../services/reports.js';
 import { scopeFor } from '../services/attendance.js';
 import { person, nameOf } from '../services/directory.js';
@@ -358,7 +358,7 @@ export default async function render(root, { params = [] }) {
       <div class="st-grid mb-16">
         <section class="card"><div class="card-head"><h3><i class="fas fa-clock" style="color:var(--warn)"></i> ${L('التأخيرات بمواعيدها', 'Late arrivals')}</h3><span class="num muted">${m.lates.length}</span></div>
           ${m.lates.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>${L('اليوم', 'Day')}</th><th class="num">${L('الميعاد', 'Start')}</th><th class="num">${L('الحضور', 'Check-in')}</th><th class="num">${L('التأخير', 'Late')}</th><th></th></tr></thead><tbody>
-            ${m.lates.map(r => `<tr data-day="${r.date}" style="cursor:pointer"><td>${esc(fmtDay(r.date))}</td><td class="num muted">${esc(r.plan.start || policy.workStart)}</td><td class="num"><b>${esc(fmtTime(r.rec.checkInMs))}</b></td><td class="num bad-txt">${esc(fmtMin(r.late))}</td><td>${r.rec.shift === '10' ? `<span class="badge info">${L('شيفت 10', '10:00 shift')}</span>` : ''}${r.status === 'remote' ? `<span class="badge brand">${L('أونلاين', 'Remote')}</span>` : ''}</td></tr>`).join('')}</tbody></table></div>`
+            ${m.lates.map(r => `<tr data-day="${r.date}" style="cursor:pointer"><td>${esc(fmtDay(r.date))}</td><td class="num muted">${esc(r.plan.start || policy.workStart)}</td><td class="num"><b>${esc(fmtTime(r.rec.checkInMs))}</b></td><td class="num bad-txt">${esc(fmtMin(r.late))}</td><td>${r.plan.shift ? `<span class="badge info">${esc(shiftLabel(r.plan.shift))}</span>` : ''}${r.status === 'remote' ? `<span class="badge brand">${L('أونلاين', 'Remote')}</span>` : ''}</td></tr>`).join('')}</tbody></table></div>`
             : `<div class="card-body">${empty('fa-face-smile', L('مفيش ولا تأخير في الفترة دي 👏', 'Not late once in this period 👏'))}</div>`}</section>
         <section class="card"><div class="card-head"><h3><i class="fas fa-calendar-days"></i> ${monthName(month)}</h3></div><div class="card-body">${cal}</div></section>
       </div>

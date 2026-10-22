@@ -9,12 +9,21 @@ export const DEFAULT_POLICY = {
   workStart: '09:00',
   workEnd: '17:00',
   graceMinutes: 15,
+  // the shifts an employee picks from when starting the day (office grace per shift; remote has its own grace)
+  shifts: [
+    { id: '8', start: '08:00', end: '17:00', grace: 30 },
+    { id: '9', start: '09:00', end: '18:00', grace: 30 },
+    { id: '10', start: '10:00', end: '19:00', grace: 30 }
+  ],
+  remoteGraceMinutes: 15,
   weekend: [5, 6],                // Friday, Saturday
   dayBoundaryHour: 4,             // work after midnight until 04:00 belongs to the previous day
   remoteNeedsApproval: true,
   defaultRemoteQuota: 4,          // remote days per month
   excuseHoursPerMonth: 4,
-  excusesPerMonth: 1,        // late / early permission requests a month (0 = no limit)
+  excusesPerMonth: 1,        // late-arrival permissions a month, and as many early-leave ones (0 = no limit)
+  hiddenRequestTypes: ['correction', 'letter'],   // built-in types not offered on the employee's request page
+  customRequestTypes: [],         // admin-defined types: { id, ar, en, icon, dates: 'none' | 'day' | 'range', attachment, active }
   lateTiers: [                    // deduction per late day (fraction of a day's pay)
     { after: 15, day: 0.25 },
     { after: 60, day: 0.5 },
@@ -58,7 +67,12 @@ export const REQUEST_TYPES = {
   mission:    { ar: 'مأمورية', en: 'Business mission', icon: 'fa-briefcase', tile: 'ok', retired: true }, // no longer requested; kept to show old records
   correction: { ar: 'تصحيح حضور', en: 'Attendance correction', icon: 'fa-pen-to-square', tile: 'neutral' },
   advance:    { ar: 'سلفة', en: 'Salary advance', icon: 'fa-hand-holding-dollar', tile: 'ok' },
-  letter:     { ar: 'خطاب من HR', en: 'HR letter', icon: 'fa-file-signature', tile: 'info' }
+  letter:     { ar: 'خطاب من HR', en: 'HR letter', icon: 'fa-file-signature', tile: 'info' },
+  custom:     { ar: 'طلب آخر', en: 'Other request', icon: 'fa-file-lines', tile: 'neutral', internal: true } // admin-defined types (settings → request types)
+};
+export const EXCUSE_KINDS = {
+  late:  { ar: 'إذن تأخير', en: 'Late-arrival permission', icon: 'fa-clock', tile: 'info' },
+  early: { ar: 'إذن انصراف', en: 'Early-leave permission', icon: 'fa-person-walking-arrow-right', tile: 'info' }
 };
 export const REQUEST_STATUS = {
   pending_leader:  { ar: 'عند المدير المباشر', en: 'With manager', cls: 'warn' },
@@ -89,6 +103,32 @@ export const ROLE_META = {
 };
 export const statusLabel = (s) => { const m = REQUEST_STATUS[s]; return m ? L(m.ar, m.en) : s; };
 export const typeLabel = (t) => { const m = REQUEST_TYPES[t]; return m ? L(m.ar, m.en) : t; };
+/** Label of one request record: the permission kind, or the admin-defined type's name */
+export function requestLabel(r) {
+  if (!r) return '';
+  if (r.type === 'excuse' && EXCUSE_KINDS[r.excuseKind || 'late']) { const k = EXCUSE_KINDS[r.excuseKind || 'late']; return L(k.ar, k.en); }
+  if (r.type === 'custom') { const c = customType(r.customType); return c ? L(c.ar, c.en || c.ar) : L((r.customLabel || {}).ar || 'طلب آخر', (r.customLabel || {}).en || (r.customLabel || {}).ar || 'Other request'); }
+  return typeLabel(r.type);
+}
+export const customTypes = () => (Array.isArray(policy.customRequestTypes) ? policy.customRequestTypes : []);
+export const customType = (id) => customTypes().find(c => c.id === id) || null;
+/** Workflow key of a request: admin-defined types each have their own (custom_<id>) */
+export const wfKey = (type, customId) => type === 'custom' && customId ? `custom_${customId}` : type;
+/**
+ * What the employee's request page offers, in order: { key, type, excuseKind?, customType?, label, icon, tile }.
+ * key is what the form / quick buttons pass around ('excuse:late', 'custom:<id>', or the type itself).
+ */
+export function requestChoices() {
+  const hidden = Array.isArray(policy.hiddenRequestTypes) ? policy.hiddenRequestTypes : [];
+  const out = [];
+  const add = (type) => { const m = REQUEST_TYPES[type]; out.push({ key: type, type, label: L(m.ar, m.en), icon: m.icon, tile: m.tile }); };
+  ['leave', 'remote'].filter(t => !hidden.includes(t)).forEach(add);
+  if (!hidden.includes('excuse')) Object.entries(EXCUSE_KINDS).forEach(([k, m]) => out.push({ key: `excuse:${k}`, type: 'excuse', excuseKind: k, label: L(m.ar, m.en), icon: m.icon, tile: m.tile }));
+  Object.keys(REQUEST_TYPES).filter(t => !['leave', 'remote', 'excuse'].includes(t) && !REQUEST_TYPES[t].retired && !REQUEST_TYPES[t].internal && !hidden.includes(t)).forEach(add);
+  customTypes().filter(c => c.active !== false).forEach(c => out.push({ key: `custom:${c.id}`, type: 'custom', customType: c.id, label: L(c.ar, c.en || c.ar), icon: c.icon || 'fa-file-lines', tile: 'neutral' }));
+  return out;
+}
+export const requestChoice = (key) => requestChoices().find(c => c.key === key) || null;
 export const modeLabel = (m) => { const x = MODE_META[m]; return x ? L(x.ar, x.en) : m; };
 export const roleLabel = (r) => { const x = ROLE_META[normRole(r)]; return x ? L(x.ar, x.en) : r; };
 export const normRole = (raw) => { const r = String(raw || '').trim().toLowerCase(); return r === 'supervisor' ? 'hr' : (ROLE_META[r] ? r : 'employee'); };
@@ -137,31 +177,49 @@ export const isHoliday = (dateStr) => !!holidays[dateStr];
 let personOf = () => null;
 /** The people directory registers how to look a person up by email. */
 export const setPersonLookup = (fn) => { personOf = fn || (() => null); };
-/** { start, end, grace } for a person — `who` is an email or a profile; each falls back to the company setting */
+/**
+ * { start, end, grace, fixed, ownGrace } for a person — `who` is an email or a profile; each falls back to the company setting.
+ * fixed = the person has their own hours (an exception set on their profile), so they do not pick a shift.
+ */
 export function hoursFor(who) {
   const p = who && typeof who === 'object' ? (personOf(who.email) || who) : personOf(who);
-  const own = p && p.workStart && p.workEnd;
-  const g = p && p.graceMinutes !== undefined && p.graceMinutes !== null && p.graceMinutes !== '' ? Number(p.graceMinutes) : Number(policy.graceMinutes) || 0;
-  return { start: own ? p.workStart : policy.workStart, end: own ? p.workEnd : policy.workEnd, grace: g };
+  const own = !!(p && p.workStart && p.workEnd);
+  const ownGrace = !!p && p.graceMinutes !== undefined && p.graceMinutes !== null && p.graceMinutes !== '';
+  // fixed on one of the shifts: that shift's grace
+  const sh = own && !ownGrace ? shiftList().find(s => s.start === p.workStart && s.end === p.workEnd) : null;
+  const g = ownGrace ? Number(p.graceMinutes) : (sh ? Number(sh.grace ?? policy.graceMinutes) || 0 : Number(policy.graceMinutes) || 0);
+  return { start: own ? p.workStart : policy.workStart, end: own ? p.workEnd : policy.workEnd, grace: g, fixed: own, ownGrace };
 }
 
 /** Effective plan for a date: schedule override > holiday > weekend > office. `who` = email/profile when there may be no schedule. */
 export function planFor(dateStr, schedule, who) {
   const h = hoursFor(who || (schedule && schedule.email) || '');
   const o = schedule && schedule.days && schedule.days[dateStr];
-  if (o && o.mode) return { mode: o.mode, start: o.start || h.start, end: o.end || h.end, grace: h.grace, leaveType: o.leaveType, requestId: o.requestId, source: 'schedule' };
+  // hours written on the day itself (HR's schedule, an approved permission) that differ from the company hours are fixed too
+  const dayFixed = !!(o && o.start && (o.excuseId || o.start !== policy.workStart || (o.end && o.end !== policy.workEnd)));
+  if (o && o.mode) return { mode: o.mode, start: o.start || h.start, end: o.end || h.end, grace: h.grace, ownGrace: h.ownGrace, fixed: h.fixed || dayFixed, leaveType: o.leaveType, requestId: o.requestId, source: 'schedule' };
   if (isHoliday(dateStr)) return { mode: 'holiday', name: holidays[dateStr], start: null, end: null, source: 'holiday' };
   if (isWeekend(dateStr)) return { mode: 'off', start: null, end: null, source: 'weekend' };
-  return { mode: 'office', start: h.start, end: h.end, grace: h.grace, source: 'default' };
+  return { mode: 'office', start: h.start, end: h.end, grace: h.grace, ownGrace: h.ownGrace, fixed: h.fixed, source: 'default' };
 }
 export const isWorkingPlan = (p) => p.mode === 'office' || p.mode === 'remote' || p.mode === 'mission';
 /**
- * The later shift: someone planned for 09:00 who starts after the grace period may choose to work 10:00–19:00
- * that day instead of being counted late. The choice is stored on the day (users.shift / attendance_days.shift).
+ * Shifts: someone without fixed hours picks one when starting the day (08:00–17:00, 09:00–18:00 or 10:00–19:00).
+ * The choice is stored on the day (users.shift / attendance_days.shift); days from before shifts keep '' (company hours).
  */
-export const LATE_SHIFT = { id: '10', from: '09:00', start: '10:00', end: '19:00' };
-export const canPickLateShift = (plan) => !!plan && isWorkingPlan(plan) && plan.start === LATE_SHIFT.from;
-export const withShift = (plan, shift) => shift === LATE_SHIFT.id && canPickLateShift(plan) ? { ...plan, start: LATE_SHIFT.start, end: LATE_SHIFT.end, shift: LATE_SHIFT.id } : plan;
+export const shiftList = () => (Array.isArray(policy.shifts) && policy.shifts.length ? policy.shifts : DEFAULT_POLICY.shifts);
+export const shiftById = (id) => (id ? shiftList().find(s => String(s.id) === String(id)) || null : null);
+export const shiftLabel = (id) => { const s = shiftById(id); return s ? L(`شيفت ${s.start}`, `${s.start} shift`) : ''; };
+export const canPickShift = (plan) => !!plan && isWorkingPlan(plan) && !plan.fixed;
+/** The day's plan with the picked shift's hours; mode = where the day is worked ('remote' has its own, shorter grace) */
+export function withShift(plan, shift, mode) {
+  if (!plan) return plan;
+  let p = plan;
+  const s = shiftById(shift);
+  if (s && canPickShift(p)) p = { ...p, start: s.start, end: s.end, grace: p.ownGrace ? p.grace : Number(s.grace ?? policy.graceMinutes) || 0, shift: String(s.id) };
+  if (isWorkingPlan(p) && (mode === 'remote' || p.mode === 'remote') && !p.ownGrace) p = { ...p, grace: Number(policy.remoteGraceMinutes ?? 15) || 0 };
+  return p;
+}
 
 /** Count working days in a range (excludes weekends & holidays; schedule overrides respected) */
 export function workingDays(from, to, schedulesByMonth = {}) {
@@ -196,10 +254,12 @@ export function lateDeductionDays(lateMin) {
 }
 /** Which approval stages a request of this type goes through for this requester */
 /** Request types people can still file (retired ones only appear on old records) */
-export const activeRequestTypes = () => Object.keys(REQUEST_TYPES).filter(k => !REQUEST_TYPES[k].retired);
+export const activeRequestTypes = () => Object.keys(REQUEST_TYPES).filter(k => !REQUEST_TYPES[k].retired && !REQUEST_TYPES[k].internal);
+/** type = a request type or a workflow key (custom_<id> for an admin-defined type) */
 export function stagesFor(type, requester) {
   if (type === 'advance') return ['admin']; // salary advances are decided by the admin only
-  const wf = (policy.workflow && policy.workflow[type]) || ['hr'];
+  // with no saved workflow, an admin-defined type goes to the manager (the same default the security rules use)
+  const wf = (policy.workflow && policy.workflow[type]) || (String(type).startsWith('custom') ? ['leader'] : ['hr']);
   const st = wf.filter(s => !(s === 'leader' && !(requester && requester.leaderEmail)));
   return st.length ? st : ['hr']; // nobody approves their own request
 }

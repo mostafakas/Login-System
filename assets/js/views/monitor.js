@@ -2,7 +2,7 @@
 import { L, esc, fmtDur, fmtTime, fmtMin, fmtHours, num, debounce, hmToMin, ymd } from '../core/utils.js';
 import { toast, toastErr, avatar, STATUS_META, empty, confirmDialog, bindActions, modal } from '../core/ui.js';
 import { session, now, isHR, seesAll } from '../core/session.js';
-import { dayKey, planFor, lateness, modeLabel, roleLabel, isWorkingPlan, policy, leaveType, withShift } from '../core/policy.js';
+import { dayKey, planFor, lateness, modeLabel, roleLabel, isWorkingPlan, policy, leaveType, withShift, shiftLabel } from '../core/policy.js';
 import { toMs, list, query, col, where } from '../core/fb.js';
 import { onDirectory, supervisedPeople as managedPeople, departments, meetingLine } from '../services/directory.js';
 import { liveBank, staleDay, closeStaleDay, changeStatus, resetLive, COUNTED } from '../services/attendance.js';
@@ -67,7 +67,7 @@ export default async function render(root) {
   const info = (u) => {
     const t = today();
     const isToday = u.dayKey === t;
-    const plan = withShift(planFor(t, schedules[u.email] || null, u), isToday ? u.shift : '');
+    const plan = withShift(planFor(t, schedules[u.email] || null, u), isToday ? u.shift : '', isToday ? u.workLocation : '');
     const on = isToday && u.status && u.status !== 'Offline';
     const fo0 = isToday ? toMs(u.firstOnlineAt) : null;
     const fo = fo0 && dayKey(fo0) === t ? fo0 : null; // a check-in from another day (wrong device clock) is ignored
@@ -146,7 +146,7 @@ export default async function render(root) {
     return `<span class="badge ${s.cls} ${live}"><span class="dot"></span>${esc(L(s.ar, s.en))}</span>${sub ? `<small class="sub">${esc(sub)}</small>` : ''}${meet ? `<small class="sub meet" title="${esc(meet)}"><i class="fas fa-users"></i> ${esc(meet.replace(/^في ميتنج /, '').replace(/^In a meeting /, ''))}</small>` : ''}`;
   };
   const flags = (i) => [
-    i.plan.shift && (i.on || i.fo) ? `<span class="badge info"><i class="fas fa-clock-rotate-left"></i>${L('شيفت 10', '10:00 shift')}</span>` : '',
+    i.plan.shift && (i.on || i.fo) ? `<span class="badge info"><i class="fas fa-business-time"></i>${esc(shiftLabel(i.plan.shift))}</span>` : '',
     i.late ? `<span class="badge bad">${L('تأخير', 'Late')} ${esc(fmtMin(i.late))}</span>` : '',
     i.pending ? `<span class="badge warn"><i class="fas fa-circle-exclamation"></i>${L('أونلاين بدون موافقة', 'Remote not approved')}</span>` : '',
     i.stale ? `<span class="badge bad"><i class="fas fa-triangle-exclamation"></i>${L('يوم مفتوح', 'Open day')} <span class="num">${esc(i.stale)}</span></span>` : ''

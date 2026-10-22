@@ -1,18 +1,24 @@
 // New-request dialog shared by "My day" and "My requests".
 import { L, esc, ymd, addDays, imageToDataUrl, addMonths, money, fmtMonth } from '../core/utils.js';
 import { modal, toast, toastErr, busy } from '../core/ui.js';
-import { REQUEST_TYPES, leaveTypes, policy, typeLabel, hoursFor, activeRequestTypes } from '../core/policy.js';
+import { REQUEST_TYPES, leaveTypes, policy, typeLabel, hoursFor, requestChoices, customType, EXCUSE_KINDS, shiftById } from '../core/policy.js';
 import { session, now } from '../core/session.js';
 import { submitRequest, getBalance, remaining, countWorkingDays, advancePlan, excusesInMonth, excuseLimit } from '../services/requests.js';
 import { play } from '../core/sounds.js';
 
-export function openRequestForm(type = 'leave', preset = {}) {
+/** key: a request choice ('leave', 'excuse:late', 'custom:<id>' …); a plain 'excuse' means the late-arrival permission */
+export function openRequestForm(key = '', preset = {}) {
   const today = ymd(now());
-  const typeOpts = activeRequestTypes().map(k => `<option value="${k}" ${k === type ? 'selected' : ''}>${esc(typeLabel(k))}</option>`).join('');
+  const choices = requestChoices();
+  if (key === 'excuse') key = 'excuse:late';
+  // a type the request page does not offer can still be opened from its own place (e.g. a correction from a day's details)
+  if (key && !choices.some(c => c.key === key) && REQUEST_TYPES[key] && !REQUEST_TYPES[key].retired && !REQUEST_TYPES[key].internal) choices.push({ key, type: key, label: typeLabel(key) });
+  if (!choices.some(c => c.key === key)) key = (choices[0] || {}).key || 'leave';
+  const typeOpts = choices.map(c => `<option value="${esc(c.key)}" ${c.key === key ? 'selected' : ''}>${esc(c.label)}</option>`).join('');
   const m = modal({
     title: L('طلب جديد', 'New request'), icon: 'fa-paper-plane', size: '',
     body: `<form id="rq" class="col gap-16" novalidate>
-      <div class="field"><label>${L('نوع الطلب', 'Request type')}</label><select class="select" name="type">${typeOpts}</select></div>
+      <div class="field"><label>${L('نوع الطلب', 'Request type')}</label><select class="select" name="choice">${typeOpts}</select></div>
       <div id="rq-fields" class="col gap-16"></div>
       <div class="field"><label>${L('السبب / التفاصيل', 'Reason / details')}</label><textarea class="textarea" name="reason" maxlength="2000" placeholder="${L('اكتب التفاصيل اللي تساعد مديرك يوافق بسرعة', 'Add details that help your manager decide')}"></textarea></div>
       <div id="rq-info" class="alert info hidden"></div>
@@ -29,8 +35,11 @@ export function openRequestForm(type = 'leave', preset = {}) {
       <div class="field"><label>${L('من', 'From')}</label><input class="input" type="date" name="startDate" value="${s}" required></div>
       <div class="field"><label>${L('إلى', 'To')}</label><input class="input" type="date" name="endDate" value="${e}" required></div></div>`;
 
+  // the picked choice → { type, excuseKind, customType }
+  const picked = () => { const k = form.choice.value; const [t, sub] = k.split(':'); return { type: t, excuseKind: t === 'excuse' ? sub : '', customType: t === 'custom' ? sub : '' }; };
+
   async function refreshInfo() {
-    const t = form.type.value;
+    const { type: t, excuseKind } = picked();
     info.classList.add('hidden');
     try {
       if (t === 'leave' && form.startDate && form.startDate.value && form.endDate.value) {
@@ -51,9 +60,10 @@ export function openRequestForm(type = 'leave', preset = {}) {
       } else if (t === 'excuse') {
         const limit = excuseLimit();
         const month = ((form.date && form.date.value) || ymd(now())).slice(0, 7);
-        const used = limit ? (await excusesInMonth(session.email, month).catch(() => [])).length : 0;
+        const used = limit ? (await excusesInMonth(session.email, month, excuseKind).catch(() => [])).length : 0;
         const full = limit && used >= limit;
-        info.innerHTML = `<i class="fas ${full ? 'fa-ban' : 'fa-circle-info'}"></i><span>${limit ? (full ? L(`استخدمت الإذن بتاع الشهر ده (${used}/${limit}) — مش هتقدر تطلب تاني لحد الشهر الجاي.`, `You used this month's permission (${used}/${limit}) — you can ask again next month.`) : L(`مسموح بـ ${limit === 1 ? 'إذن واحد' : limit + ' أذونات'} في الشهر · استخدمت ${used}`, `${limit} permission(s) a month · used ${used}`)) + ' · ' : ''}${L('بحد أقصى', 'up to')} <b class="num">${policy.excuseHoursPerMonth}</b> ${L('ساعات', 'hours')}</span>`;
+        const kindName = L(EXCUSE_KINDS[excuseKind].ar, EXCUSE_KINDS[excuseKind].en);
+        info.innerHTML = `<i class="fas ${full ? 'fa-ban' : 'fa-circle-info'}"></i><span>${limit ? (full ? L(`استخدمت ${kindName} بتاع الشهر ده (${used}/${limit}) — مش هتقدر تطلبه تاني لحد الشهر الجاي.`, `You used this month's ${kindName.toLowerCase()} (${used}/${limit}) — you can ask again next month.`) : L(`مسموح بـ ${limit === 1 ? `${kindName} واحد` : limit + ' مرات'} في الشهر · استخدمت ${used}`, `${limit} a month · used ${used}`)) : ''}${policy.excuseHoursPerMonth ? `${limit ? ' · ' : ''}${L('الأذونات كلها بحد أقصى', 'all permissions up to')} <b class="num">${policy.excuseHoursPerMonth}</b> ${L('ساعات في الشهر', 'hours a month')}` : ''}</span>`;
         info.className = `alert ${full ? 'bad' : 'info'}`;
       } else if (t === 'advance' && Number(form.amount.value) > 0 && form.startMonth.value) {
         // the plan, live: monthly installment and the last month it is deducted
@@ -65,7 +75,7 @@ export function openRequestForm(type = 'leave', preset = {}) {
   }
 
   function renderFields() {
-    const t = form.type.value;
+    const { type: t, excuseKind, customType: cid } = picked();
     attachment = null;
     let h = '';
     if (t === 'leave') {
@@ -79,11 +89,16 @@ export function openRequestForm(type = 'leave', preset = {}) {
     } else if (t === 'mission') {
       h += dateRangeFields(preset.startDate || today, preset.endDate || today);
     } else if (t === 'excuse') {
+      // late: from the start of the day to the arrival time; early: from the leaving time to the end of the day
+      const hrs = hoursFor(session.email);
+      const pro = session.profile || {};
+      const shiftNow = pro.dayKey === today ? shiftById(pro.shift) : null;
+      const st = shiftNow ? shiftNow.start : hrs.start, en = shiftNow ? shiftNow.end : hrs.end;
       h += `<div class="form-grid">
-        <div class="field"><label>${L('النوع', 'Kind')}</label><select class="select" name="excuseKind"><option value="late">${L('إذن تأخير', 'Late arrival')}</option><option value="early">${L('انصراف مبكر', 'Early leave')}</option><option value="middle">${L('خروج أثناء اليوم', 'Mid-day exit')}</option></select></div>
-        <div class="field"><label>${L('اليوم', 'Day')}</label><input class="input" type="date" name="date" value="${preset.date || today}"></div>
-        <div class="field"><label>${L('من الساعة', 'From')}</label><input class="input" type="time" name="fromTime" value="${hoursFor(session.email).start}"></div>
-        <div class="field"><label>${L('إلى الساعة', 'To')}</label><input class="input" type="time" name="toTime" value=""></div></div>`;
+        <div class="field span-2"><label>${L('اليوم', 'Day')}</label><input class="input" type="date" name="date" value="${preset.date || today}"></div>
+        <div class="field"><label>${excuseKind === 'late' ? L('ميعاد الحضور', 'Start time') : L('هتمشي الساعة', 'Leaving at')}</label><input class="input" type="time" name="fromTime" value="${excuseKind === 'late' ? st : ''}"></div>
+        <div class="field"><label>${excuseKind === 'late' ? L('هتوصل الساعة', 'Arriving at') : L('ميعاد الانصراف', 'End time')}</label><input class="input" type="time" name="toTime" value="${excuseKind === 'late' ? '' : en}"></div></div>
+        <input type="hidden" name="excuseKind" value="${excuseKind}">`;
     } else if (t === 'correction') {
       h += `<div class="form-grid">
         <div class="field span-2"><label>${L('اليوم', 'Day')}</label><input class="input" type="date" name="date" value="${preset.date || addDays(today, -1)}" max="${today}"></div>
@@ -96,6 +111,14 @@ export function openRequestForm(type = 'leave', preset = {}) {
         <div class="field"><label>${L('عدد الأقساط الشهرية', 'Monthly installments')}</label><input class="input num" type="number" min="1" max="24" name="installments" value="1"></div>
         <div class="field span-2"><label>${L('أول شهر خصم من المرتب', 'First month deducted from salary')}</label><input class="input" type="month" name="startMonth" min="${today.slice(0, 7)}" value="${addMonths(today.slice(0, 7), 1)}"></div></div>
         <p class="xs muted">${L('الطلب بيروح للأدمن، وبعد الموافقة القسط بيتخصم من مرتبك كل شهر لوحده وبيظهر في قسيمة الراتب.', 'The request goes to the admin; once approved, the installment is deducted from your salary every month and shown on your payslip.')}</p>`;
+    } else if (t === 'custom') {
+      const c = customType(cid) || {};
+      if (c.dates === 'range') h += dateRangeFields(preset.startDate || today, preset.endDate || today);
+      else if (c.dates === 'day') h += `<div class="field"><label>${L('اليوم', 'Day')}</label><input class="input" type="date" name="date" value="${preset.date || today}"></div>`;
+      if (c.attachment) h += `<div class="field"><label>${L('مرفق', 'Attachment')}</label>
+        <label class="dropzone"><input type="file" accept="image/*" hidden name="file"><i class="fas fa-paperclip"></i> <span id="rq-file">${L('اختار صورة', 'Choose an image')}</span></label></div>`;
+      if (c.hint) h += `<p class="xs muted">${esc(c.hint)}</p>`;
+      h += `<input type="hidden" name="customType" value="${esc(cid)}">`;
     } else if (t === 'letter') {
       h += `<div class="form-grid">
         <div class="field"><label>${L('نوع الخطاب', 'Letter type')}</label><select class="select" name="letterKind"><option value="employment">${L('إثبات عمل', 'Employment letter')}</option><option value="salary">${L('شهادة مرتب', 'Salary certificate')}</option><option value="experience">${L('شهادة خبرة', 'Experience letter')}</option><option value="other">${L('أخرى', 'Other')}</option></select></div>
@@ -113,13 +136,14 @@ export function openRequestForm(type = 'leave', preset = {}) {
     fields.querySelectorAll('input,select').forEach(el => { el.addEventListener('change', refreshInfo); if (t === 'advance') el.addEventListener('input', refreshInfo); }); // typing only recalculates the advance plan (no reads)
     refreshInfo();
   }
-  form.type.onchange = renderFields;
+  form.choice.onchange = renderFields;
   renderFields();
 
   m.$('#rq-send').onclick = (e) => busy(e.currentTarget, async () => {
     const err = m.$('#rq-err'); err.classList.add('hidden');
     const data = {};
     [...form.elements].forEach(el => { if (el.name && el.type !== 'file') data[el.name] = el.value; });
+    data.type = picked().type; delete data.choice;
     if (attachment) { data.attachmentData = attachment.data; data.attachmentName = attachment.name; }
     try {
       await submitRequest(data);

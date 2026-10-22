@@ -6,7 +6,7 @@ def step(n):
     e = a.dump_errors(n); print('OK' if not e else 'ERR', n)
 a.login('emp1@almaster.tech')
 pg.click('[data-rq="leave"]'); pg.wait_for_timeout(300); pg.fill('[name=startDate]', '2026-10-05'); pg.fill('[name=endDate]', '2026-10-06'); pg.click('#rq-send'); pg.wait_for_timeout(900)
-pg.click('[data-rq="correction"]'); pg.wait_for_timeout(300); pg.fill('[name=date]', '2026-09-24'); pg.fill('[name=checkIn]', '09:05'); pg.fill('[name=checkOut]', '17:00'); pg.fill('[name=reason]', 'النت فصل'); pg.click('#rq-send'); pg.wait_for_timeout(900); step('submit')
+pg.evaluate("async () => (await import('/assets/js/views/request-form.js')).openRequestForm('correction')"); pg.wait_for_timeout(300); pg.fill('[name=date]', '2026-09-24'); pg.fill('[name=checkIn]', '09:05'); pg.fill('[name=checkOut]', '17:00'); pg.fill('[name=reason]', 'النت فصل'); pg.click('#rq-send'); pg.wait_for_timeout(900); step('submit')
 a.login('leader@almaster.tech'); a.go('#/approvals'); pg.wait_for_timeout(700)
 for i in range(pg.locator('[data-action=approve]').count()): pg.locator('[data-action=approve]').first.click(); pg.wait_for_timeout(1000)
 a.login('hr@almaster.tech'); a.go('#/approvals'); pg.wait_for_timeout(700)

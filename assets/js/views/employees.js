@@ -2,7 +2,7 @@
 import { L, esc, num, money, normEmail, debounce, fmtDate, imageToDataUrl, ymd } from '../core/utils.js';
 import { toast, toastErr, modal, avatar, presenceBadge, empty, busy, bindActions, confirmDialog, loader } from '../core/ui.js';
 import { session, now, isAdmin } from '../core/session.js';
-import { ROLE_META, roleLabel, normRole, policy, leaveTypes } from '../core/policy.js';
+import { ROLE_META, roleLabel, normRole, policy, leaveTypes, shiftList, shiftLabel } from '../core/policy.js';
 import { secondaryAuth, createUserWithEmailAndPassword, signOut, db, doc, setDoc, updateDoc, getDoc, writeBatch, serverTimestamp, read, list, query, col, where } from '../core/fb.js';
 import { allPeople, onDirectory, departments, person, nameOf, officialDepartments, addDepartment } from '../services/directory.js';
 import { getBalance, adjustBalance, remaining, emptyBalance, balanceId } from '../services/requests.js';
@@ -124,13 +124,18 @@ export async function openEditor(email, opts = {}) {
           <div class="field span-2" id="team-box"></div>
         </div>
         <div data-pane="hours" class="form-grid hidden">
+          <div class="field span-2"><label>${L('الشيفت', 'Shift')}</label><select class="select" id="fixed-shift">
+            <option value="">${L('بيختار الشيفت كل يوم (الافتراضي)', 'Picks a shift each day (default)')}</option>
+            ${shiftList().map(s => `<option value="${esc(s.id)}" ${u.workStart === s.start && u.workEnd === s.end ? 'selected' : ''}>${L('ثابت على', 'Fixed:')} ${esc(shiftLabel(s.id))} (${esc(s.start)}–${esc(s.end)})</option>`).join('')}
+            <option value="custom" ${u.workStart && u.workEnd && !shiftList().some(s => u.workStart === s.start && u.workEnd === s.end) ? 'selected' : ''}>${L('مواعيد خاصة', 'Custom hours')}</option></select>
+            <div class="xs muted mt-4">${L('استثناء: الموظف اللي ليه شيفت ثابت أو مواعيد خاصة مش بيختار شيفت الصبح.', 'An exception: someone with a fixed shift or custom hours does not pick a shift in the morning.')}</div></div>
           <div class="field"><label>${L('ميعاد الحضور', 'Starts work at')}</label><input class="input" type="time" name="workStart" value="${esc(u.workStart || '')}">
             <div class="xs muted mt-4">${L(`فاضي = ميعاد الشركة (${policy.workStart})`, `Empty = company hours (${policy.workStart})`)}</div></div>
           <div class="field"><label>${L('ميعاد الانصراف', 'Ends work at')}</label><input class="input" type="time" name="workEnd" value="${esc(u.workEnd || '')}">
             <div class="xs muted mt-4">${L(`فاضي = ميعاد الشركة (${policy.workEnd})`, `Empty = company hours (${policy.workEnd})`)}</div></div>
           <div class="field"><label>${L('دقائق السماح', 'Grace minutes')}</label><input class="input num" type="number" min="0" max="120" name="graceMinutes" value="${esc(u.graceMinutes ?? '')}" placeholder="${esc(policy.graceMinutes)}">
             <div class="xs muted mt-4">${L(`فاضي = سماح الشركة (${policy.graceMinutes} دقيقة)`, `Empty = company grace (${policy.graceMinutes} min)`)}</div></div>
-          <div class="span-2 alert info"><i class="fas fa-circle-info"></i><div>${L('لو الموظف سجّل حضور خلال دقائق السماح بعد ميعاده، مش بيتحسب عليه تأخير، والدقائق دي بتتضاف لوقت شغله ويكمّل عليها. لو سجّل بعدها بيتحسب تأخير من ميعاد الحضور.', 'Checking in within the grace minutes after the start time is not late, and those minutes are added to work time. After that, lateness counts from the start time.')}</div></div>
+          <div class="span-2 alert info"><i class="fas fa-circle-info"></i><div>${L('لو الموظف سجّل حضور خلال دقائق السماح بعد ميعاده، مش بيتحسب عليه تأخير. لو سجّل بعدها بيتحسب تأخير من ميعاد الحضور. دقائق السماح هنا لو اتكتبت بتسري على المكتب والأونلاين.', 'Checking in within the grace minutes after the start time is not late; after that, lateness counts from the start time. Grace minutes set here apply to office and remote days alike.')}</div></div>
         </div>
         <div data-pane="leave" class="col gap-16 hidden">
           <div class="form-grid">
@@ -248,6 +253,13 @@ export async function openEditor(email, opts = {}) {
     if (td) td.onclick = () => teamBox.querySelectorAll('[data-member]').forEach(cb => { if (cb.dataset.dept === dept) cb.checked = true; });
   };
   f.role.onchange = drawTeam; f.department.onchange = drawTeam; drawTeam();
+  // a fixed shift fills the hours; "picks each day" clears them
+  const fixedShift = m.$('#fixed-shift');
+  if (fixedShift) fixedShift.onchange = () => {
+    const s = shiftList().find(x => String(x.id) === fixedShift.value);
+    const ws = m.$('[name=workStart]'), we = m.$('[name=workEnd]');
+    if (s) { ws.value = s.start; we.value = s.end; } else if (!fixedShift.value) { ws.value = ''; we.value = ''; }
+  };
   m.$('#dept-add').onclick = async () => {
     const name = await confirmDialog({ title: L('قسم جديد', 'New department'), message: L('هيتضاف لقايمة الأقسام ويظهر لكل الموظفين بعد كده.', 'It is added to the list for every employee.'), okText: L('إضافة', 'Add'), input: { label: L('اسم القسم', 'Department name'), required: true } });
     if (!name) return;

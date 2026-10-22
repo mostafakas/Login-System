@@ -3,7 +3,7 @@ import { L, esc, num, fmtDate, isAr, fmtTime, ymd } from '../core/utils.js';
 import { publicConfig, savePublicConfig, callService, siteUrl } from '../services/authsvc.js';
 import { toast, toastErr, busy, confirmDialog, empty, loader, modal } from '../core/ui.js';
 import { isAdmin, session, now } from '../core/session.js';
-import { policy, leaveTypes, holidays, savePolicy, saveLeaveTypes, saveHolidays, REQUEST_TYPES, typeLabel, DEFAULT_POLICY, activeRequestTypes } from '../core/policy.js';
+import { policy, leaveTypes, holidays, savePolicy, saveLeaveTypes, saveHolidays, REQUEST_TYPES, typeLabel, DEFAULT_POLICY, activeRequestTypes, shiftList, customTypes, EXCUSE_KINDS } from '../core/policy.js';
 import { list, query, col, orderBy, limit, read, toMs, serverTimestamp } from '../core/fb.js';
 import { migrate } from '../services/migration.js';
 import { allPeople, officialDepartments, addDepartment } from '../services/directory.js';
@@ -20,7 +20,7 @@ const FIXED_EG_HOLIDAYS = [
 export default async function render(root, { params = [] } = {}) {
   const tabs = [
     ['work', L('مواعيد العمل', 'Work hours')], ['depts', L('الأقسام', 'Departments')], ['remote', L('الأونلاين والأذونات', 'Remote & permissions')], ['leave', L('أنواع الإجازات', 'Leave types')],
-    ['holidays', L('العطلات الرسمية', 'Public holidays')], ['flow', L('مسارات الموافقة', 'Approval flows')], ['pay', L('قواعد الخصم', 'Deduction rules')],
+    ['holidays', L('العطلات الرسمية', 'Public holidays')], ['types', L('أنواع الطلبات', 'Request types')], ['flow', L('مسارات الموافقة', 'Approval flows')], ['pay', L('قواعد الخصم', 'Deduction rules')],
     ...(isAdmin() ? [['eval', L('التقييم', 'Reviews')], ['system', L('النظام والترحيل', 'System & migration')]] : [])
   ];
   root.innerHTML = `<div class="page-head"><div><h2>${L('الإعدادات', 'Settings')}</h2><p>${L('التغييرات بتطبق على كل المستخدمين فوراً.', 'Changes apply to everyone immediately.')}</p></div></div>
@@ -33,7 +33,15 @@ export default async function render(root, { params = [] } = {}) {
 
   const P = {
     work() {
-      pane.innerHTML = `<div class="card"><form class="card-body form-grid" id="f">
+      const shifts = shiftList();
+      pane.innerHTML = `<div class="card mb-16"><div class="card-head"><h3>${L('الشيفتات', 'Shifts')}</h3></div>
+        <div class="card-body"><p class="xs muted mb-16">${L('الموظف بيختار شيفت كل يوم وهو بيبدأ يومه. لو بدأ قبل ميعاد الشيفت، الوقت بيتحسب من ميعاده. الموظف اللي ليه مواعيد خاصة في ملفه (استثناء) مش بيختار.', 'Employees pick a shift each day when they start. Starting before the shift counts from its start. Employees with their own hours on their profile (an exception) do not pick.')}</p>
+        <form id="fs"><div class="table-wrap"><table class="table"><thead><tr><th>${L('الشيفت', 'Shift')}</th><th>${L('من', 'From')}</th><th>${L('إلى', 'To')}</th><th>${L('سماح المكتب (دقيقة)', 'Office grace (min)')}</th></tr></thead><tbody>
+          ${shifts.map((s, i) => `<tr data-i="${i}"><td><b>${i + 1}</b></td><td><input class="input" type="time" name="s${i}start" value="${esc(s.start)}"></td><td><input class="input" type="time" name="s${i}end" value="${esc(s.end)}"></td><td><input class="input num" type="number" min="0" max="120" name="s${i}grace" value="${esc(s.grace ?? policy.graceMinutes)}"></td></tr>`).join('')}
+        </tbody></table></div>
+        <div class="form-grid mt-16">${numField('remoteGraceMinutes', L('سماح الأونلاين (دقيقة)', 'Remote grace (min)'), policy.remoteGraceMinutes ?? 15, L('الأونلاين بنفس مواعيد الشيفتات، بفترة السماح دي بس.', 'Remote days use the same shifts, with this grace only.'), 'min="0" max="120"')}</div></form></div>
+        ${saveBar('save-shifts')}</div>
+        <div class="card"><div class="card-head"><h3>${L('المواعيد الافتراضية', 'Default hours')}</h3><span class="xs muted">${L('للأيام اللي قبل الشيفتات', 'for days before shifts')}</span></div><form class="card-body form-grid" id="f">
         <div class="field"><label>${L('بداية الدوام', 'Work starts')}</label><input class="input" type="time" name="workStart" value="${esc(policy.workStart)}"></div>
         <div class="field"><label>${L('نهاية الدوام', 'Work ends')}</label><input class="input" type="time" name="workEnd" value="${esc(policy.workEnd)}"></div>
         ${numField('graceMinutes', L('فترة السماح (دقيقة)', 'Grace period (min)'), policy.graceMinutes, L('التأخير أقل من كده مش بيتحسب.', 'Lateness below this is ignored.'), 'min="0" max="120"')}
@@ -43,6 +51,12 @@ export default async function render(root, { params = [] } = {}) {
         <div class="field"><label>${L('بداية حساب الحضور في النظام', 'Attendance tracked from')}</label><input class="input" type="date" name="trackingStart" value="${esc(policy.trackingStart || '')}"><span class="help">${L('الأيام قبل التاريخ ده مش بتتحسب غياب.', 'Days before this date are never counted as absent.')}</span></div>
         ${sw('singleSession', L('جلسة واحدة لكل موظف', 'One session per employee'), policy.singleSession !== false, L('الدخول من جهاز جديد بيقفل الجهاز القديم.', 'Signing in on a new device signs out the old one.'))}
       </form>${saveBar()}</div>`;
+      pane.querySelector('#save-shifts').onclick = (e) => busy(e.currentTarget, async () => {
+        const f = pane.querySelector('#fs');
+        const next = shifts.map((s, i) => ({ id: String(s.id), start: f[`s${i}start`].value, end: f[`s${i}end`].value, grace: Math.max(0, Math.min(120, Number(f[`s${i}grace`].value) || 0)) }));
+        if (next.some(s => !s.start || !s.end || s.end <= s.start)) return toast(L('كل شيفت محتاج ميعاد بداية ونهاية في نفس اليوم.', 'Each shift needs a start and an end on the same day.'), '', 'bad');
+        try { await savePolicy({ shifts: next, remoteGraceMinutes: Math.max(0, Math.min(120, Number(f.remoteGraceMinutes.value) || 0)) }); toast(L('تم الحفظ', 'Saved')); } catch (ex) { toastErr(ex); }
+      });
       pane.querySelector('#save').onclick = (e) => busy(e.currentTarget, async () => {
         const f = pane.querySelector('#f');
         try {
@@ -56,7 +70,7 @@ export default async function render(root, { params = [] } = {}) {
       pane.innerHTML = `<div class="card"><form class="card-body form-grid" id="f">
         ${sw('remoteNeedsApproval', L('الأونلاين محتاج موافقة', 'Remote work needs approval'), policy.remoteNeedsApproval, L('لو مقفولة، الموظف يقدر يختار أونلاين في أي يوم ويتخصم من حصته.', 'If off, employees may pick remote any day; it counts against their quota.'))}
         ${numField('defaultRemoteQuota', L('حصة الأونلاين الافتراضية (أيام/شهر)', 'Default remote quota (days/month)'), policy.defaultRemoteQuota, L('تقدر تغيّرها لكل موظف من ملفه.', 'Can be overridden per employee.'), 'min="0" max="31"')}
-        ${numField('excusesPerMonth', L('عدد أذونات التأخير / الانصراف في الشهر', 'Late / early permissions per month'), policy.excusesPerMonth ?? 1, L('0 = من غير حد.', '0 = no limit.'), 'min="0" max="31"')}
+        ${numField('excusesPerMonth', L('عدد مرات كل إذن في الشهر', 'Times per month for each permission'), policy.excusesPerMonth ?? 1, L('إذن التأخير ليه العدد ده، وإذن الانصراف ليه نفس العدد لوحده. 0 = من غير حد.', 'Late-arrival and early-leave each get this many. 0 = no limit.'), 'min="0" max="31"')}
         ${numField('excuseHoursPerMonth', L('حد الأذونات الشهري (ساعات)', 'Monthly permission limit (hours)'), policy.excuseHoursPerMonth, '', 'min="0" max="40"')}
         <div class="field"><label>${L('إيميل الموارد البشرية', 'HR email')}</label><input class="input" name="hrEmail" type="email" dir="ltr" value="${esc(policy.hrEmail || '')}"></div>
       </form>${saveBar()}</div>`;
@@ -147,8 +161,11 @@ export default async function render(root, { params = [] } = {}) {
     },
     flow() {
       const stages = [['leader', L('المدير المباشر', 'Manager')], ['hr', 'HR'], ['finance', L('المالية', 'Finance')]];
+      // built-in types, then the admin-defined ones (workflow key custom_<id>; manager by default)
+      const rows = [...activeRequestTypes().filter(t => t !== 'advance').map(t => [t, typeLabel(t), (policy.workflow || {})[t] || []]),
+        ...customTypes().map(c => [`custom_${c.id}`, L(c.ar, c.en || c.ar), (policy.workflow || {})[`custom_${c.id}`] || ['leader']])];
       pane.innerHTML = `<div class="card"><div class="table-wrap"><table class="table"><thead><tr><th>${L('نوع الطلب', 'Request type')}</th>${stages.map(s => `<th>${esc(s[1])}</th>`).join('')}</tr></thead><tbody>
-        ${activeRequestTypes().filter(t => t !== 'advance').map(t => `<tr data-t="${t}"><td><b>${esc(typeLabel(t))}</b></td>${stages.map(([s]) => { const locked = s === 'hr' && ['leave', 'correction'].includes(t); return `<td><label class="switch" ${locked ? `title="${L('إلزامي: HR بس اللي يقدر يعدّل الأرصدة والحضور', 'Required: only HR can change balances and attendance')}"` : ''}><input type="checkbox" data-s="${s}" ${locked || ((policy.workflow || {})[t] || []).includes(s) ? 'checked' : ''} ${locked ? 'disabled' : ''}><span></span></label></td>`; }).join('')}</tr>`).join('')}
+        ${rows.map(([t, label, wf]) => `<tr data-t="${esc(t)}"><td><b>${esc(label)}</b></td>${stages.map(([s]) => { const locked = s === 'hr' && ['leave', 'correction'].includes(t); return `<td><label class="switch" ${locked ? `title="${L('إلزامي: HR بس اللي يقدر يعدّل الأرصدة والحضور', 'Required: only HR can change balances and attendance')}"` : ''}><input type="checkbox" data-s="${s}" ${locked || wf.includes(s) ? 'checked' : ''} ${locked ? 'disabled' : ''}><span></span></label></td>`; }).join('')}</tr>`).join('')}
         <tr><td><b>${esc(typeLabel('advance'))}</b></td><td colspan="${stages.length}"><span class="badge brand"><i class="fas fa-lock"></i>${L('الأدمن بس', 'Admin only')}</span></td></tr>
         </tbody></table></div><div class="card-body"><p class="xs muted">${L('الطلب بيعدّي على المراحل بالترتيب ده. لو الموظف ملوش مدير مباشر، مرحلة المدير بتتخطى. لو مفيش ولا مرحلة، الطلب بيروح لـ HR.', 'Requests pass the checked stages in this order. Without a manager, the manager stage is skipped. With no stages, HR decides.')}</p></div>${saveBar()}</div>`;
       pane.querySelector('#save').onclick = (e) => busy(e.currentTarget, async () => {
@@ -160,6 +177,49 @@ export default async function render(root, { params = [] } = {}) {
         });
         try { await savePolicy({ workflow: wf }); toast(L('تم الحفظ', 'Saved')); } catch (ex) { toastErr(ex); }
       });
+    },
+    types() {
+      // which built-in types the employee's request page offers, and the admin's own types
+      const BUILTIN = [['leave', typeLabel('leave')], ['remote', typeLabel('remote')], ['excuse', `${L(EXCUSE_KINDS.late.ar, EXCUSE_KINDS.late.en)} / ${L(EXCUSE_KINDS.early.ar, EXCUSE_KINDS.early.en)}`],
+        ['advance', typeLabel('advance')], ['correction', typeLabel('correction')], ['letter', typeLabel('letter')]];
+      let hidden = [...(Array.isArray(policy.hiddenRequestTypes) ? policy.hiddenRequestTypes : DEFAULT_POLICY.hiddenRequestTypes)];
+      let rows = customTypes().map(c => ({ ...c }));
+      const DATES = () => [['none', L('من غير تاريخ', 'No date')], ['day', L('يوم واحد', 'One day')], ['range', L('من يوم لـ يوم', 'Date range')]];
+      const draw = () => {
+        pane.innerHTML = `<div class="card mb-16"><div class="card-head"><h3>${L('الطلبات اللي بتظهر للموظف', 'Shown to employees')}</h3></div>
+          <div class="card-body col gap-12">${BUILTIN.map(([t, label]) => `<div class="row between"><b>${esc(label)}</b><label class="switch"><input type="checkbox" data-b="${t}" ${hidden.includes(t) ? '' : 'checked'}><span></span></label></div>`).join('')}</div></div>
+          <div class="card"><div class="card-head"><h3>${L('طلبات إضافية', 'Extra request types')}</h3><button class="btn btn-sm" id="add-ct"><i class="fas fa-plus"></i> ${L('نوع جديد', 'New type')}</button></div>
+          ${rows.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>${L('الاسم بالعربي', 'Arabic name')}</th><th>${L('الاسم بالإنجليزي', 'English name')}</th><th>${L('التاريخ', 'Date')}</th><th>${L('مرفق', 'Attachment')}</th><th>${L('مفعّل', 'Active')}</th><th></th></tr></thead><tbody>
+            ${rows.map((c, i) => `<tr data-i="${i}"><td><input class="input" data-f="ar" value="${esc(c.ar || '')}" maxlength="60"></td><td><input class="input" data-f="en" value="${esc(c.en || '')}" maxlength="60" dir="ltr"></td>
+              <td><select class="select" data-f="dates">${DATES().map(([v, l]) => `<option value="${v}" ${(c.dates || 'none') === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></td>
+              <td><label class="switch" style="display:inline-block"><input type="checkbox" data-f="attachment" ${c.attachment ? 'checked' : ''}><span></span></label></td>
+              <td><label class="switch" style="display:inline-block"><input type="checkbox" data-f="active" ${c.active !== false ? 'checked' : ''}><span></span></label></td>
+              <td><button class="btn btn-sm btn-ghost" data-del="${i}" title="${L('مسح', 'Delete')}"><i class="fas fa-trash"></i></button></td></tr>`).join('')}
+          </tbody></table></div>` : `<div class="card-body">${empty('fa-file-circle-plus', L('مفيش طلبات إضافية لسه', 'No extra request types yet'))}</div>`}
+          <div class="card-body"><p class="xs muted">${L('الموافقة على الطلبات الإضافية من «مسارات الموافقة» (المدير المباشر افتراضياً). الطلبات اللي اتقدمت قبل كده بتفضل ظاهرة حتى لو قفلت النوع.', 'Approvers for extra types are set under "Approval flows" (the manager by default). Requests already filed stay visible even if the type is turned off.')}</p></div>
+          ${saveBar()}</div>`;
+        const collect = () => {
+          hidden = BUILTIN.map(b => b[0]).filter(t => !pane.querySelector(`[data-b="${t}"]`).checked);
+          pane.querySelectorAll('tr[data-i]').forEach(tr => {
+            const c = rows[Number(tr.dataset.i)];
+            c.ar = tr.querySelector('[data-f=ar]').value.trim(); c.en = tr.querySelector('[data-f=en]').value.trim();
+            c.dates = tr.querySelector('[data-f=dates]').value; c.attachment = tr.querySelector('[data-f=attachment]').checked; c.active = tr.querySelector('[data-f=active]').checked;
+          });
+        };
+        pane.querySelector('#add-ct').onclick = () => { collect(); rows.push({ id: Math.random().toString(36).slice(2, 8), ar: '', en: '', dates: 'none', attachment: false, active: true, icon: 'fa-file-lines' }); draw(); };
+        pane.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+          collect();
+          const c = rows[Number(b.dataset.del)];
+          if (!(await confirmDialog({ title: L('مسح نوع الطلب', 'Delete request type'), message: c.ar || c.en || '', okText: L('مسح', 'Delete'), okClass: 'btn-danger' }))) return;
+          rows.splice(Number(b.dataset.del), 1); draw();
+        });
+        pane.querySelector('#save').onclick = (e) => busy(e.currentTarget, async () => {
+          collect();
+          if (rows.some(c => !c.ar)) return toast(L('كل نوع محتاج اسم بالعربي.', 'Each type needs an Arabic name.'), '', 'bad');
+          try { await savePolicy({ hiddenRequestTypes: hidden, customRequestTypes: rows }); toast(L('تم الحفظ', 'Saved')); } catch (ex) { toastErr(ex); }
+        });
+      };
+      draw();
     },
     pay() {
       pane.innerHTML = `<div class="alert info mb-16"><i class="fas fa-circle-info"></i><div>${L('قواعد خصم التأخير والغياب والأونلاين المرفوض والانصراف المبكر بقت لكل موظف لوحده: الموظفين ← تعديل ← «قواعد الخصم». وهيكل الراتب (الأساسي، البدلات، الانتظام، KPI) من «الراتب والبنك».', 'Lateness, absence, rejected-remote and early-leave rules are now set per employee: Employees → Edit → "Deduction rules". The salary structure (basic, allowances, regularity, KPI) is under "Salary & bank".')}</div></div>

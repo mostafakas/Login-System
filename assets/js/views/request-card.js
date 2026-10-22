@@ -1,7 +1,7 @@
 // Request card + details dialog, shared by "My requests", "Approvals" and HR screens.
 import { L, esc, fmtDate, fmtTime, num, money, fmtMin, relTime, fmtMonth } from '../core/utils.js';
 import { modal, avatar, empty } from '../core/ui.js';
-import { REQUEST_TYPES, REQUEST_STATUS, typeLabel, statusLabel, leaveTypeLabel, modeLabel } from '../core/policy.js';
+import { REQUEST_TYPES, REQUEST_STATUS, typeLabel, statusLabel, leaveTypeLabel, modeLabel, requestLabel } from '../core/policy.js';
 import { toMs } from '../core/fb.js';
 import { person, nameOf } from '../services/directory.js';
 import { getAttachment } from '../services/requests.js';
@@ -18,7 +18,7 @@ export function requestTitle(r) {
   if (r.type === 'leave') return leaveTypeLabel(r.leaveType);
   if (r.type === 'excuse') return r.excuseKind === 'early' ? L('إذن انصراف مبكر', 'Early leave permission') : (r.excuseKind === 'middle' ? L('إذن خروج', 'Mid-day permission') : L('إذن تأخير', 'Late permission'));
   if (r.type === 'letter') return ({ employment: L('خطاب إثبات عمل', 'Employment letter'), salary: L('شهادة مرتب', 'Salary certificate'), experience: L('شهادة خبرة', 'Experience letter') })[r.letterKind] || typeLabel('letter');
-  return typeLabel(r.type);
+  return requestLabel(r);
 }
 export function requestWhen(r) {
   if (r.type === 'excuse') return `${fmtDate(r.startDate)} · ${r.fromTime}–${r.toTime} (${fmtMin(r.minutes)})`;
@@ -76,7 +76,7 @@ export async function showRequestDetails(r) {
     title: requestTitle(r), icon: (REQUEST_TYPES[r.type] || {}).icon || 'fa-file', size: '',
     body: `<div class="row gap-8 mb-16">${avatar(p)}<div class="grow"><b>${esc(p.name || r.name)}</b><div class="xs muted">${esc(p.title || '')} · ${esc(r.email)}</div></div><span class="badge ${(REQUEST_STATUS[r.status] || {}).cls || ''}">${esc(statusLabel(r.status))}</span></div>
       <dl class="kv">
-        <dt>${L('النوع', 'Type')}</dt><dd>${esc(typeLabel(r.type))}</dd>
+        <dt>${L('النوع', 'Type')}</dt><dd>${esc(requestLabel(r))}</dd>
         <dt>${L('التفاصيل', 'Details')}</dt><dd>${esc(requestWhen(r))}</dd>
         ${r.correction && r.correction.mode ? `<dt>${L('مكان العمل', 'Location')}</dt><dd>${esc(modeLabel(r.correction.mode))}</dd>` : ''}
         ${r.leaderEmail ? `<dt>${L('المدير المباشر', 'Manager')}</dt><dd>${esc(nameOf(r.leaderEmail))}</dd>` : ''}

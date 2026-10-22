@@ -28,7 +28,7 @@ function excuseCovers(excuses, date, kind, minute) {
 
 /** Classify one day for one person */
 export function classifyDay(date, plan, rec, excuses, todayKey, since = '') {
-  plan = withShift(plan, rec && rec.shift);
+  plan = withShift(plan, rec && rec.shift, rec && rec.mode);
   const row = { date, plan, rec: rec || null, status: 'none', mode: plan.mode, late: 0, early: 0, workMs: 0, breakMs: 0, meetingMs: 0, flags: [] };
   if (rec && rec.status) {
     row.status = rec.status;

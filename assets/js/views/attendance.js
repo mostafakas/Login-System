@@ -1,8 +1,8 @@
-// My attendance — monthly calendar, totals and day details. `personMonthView` is reused by HR.
+// My attendance — monthly totals, a row per day and day details. `personMonthView` is reused by HR.
 import { L, esc, fmtTime, fmtHours, fmtMin, num, ym as ymOf, addMonths, fmtMonth, weekday, fmtDay, isAr, money } from '../core/utils.js';
 import { modal, empty, loader, STATUS_META } from '../core/ui.js';
 import { session, now } from '../core/session.js';
-import { modeLabel, leaveTypeLabel, dayKey } from '../core/policy.js';
+import { modeLabel, leaveTypeLabel, dayKey, shiftLabel } from '../core/policy.js';
 import { toMs, read } from '../core/fb.js';
 import { salaryParts, rulesOf, violationsFrom, priceViolations, violationText } from '../services/salary.js';
 import { personMonth, STATUS_DAY } from '../services/reports.js';
@@ -18,34 +18,60 @@ export function statTiles(t) {
     ${tile('fa-user-xmark', 'bad', L('غياب', 'Absent'), num(t.absent), L('يوم', 'days'))}
     ${tile('fa-clock', 'warn', L('إجمالي التأخير', 'Total lateness'), esc(fmtMin(t.lateMinutes)), L(`في ${t.lateDays} يوم`, `on ${t.lateDays} days`))}
     ${tile('fa-umbrella-beach', 'info', L('إجازات', 'Leave days'), num(t.leave), L('يوم', 'days'))}
-    ${tile('fa-laptop-code', '', L('ساعات الشغل', 'Work hours'), esc(fmtHours(t.workMs)))}
+    ${tile('fa-laptop-code', '', L('ساعات الشغل (شغل + اجتماعات)', 'Work hours (work + meetings)'), esc(fmtHours((t.workMs || 0) + (t.meetingMs || 0))))}
     ${tile('fa-mug-hot', 'warn', L('استراحات', 'Breaks'), esc(fmtHours(t.breakMs)))}
     ${tile('fa-door-open', 'neutral', L('انصراف مبكر', 'Early leave'), esc(fmtMin(t.earlyMinutes)))}
     ${tile('fa-chart-simple', t.commitment >= 90 ? 'ok' : (t.commitment >= 75 ? 'warn' : 'bad'), L('نسبة الالتزام', 'Commitment'), num(t.commitment), '%')}
   </div>`;
 }
 
-export function calendarHTML(rows, ym) {
-  const first = weekday(`${ym}-01`);
+/**
+ * The month as a table: one row per day up to today — check-in, check-out, work (working + meetings),
+ * meetings, breaks, lateness and early leave — with the month's totals at the bottom.
+ */
+export function dayTableHTML(rows) {
   const todayKey = dayKey(now());
-  let h = `<div class="cal">${DOW().map(d => `<div class="dow">${esc(d)}</div>`).join('')}`;
-  for (let i = 0; i < first; i++) h += `<div></div>`;
-  rows.forEach(r => {
+  const shown = rows.filter(r => r.date <= todayKey && r.status !== 'future');
+  if (!shown.length) return empty('fa-calendar', L('مفيش أيام لسه في الشهر ده', 'No days yet this month'));
+  const dash = '<span class="muted">—</span>';
+  const tm = (ms) => ms ? esc(fmtTime(ms)) : dash;
+  const hrs = (ms) => ms ? esc(fmtHours(ms)) : dash;
+  const tot = { work: 0, meet: 0, brk: 0, late: 0, early: 0 };
+  const body = shown.map(r => {
     const meta = STATUS_DAY[r.status] || STATUS_DAY.none;
-    const clickable = r.status !== 'future';
-    let line = '';
-    if (r.rec && r.rec.checkInMs) line = `${fmtTime(r.rec.checkInMs)}${r.rec.checkOutMs ? ' → ' + fmtTime(r.rec.checkOutMs) : ''}`;
-    else if (r.status === 'leave') line = leaveTypeLabel(r.plan.leaveType || (r.rec && r.rec.leaveType));
-    else if (r.status === 'holiday') line = r.plan.name || L(meta.ar, meta.en);
-    else if (r.status === 'future' && r.plan.mode === 'remote') line = modeLabel('remote');
-    else line = L(meta.ar, meta.en);
-    h += `<div class="day ${meta.cls} ${r.date === todayKey ? 'today' : ''} ${clickable ? 'clickable' : ''}" data-day="${r.date}" ${clickable ? 'tabindex="0" role="button"' : ''}>
-      <div class="row between"><span class="d">${+r.date.slice(8)}</span>${r.late ? `<i class="fas fa-clock" style="color:var(--bad);font-size:10px" title="${esc(fmtMin(r.late))}"></i>` : ''}${r.flags.includes('forgot') ? '<i class="fas fa-triangle-exclamation" style="color:var(--warn);font-size:10px"></i>' : ''}</div>
-      <div class="meta muted truncate">${esc(line)}</div>
-      ${r.workMs ? `<div class="meta num xs">${esc(fmtHours(r.workMs))}</div>` : ''}
-    </div>`;
-  });
-  return h + '</div>';
+    const rec = r.rec || {};
+    const work = (r.workMs || 0) + (r.meetingMs || 0);       // meetings count as work time
+    tot.work += work; tot.meet += r.meetingMs || 0; tot.brk += r.breakMs || 0; tot.late += r.late || 0; tot.early += r.early || 0;
+    const idle = !rec.checkInMs && ['off', 'holiday', 'none'].includes(r.status);
+    let label = L(meta.ar, meta.en) || modeLabel(r.plan.mode);
+    if (r.status === 'leave') label = leaveTypeLabel(r.plan.leaveType || rec.leaveType);
+    else if (r.status === 'holiday' && r.plan.name) label = r.plan.name;
+    const tags = [
+      r.plan.shift && rec.checkInMs ? `<span class="badge info xs">${esc(shiftLabel(r.plan.shift))}</span>` : '',
+      r.flags.includes('forgot') ? `<span class="badge warn xs" title="${L('نسي ينهي اليوم', 'Day not ended')}">${L('اتقفل تلقائياً', 'Auto-closed')}</span>` : '',
+      r.flags.includes('excused') ? `<span class="badge ok xs">${L('بإذن', 'Excused')}</span>` : '',
+      r.flags.includes('remote-pending') ? `<span class="badge warn xs">${L('مستني موافقة', 'Pending')}</span>` : ''
+    ].join('');
+    return `<tr data-day="${r.date}" tabindex="0" role="button" style="cursor:pointer;${idle ? 'opacity:.55' : ''}" class="${r.date === todayKey ? 'today-row' : ''}">
+      <td class="nowrap"><b class="num">${+r.date.slice(8)}</b> <span class="muted small">${esc(DOW()[weekday(r.date)])}</span></td>
+      <td><div class="row-wrap" style="gap:4px"><span class="badge ${meta.badge}">${esc(label)}</span>${tags}</div></td>
+      <td class="num">${tm(rec.checkInMs)}</td>
+      <td class="num">${rec.checkOutMs ? tm(rec.checkOutMs) : (rec.checkInMs && r.date === todayKey ? `<span class="badge ok xs">${L('لسه شغال', 'Working')}</span>` : dash)}</td>
+      <td class="num"><b>${hrs(work)}</b></td>
+      <td class="num">${hrs(r.meetingMs)}</td>
+      <td class="num">${hrs(r.breakMs)}</td>
+      <td class="num ${r.late ? 'bad-txt' : ''}">${r.late ? esc(fmtMin(r.late)) : dash}</td>
+      <td class="num ${r.early ? 'bad-txt' : ''}">${r.early ? esc(fmtMin(r.early)) : dash}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="table-wrap"><table class="table day-table">
+    <thead><tr><th>${L('اليوم', 'Day')}</th><th>${L('الحالة', 'Status')}</th><th>${L('الحضور', 'In')}</th><th>${L('الانصراف', 'Out')}</th>
+      <th title="${L('الشغل + الاجتماعات، من غير الاستراحة', 'Work + meetings, breaks excluded')}">${L('ساعات الشغل', 'Work hours')}<div class="xs muted" style="font-weight:400">${L('شغل + اجتماعات', 'work + meetings')}</div></th>
+      <th>${L('اجتماعات', 'Meetings')}</th><th>${L('استراحة', 'Breaks')}</th><th>${L('تأخير', 'Late')}</th><th>${L('انصراف مبكر', 'Early leave')}</th></tr></thead>
+    <tbody>${body}</tbody>
+    <tfoot><tr><th colspan="4">${L('الإجمالي', 'Total')}</th><th class="num">${hrs(tot.work)}</th><th class="num">${hrs(tot.meet)}</th><th class="num">${hrs(tot.brk)}</th>
+      <th class="num ${tot.late ? 'bad-txt' : ''}">${tot.late ? esc(fmtMin(tot.late)) : dash}</th><th class="num ${tot.early ? 'bad-txt' : ''}">${tot.early ? esc(fmtMin(tot.early)) : dash}</th></tr></tfoot>
+  </table></div>`;
 }
 
 export async function showDayDetails(email, row, { canRequest = false } = {}) {
@@ -63,7 +89,7 @@ export async function showDayDetails(email, row, { canRequest = false } = {}) {
         <dt>${L('الخطة', 'Plan')}</dt><dd>${esc(modeLabel(row.plan.mode))}${row.plan.start ? ` · ${esc(row.plan.start)}–${esc(row.plan.end)}` : ''}</dd>
         <dt>${L('الحضور', 'Check-in')}</dt><dd class="num">${esc(row.rec && row.rec.checkInMs ? fmtTime(row.rec.checkInMs) : '—')}</dd>
         <dt>${L('الانصراف', 'Check-out')}</dt><dd class="num">${esc(row.rec && row.rec.checkOutMs ? fmtTime(row.rec.checkOutMs) : '—')}</dd>
-        <dt>${L('شغل', 'Work')}</dt><dd>${esc(fmtHours(row.workMs))}</dd>
+        <dt>${L('ساعات الشغل', 'Work hours')}</dt><dd>${esc(fmtHours((row.workMs || 0) + (row.meetingMs || 0)))} <span class="xs muted">${L('شغل + اجتماعات', 'work + meetings')}</span></dd>
         <dt>${L('استراحة', 'Break')}</dt><dd>${esc(fmtHours(row.breakMs))}</dd>
         <dt>${L('اجتماعات', 'Meetings')}</dt><dd>${esc(fmtHours(row.meetingMs))}</dd>
         ${row.rec && row.rec.correctionNote ? `<dt>${L('ملاحظة التصحيح', 'Correction note')}</dt><dd>${esc(row.rec.correctionNote)}</dd>` : ''}
@@ -98,10 +124,7 @@ export async function personMonthView(el, email, { initialYm, canRequest = false
     try {
       data = await personMonth(email, ym, scopeFor(email));
       el.querySelector('#pm-body').innerHTML = `${statTiles(data.totals)}
-        <div class="card mt-16"><div class="card-body">${calendarHTML(data.rows, ym)}</div>
-        <div class="card-foot" style="justify-content:flex-start">
-          ${[['present', 'ok'], ['remote', 'brand'], ['absent', 'bad'], ['leave', 'warn'], ['off', '']].map(([k, c]) => `<span class="badge ${c}"><span class="dot"></span>${esc(L(STATUS_DAY[k].ar, STATUS_DAY[k].en))}</span>`).join('')}
-        </div></div>`;
+        <div class="card mt-16">${dayTableHTML(data.rows)}</div>`;
       el.querySelectorAll('[data-day]').forEach(d => {
         const open = () => { const r = data.rows.find(x => x.date === d.dataset.day); if (r && r.status !== 'future') showDayDetails(email, r, { canRequest }); };
         d.onclick = open; d.onkeydown = (e) => { if (e.key === 'Enter') open(); };
@@ -128,7 +151,7 @@ export default async function render(root) {
     const total = priced.lines.reduce((s, l) => s + l.total, 0);
     box.innerHTML = `<div class="card"><div class="card-head"><h3>${L(`خصومات ${fmtMonth(ym)} لحد دلوقتي`, `${fmtMonth(ym)} deductions so far`)}</h3><b class="num" style="color:${total ? 'var(--bad)' : 'var(--ok)'}">${esc(money(total))}</b></div>
       ${priced.lines.length ? `<div class="table-wrap"><table class="table"><tbody>${priced.lines.map(l => `<tr><td class="num nowrap">${esc(fmtDay(l.date))}</td><td>${esc(violationText(l))}</td><td class="num" style="color:var(--bad);white-space:nowrap">−${esc(money(l.total, false))}</td></tr>`).join('')}</tbody></table></div>
-        <div class="card-foot" style="justify-content:flex-start"><span class="xs muted"><i class="fas fa-circle-info"></i> ${L('لو فيه خصم غلط، اضغط على اليوم في التقويم واطلب تصحيح أو قدّم إذن — المخالفة بتتشال لما الطلب يتعتمد.', 'If a deduction is wrong, click that day in the calendar and request a correction or a permission — it is removed once approved.')}</span></div>`
+        <div class="card-foot" style="justify-content:flex-start"><span class="xs muted"><i class="fas fa-circle-info"></i> ${L('لو فيه خصم غلط، اضغط على اليوم في الجدول واطلب تصحيح أو قدّم إذن — المخالفة بتتشال لما الطلب يتعتمد.', 'If a deduction is wrong, click that day in the table and request a correction or a permission — it is removed once approved.')}</span></div>`
         : `<div class="card-body">${empty('fa-face-smile', L('مفيش خصومات الشهر ده 👏', 'No deductions this month 👏'))}</div>`}</div>`;
   };
   await personMonthView(root.querySelector('#pm'), session.email, { canRequest: true, onData: drawDeductions });

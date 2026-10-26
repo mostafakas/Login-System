@@ -81,7 +81,7 @@ export default async function render(root) {
         <td class="num">${esc(rec.checkInMs ? fmtTime(rec.checkInMs) : '—')}</td>
         <td class="num">${esc(rec.checkOutMs ? fmtTime(rec.checkOutMs) : (rec.checkInMs && !rec.closed ? L('لسه شغال', 'Working') : '—'))}</td>
         <td>${r.late ? `<span class="badge bad">${esc(fmtMin(r.late))}</span>` : '—'}</td>
-        <td class="num">${r.workMs ? esc(fmtHours(r.workMs)) : '—'}</td>
+        <td class="num">${r.workMs || r.meetingMs ? esc(fmtHours((r.workMs || 0) + (r.meetingMs || 0))) : '—'}</td>
         <td style="text-align:end"><button class="btn btn-sm" data-action="fix" data-email="${esc(p.email)}"><i class="fas fa-pen"></i> ${L('تصحيح', 'Correct')}</button></td></tr>`;
     }).join('') : `<tr><td colspan="8">${empty('fa-user-clock', L('مفيش نتائج', 'No results'))}</td></tr>`;
   }
@@ -126,7 +126,7 @@ export default async function render(root) {
       [L('الموظف', 'Employee')]: p.name, [L('الإيميل', 'Email')]: p.email, [L('القسم', 'Department')]: p.department || '',
       [L('الخطة', 'Plan')]: modeLabel(r.plan.mode), [L('الحالة', 'Status')]: L((STATUS_DAY[r.status] || {}).ar || '', (STATUS_DAY[r.status] || {}).en || ''),
       [L('حضور', 'In')]: r.rec && r.rec.checkInMs ? fmtTime(r.rec.checkInMs) : '', [L('انصراف', 'Out')]: r.rec && r.rec.checkOutMs ? fmtTime(r.rec.checkOutMs) : '',
-      [L('تأخير (دقيقة)', 'Late (min)')]: r.late || 0, [L('ساعات الشغل', 'Work hours')]: Math.round((r.workMs || 0) / 36000) / 100
+      [L('تأخير (دقيقة)', 'Late (min)')]: r.late || 0, [L('ساعات الشغل', 'Work hours')]: Math.round(((r.workMs || 0) + (r.meetingMs || 0)) / 36000) / 100
     }))
   }]);
   await load();

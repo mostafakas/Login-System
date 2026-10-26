@@ -81,7 +81,7 @@ export function computeItem({ person: p, priv, totals, violations = [], advances
     att: totals ? {
       absent: totals.absent || 0, unpaidLeave: totals.unpaidLeave || 0, lateMinutes: totals.lateMinutes || 0,
       lateDays: totals.lateDays || 0, present: totals.present || 0, office: totals.office || 0, remote: totals.remote || 0, leave: totals.leave || 0,
-      planned: totals.planned || 0, workMs: totals.workMs || 0,
+      planned: totals.planned || 0, workMs: (totals.workMs || 0) + (totals.meetingMs || 0),   // work + meetings, breaks excluded
       violations // raw, so a later edit (bonus, KPI…) re-prices them with the current salary and rules
     } : null
   };

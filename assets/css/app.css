@@ -445,6 +445,9 @@ table.table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .ring .st { position: absolute; bottom: 2px; inset-inline-end: 2px; width: 30px; height: 30px; border-radius: 50%; border: 3px solid var(--navy); display: flex; align-items: center; justify-content: center; color: #fff; font-size: 12px; background: var(--neutral); }
 
 /* ---------- calendar ---------- */
+.day-table td, .day-table th { white-space: nowrap; }
+.day-table .today-row td { background: color-mix(in srgb, var(--brand-soft) 60%, transparent); }
+.day-table tfoot th { border-top: 2px solid var(--border-strong); font-weight: 800; }
 .cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
 .cal .dow { font-size: 11px; font-weight: 700; color: var(--muted); text-align: center; padding: 4px 0; }
 .cal .day { min-height: 74px; border: 1px solid var(--border); border-radius: 10px; padding: 6px 8px; background: var(--surface); display: flex; flex-direction: column; gap: 3px; font-size: 11px; }

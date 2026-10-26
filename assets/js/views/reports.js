@@ -29,7 +29,7 @@ export default async function render(root) {
   const people = () => (data ? data.people.filter(x => !dept || x.person.department === dept) : []);
   const agg = (list) => {
     const t = { n: list.length, present: 0, remote: 0, absent: 0, leave: 0, lateDays: 0, lateMinutes: 0, earlyMinutes: 0, workMs: 0, forgot: 0, commitment: 0, requests: 0, unpaid: 0 };
-    list.forEach(x => { const s = x.totals; t.present += s.present; t.remote += s.remote; t.absent += s.absent; t.leave += s.leave; t.lateDays += s.lateDays; t.lateMinutes += s.lateMinutes; t.earlyMinutes += s.earlyMinutes; t.workMs += s.workMs; t.forgot += s.forgot; t.commitment += s.commitment; t.requests += x.requests.length; t.unpaid += s.unpaidLeave; });
+    list.forEach(x => { const s = x.totals; t.present += s.present; t.remote += s.remote; t.absent += s.absent; t.leave += s.leave; t.lateDays += s.lateDays; t.lateMinutes += s.lateMinutes; t.earlyMinutes += s.earlyMinutes; t.workMs += s.workMs + (s.meetingMs || 0); t.forgot += s.forgot; t.commitment += s.commitment; t.requests += x.requests.length; t.unpaid += s.unpaidLeave; });
     t.commitment = list.length ? Math.round(t.commitment / list.length) : 0;
     return t;
   };
@@ -74,7 +74,7 @@ export default async function render(root) {
       ${list.map(x => { const s = x.totals; return `<tr><td><div class="person">${avatar(x.person, 'sm')}<div><b>${esc(x.person.name)}</b><span>${esc(x.person.department || '')}</span></div></div></td>
         <td class="num">${num(s.present)}</td><td class="num">${num(s.remote)}</td><td class="num" style="color:${s.absent ? 'var(--bad)' : 'inherit'}">${num(s.absent)}</td><td class="num">${num(s.leave)}</td>
         <td class="num">${s.lateMinutes ? esc(fmtMin(s.lateMinutes)) : '—'}<div class="xs muted">${s.lateDays ? L(`${s.lateDays} مرة`, `${s.lateDays}×`) : ''}</div></td><td class="num">${s.earlyMinutes ? esc(fmtMin(s.earlyMinutes)) : '—'}</td>
-        <td class="num">${esc(fmtHours(s.workMs))}</td><td class="num">${num(x.requests.length)}</td>
+        <td class="num">${esc(fmtHours(s.workMs + (s.meetingMs || 0)))}</td><td class="num">${num(x.requests.length)}</td>
         <td class="num"><span class="badge ${s.commitment >= 90 ? 'ok' : (s.commitment >= 75 ? 'warn' : 'bad')}">${num(s.commitment)}%</span></td></tr>`; }).join('') || `<tr><td colspan="10">${empty('fa-users', L('مفيش موظفين', 'No employees'))}</td></tr>`}</tbody></table></div></div>`;
   }
   function drawPerson(body) {
@@ -113,12 +113,12 @@ export default async function render(root) {
       const s = x.totals;
       const o = { [L('الموظف', 'Employee')]: x.person.name, [L('القسم', 'Department')]: x.person.department || '', [L('أيام حضور', 'Present')]: s.present, [L('أونلاين', 'Remote')]: s.remote, [L('غياب', 'Absent')]: s.absent,
         [L('إجازة', 'Leave')]: s.leave, [L('مرات التأخير', 'Late days')]: s.lateDays, [L('دقائق التأخير', 'Late minutes')]: s.lateMinutes, [L('انصراف مبكر (دقيقة)', 'Early (min)')]: s.earlyMinutes,
-        [L('ساعات الشغل', 'Work hours')]: Math.round(s.workMs / 36000) / 100, [L('الالتزام %', 'Commitment %')]: s.commitment, [L('طلبات', 'Requests')]: x.requests.length };
+        [L('ساعات الشغل', 'Work hours')]: Math.round((s.workMs + (s.meetingMs || 0)) / 36000) / 100, [L('الالتزام %', 'Commitment %')]: s.commitment, [L('طلبات', 'Requests')]: x.requests.length };
       leaveTypes.forEach(t => { o[L(t.ar, t.en)] = s.leaveByType[t.id] || 0; });
       return o;
     });
     const daily = [];
-    list.forEach(x => x.rows.forEach(r => { if (r.status === 'future') return; daily.push({ [L('الموظف', 'Employee')]: x.person.name, [L('التاريخ', 'Date')]: r.date, [L('الحالة', 'Status')]: L((STATUS_DAY[r.status] || {}).ar || '', (STATUS_DAY[r.status] || {}).en || ''), [L('تأخير (دقيقة)', 'Late (min)')]: r.late || 0, [L('ساعات', 'Hours')]: Math.round((r.workMs || 0) / 36000) / 100 }); }));
+    list.forEach(x => x.rows.forEach(r => { if (r.status === 'future') return; daily.push({ [L('الموظف', 'Employee')]: x.person.name, [L('التاريخ', 'Date')]: r.date, [L('الحالة', 'Status')]: L((STATUS_DAY[r.status] || {}).ar || '', (STATUS_DAY[r.status] || {}).en || ''), [L('تأخير (دقيقة)', 'Late (min)')]: r.late || 0, [L('ساعات', 'Hours')]: Math.round(((r.workMs || 0) + (r.meetingMs || 0)) / 36000) / 100 }); }));
     exportSheet(`report_${month}${dept ? '_' + dept : ''}`, [{ name: L('الموظفين', 'Employees'), rows: perPerson }, { name: L('تفصيلي يومي', 'Daily detail'), rows: daily }]);
   };
   const cb = root.querySelector('#close');

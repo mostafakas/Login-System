@@ -90,12 +90,14 @@ export default async function render(root) {
   // side by side, so the chart stays narrow enough to fit the screen; managers keep their own column.
   const isTeam = (n) => n.children.length > 0;
   // a long column folds into two, so a big team doesn't make the chart tall
-  const stackHTML = (nodes, teamBy) => `<div class="org-stack${nodes.length > 3 ? ' two' : ''}">${nodes.map(n => nodeCard(n, teamBy.get(n.person.email))).join('')}</div>`;
+  // they sit together in one framed group titled with their manager, so a column never reads as a reporting chain
+  const stackHTML = (nodes, teamBy, boss) => `<div class="org-group" style="--hue:${hueOf(boss.department)}"><div class="org-group-head"><i class="fas fa-user-group"></i> ${L('تحت', 'Reporting to')} ${esc(boss.name || boss.email)} ${L('مباشرة', '')} · <b class="num">${num(nodes.length)}</b></div>
+    <div class="org-stack${nodes.length > 3 ? ' two' : ''}">${nodes.map(n => nodeCard(n, teamBy.get(n.person.email))).join('')}</div></div>`;
   function childrenHTML(n, teamBy) {
     if (!n.children.length || collapsed.has(n.person.email)) return '';
     const subs = n.children.filter(isTeam), solo = n.children.filter(c => !isTeam(c));
-    if (!subs.length) return `<div class="org-down"></div>${stackHTML(solo, teamBy)}`;
-    return `<ul>${subs.map(c => `<li>${nodeCard(c, teamBy.get(c.person.email))}${childrenHTML(c, teamBy)}</li>`).join('')}${solo.length ? `<li class="org-solo">${stackHTML(solo, teamBy)}</li>` : ''}</ul>`;
+    if (!subs.length) return `<div class="org-down"></div>${stackHTML(solo, teamBy, n.person)}`;
+    return `<ul>${subs.map(c => `<li>${nodeCard(c, teamBy.get(c.person.email))}${childrenHTML(c, teamBy)}</li>`).join('')}${solo.length ? `<li class="org-solo">${stackHTML(solo, teamBy, n.person)}</li>` : ''}</ul>`;
   }
   const treeHTML = (roots, teamBy) => `<ul>${roots.map(n => `<li>${nodeCard(n, teamBy.get(n.person.email))}${childrenHTML(n, teamBy)}</li>`).join('')}</ul>`;
 
@@ -171,7 +173,8 @@ export default async function render(root) {
     const teamBy = new Map(teams.map(t => [t.leader.email, t]));
     const all = groupStats(people, statOf);
 
-    const k = (icon, cls, label, v, sub = '') => `<div class="card stat"><div class="label"><span class="icon-tile ${cls}"><i class="fas ${icon}"></i></span>${esc(label)}</div><div class="value" style="font-size:20px">${v}</div>${sub ? `<div class="xs muted mt-4">${sub}</div>` : ''}</div>`;
+    const kid = { 'fa-users': 'people', 'fa-sack-dollar': 'cost', 'fa-minus': 'deductions', 'fa-chart-simple': 'commitment' };
+    const k = (icon, cls, label, v, sub = '') => `<div class="card stat org-kpi" data-action="kpi" data-k="${kid[icon]}" role="button" tabindex="0" title="${L('اضغط للتفاصيل', 'Click for details')}"><div class="label"><span class="icon-tile ${cls}"><i class="fas ${icon}"></i></span>${esc(label)}</div><div class="value" style="font-size:20px">${v}</div>${sub ? `<div class="xs muted mt-4">${sub}</div>` : ''}</div>`;
     root.querySelector('#kpi').innerHTML =
       k('fa-users', '', L('عدد الأفراد', 'Headcount'), `<span class="num">${num(people.length)}</span>`, `${num(teams.length)} ${L('تيم', 'teams')}`) +
       k('fa-sack-dollar', 'info', L('التكلفة الشهرية', 'Monthly cost'), `<span class="num">${esc(money(all.cost))}</span>`, L('المرتب الكامل بالبدلات والانتظام والـ KPI', 'Full salary with allowances, regularity and KPI')) +
@@ -237,6 +240,48 @@ export default async function render(root) {
     }).join('');
   }
 
+  // ---------- the stat tiles open their details ----------
+  const personCell = (p) => `<div class="person">${avatar(p, 'sm')}<div><b>${esc(p.name || p.email)}</b><span>${esc(p.title || roleLabel(p.role))}</span></div></div>`;
+  function openKpi(key) {
+    const roots = buildTree(people);
+    const byName = [...people].sort((a, b) => String(a.name || a.email).localeCompare(String(b.name || b.email), 'ar'));
+    const row = (p, cells) => `<tr data-person="${esc(p.email)}" style="cursor:pointer"><td>${personCell(p)}</td>${cells}</tr>`;
+    const td = (v, style = '') => `<td class="num"${style ? ` style="${style}"` : ''}>${v}</td>`;
+    const m = (v) => esc(money(v || 0, false));
+    const table = (head, body, foot = '') => `<div class="table-wrap"><table class="table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody>${foot ? `<tfoot><tr>${foot}</tr></tfoot>` : ''}</table></div>`;
+    let title = '', icon = '', bodyHTML = '';
+    if (key === 'people') {
+      title = `${L('كل الأفراد', 'Everyone')} (${num(people.length)})`; icon = 'fa-users';
+      bodyHTML = table(`<th>${L('الاسم', 'Name')}</th><th>${L('القسم', 'Department')}</th><th>${L('المدير المباشر', 'Manager')}</th><th>${L('التعاقد', 'Contract')}</th><th>${L('تاريخ البدء', 'Start date')}</th>`,
+        byName.map(p => { const s = statOf(p.email) || {}; return row(p, `<td>${esc(p.department || '—')}</td><td>${p.leaderEmail ? esc(nameOf(p.leaderEmail)) : '—'}</td><td>${esc(contractLabel(s.contract))}</td><td>${p.hireDate ? esc(fmtDate(p.hireDate)) : '—'}</td>`); }).join(''));
+    } else if (key === 'cost') {
+      const list = [...people].sort((a, b) => ((statOf(b.email) || {}).cost || 0) - ((statOf(a.email) || {}).cost || 0));
+      const all = groupStats(people, statOf);
+      title = L('التكلفة الشهرية لكل فرد', 'Monthly cost per person'); icon = 'fa-sack-dollar';
+      bodyHTML = table(`<th>${L('الاسم', 'Name')}</th>${PARTS.map(k => `<th class="num">${esc(partLabel(k))}</th>`).join('')}<th class="num">${L('المرتب الكامل', 'Full salary')}</th>`,
+        list.map(p => { const s = statOf(p.email) || { parts: {} }; return row(p, PARTS.map(k => td(m(s.parts[k]))).join('') + td(`<b>${m(s.cost)}</b>`)); }).join(''),
+        `<td><b>${L('الإجمالي', 'Total')}</b></td>${PARTS.map(() => '<td></td>').join('')}${td(`<b>${esc(money(all.cost))}</b>`)}`);
+    } else if (key === 'deductions') {
+      title = `${L('استقطاعات', 'Deductions')} ${fmtMonth(month)}`; icon = 'fa-minus';
+      const all = groupStats(people, statOf);
+      bodyHTML = `<p class="xs muted mb-8">${L('اضغط على أي اسم يظهرلك خصوماته بالتفصيل.', 'Click a name to see their deductions in detail.')}</p>` + groups(roots).map(g => {
+        const st = groupStats(g.people, statOf);
+        return `<div class="org-dgroup"><div class="row between org-dgroup-head"><b>${esc(g.title)}</b><span class="xs muted">${num(g.people.length)} ${L('شخص', 'people')} · ${L('استقطاعات', 'deductions')} <b class="num" style="color:${st.deductions ? 'var(--bad)' : 'inherit'}">${m(st.deductions)}</b></span></div>` +
+          table(`<th>${L('الاسم', 'Name')}</th><th class="num">${L('المرتب', 'Salary')}</th><th class="num">${L('الاستقطاع', 'Deduction')}</th><th class="num">${L('المرتب النهائي', 'Final pay')}</th>`,
+            g.people.map(p => { const s = statOf(p.email) || {}; return row(p, td(m(s.gross)) + td(s.deductions ? m(s.deductions) : '0', s.deductions ? 'color:var(--bad);font-weight:700' : '') + td(`<b>${m(s.net)}</b>`)); }).join(''),
+            `<td><b>${L('إجمالي التيم', 'Team total')}</b></td>${td(`<b>${m(st.gross)}</b>`)}${td(`<b>${m(st.deductions)}</b>`, 'color:var(--bad)')}${td(`<b>${m(st.net)}</b>`)}`) + '</div>';
+      }).join('') + `<div class="org-dtotal row between"><b>${L('إجمالي الشركة', 'Company total')}</b><span>${L('المرتبات', 'Salaries')} <b class="num">${m(all.gross)}</b> · ${L('الاستقطاعات', 'Deductions')} <b class="num" style="color:var(--bad)">${m(all.deductions)}</b> · ${L('الصافي', 'Net')} <b class="num">${m(all.net)}</b></span></div>`;
+    } else {
+      const list = people.filter(p => (statOf(p.email) || {}).tracked).sort((a, b) => ((statOf(a.email) || {}).commitment ?? 100) - ((statOf(b.email) || {}).commitment ?? 100));
+      title = L('الالتزام لكل فرد', 'Commitment per person'); icon = 'fa-chart-simple';
+      bodyHTML = list.length ? table(`<th>${L('الاسم', 'Name')}</th><th class="num">${L('الالتزام', 'Commitment')}</th><th class="num">${L('أيام حضور', 'Days present')}</th><th class="num">${L('غياب', 'Absent')}</th><th class="num">${L('تأخير', 'Late')}</th><th class="num">${L('خصم التقصير', 'Slip deductions')}</th>`,
+        list.map(p => { const s = statOf(p.email); return row(p, td(`<span class="badge ${commitTone(s.commitment)}">${num(s.commitment)}%</span>`) + td(num(s.present)) + td(num(s.absent)) + td(s.lateMinutes ? esc(fmtMin(s.lateMinutes)) : '0') + td(s.penalty ? m(s.penalty) : '0', s.penalty ? 'color:var(--bad)' : '')); }).join(''))
+        : empty('fa-chart-simple', L('مفيش حضور متتبع الشهر ده', 'No tracked attendance this month'));
+    }
+    const md = modal({ title, icon, size: 'wide', body: bodyHTML });
+    md.el.addEventListener('click', (e) => { const r = e.target.closest('[data-person]'); if (r) openPerson(r.dataset.person); });
+  }
+
   // ---------- one person ----------
   function openPerson(email) {
     const p = people.find(x => x.email === email); if (!p) return;
@@ -297,6 +342,7 @@ export default async function render(root) {
   root.querySelectorAll('[data-m]').forEach(b => b.onclick = () => { month = addMonths(month, Number(b.dataset.m)); att = null; watchMonth(); loadAttendance(); });
   bindActions(root, {
     person: (d) => openPerson(d.email),
+    kpi: (d) => openKpi(d.k),
     toggle: (d) => { collapsed.has(d.email) ? collapsed.delete(d.email) : collapsed.add(d.email); draw(); },
     expand: () => { collapsed.clear(); draw(); },
     // keep the top of the company open, fold every team under it
@@ -310,7 +356,11 @@ export default async function render(root) {
       else if (card.requestFullscreen) card.requestFullscreen().catch(() => {});
     }
   });
-  root.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.matches('.org-node')) openPerson(e.target.dataset.email); });
+  root.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    if (e.target.matches('.org-node')) openPerson(e.target.dataset.email);
+    else if (e.target.matches('.org-kpi')) openKpi(e.target.dataset.k);
+  });
 
   watchMonth();
   loadAttendance();

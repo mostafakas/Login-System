@@ -27,7 +27,6 @@ const ROUTES = [
   { id: 'dashboard', group: 'team', icon: 'fa-chart-pie', ar: 'الداشبورد', en: 'Dashboard', when: () => isAdmin() || isHR() || !!(session.profile && session.profile.permissions && session.profile.permissions.dashboard), load: () => import('./views/dashboard.js') },
   { id: 'monitor', group: 'team', icon: 'fa-signal', ar: 'المتابعة اللحظية', en: 'Live monitor', when: () => isLeader() || seesAll(), load: () => import('./views/monitor.js') },
   { id: 'approvals', group: 'team', icon: 'fa-inbox', ar: 'الموافقات', en: 'Approvals', when: canApprove, load: () => import('./views/approvals.js'), badge: 'inbox', bottom: true },
-  { id: 'leaves', group: 'team', icon: 'fa-umbrella-beach', ar: 'الإجازات والأرصدة', en: 'Leaves & balances', when: () => isLeader() || seesAll(), load: () => import('./views/leaves.js') },
   { id: 'reports', group: 'team', icon: 'fa-chart-column', ar: 'التقارير الشهرية', en: 'Monthly reports', when: () => isLeader() || seesAll() || isFinance(), load: () => import('./views/reports.js') },
 
   { id: 'employees', group: 'hr', icon: 'fa-users', ar: 'الموظفين', en: 'Employees', when: isHR, load: () => import('./views/employees.js') },
@@ -39,7 +38,6 @@ const ROUTES = [
   { id: 'org', group: 'finance', icon: 'fa-sitemap', ar: 'الهيكل التنظيمي', en: 'Org chart', when: isFinance, load: () => import('./views/org.js') },
   { id: 'treasury', group: 'finance', icon: 'fa-vault', ar: 'الخزينة والمصروفات', en: 'Treasury', when: isFinance, load: () => import('./views/treasury.js') },
 
-  { id: 'activity', group: 'admin', icon: 'fa-list-check', ar: 'سجل النشاط', en: 'Activity log', when: isAdmin, load: () => import('./views/activity.js') },
   { id: 'settings', group: 'admin', icon: 'fa-sliders', ar: 'الإعدادات', en: 'Settings', when: () => isAdmin() || isHR(), load: () => import('./views/settings.js') }
 ];
 const GROUPS = {

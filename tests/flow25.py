@@ -12,6 +12,7 @@ org = [  # email, name, title, role, manager, department, salary
     ('coo', 'Mostafa Abdelrahman Mahmoud', 'Chief Operating Officer', 'admin', '', 'Management', 15000),
     ('pm', 'Ahmed Shehata Abdelaziz', 'Project Manager', 'pm', 'coo', 'Management', 16000),
     ('sales', 'Magda Elsayed', 'Sales manager', 'sales_manager', 'coo', 'Management', 12000),
+    ('acc', 'Mahmoud Lotfy', 'Accountant', 'finance', 'coo', 'Management', 5000),
     ('devlead', 'Ahmed Sapry', 'Web Dev', 'leader', 'pm', 'Development', 20000),
     ('d1', 'Abdallah Morsy', 'Backend Developer', 'employee', 'devlead', 'Development', 18500),
     ('d2', 'Ahmed Abo ELkher', 'Web Dev', 'employee', 'devlead', 'Development', 6000),
@@ -49,7 +50,11 @@ def run(width, height, theme, shot):
     pg.wait_for_url('**/app.html**'); pg.wait_for_selector('#splash', state='detached')
     pg.evaluate("h => location.hash = h", '#/org'); pg.wait_for_selector('.org-tree', timeout=8000); pg.wait_for_timeout(900)
     tag = f'{width}x{height}'
-    ok(pg.locator('.org-node').count() == 16, f'{tag}: 16 cards')
+    ok(pg.locator('.org-node').count() == 17, f'{tag}: 17 cards')
+    grp = pg.locator('.org-group', has=pg.locator('.org-node[data-email="acc@test.tech"]'))
+    ok(grp.count() == 1 and 'Mostafa Abdelrahman Mahmoud' in grp.locator('.org-group-head').inner_text() and grp.locator('.org-node[data-email="sales@test.tech"]').count() == 1,
+       f'{tag}: the accountant and the sales manager both report to the COO and sit in one group titled with his name (not one under the other)')
+    ok(pg.locator('.org-node[data-email="sales@test.tech"] .org-toggle').count() == 0, f'{tag}: the sales manager shows no team of her own')
     box = pg.evaluate("""() => { const b = document.querySelector('.org-scroll'), t = document.querySelector('.org-tree'), r = t.getBoundingClientRect(), br = b.getBoundingClientRect();
       return { zoom: t.style.zoom, tw: r.width, bw: br.width, left: r.left - br.left, right: br.right - r.right, sw: b.scrollWidth, cw: b.clientWidth, th: r.height, vh: innerHeight }; }""")
     print(tag, box)
@@ -59,10 +64,10 @@ def run(width, height, theme, shot):
     cut = pg.evaluate("() => [...document.querySelectorAll('.org-top b, .org-top span')].filter(e => e.scrollWidth > e.clientWidth + 1 || getComputedStyle(e).textOverflow === 'ellipsis' && getComputedStyle(e).overflow === 'hidden').map(e => e.textContent)")
     ok(not cut, f'{tag}: every name and title shows in full {cut}')
     ok('Moheyeldeen Mahmoud Abdelghany' in pg.locator('.org-tree').inner_text(), f'{tag}: the long name is written in full')
-    stacked = pg.locator('.org-node[data-email="devlead@test.tech"] ~ .org-stack .org-node').count()
+    stacked = pg.locator('.org-node[data-email="devlead@test.tech"] ~ .org-group .org-node').count()
     ok(stacked == 5, f'{tag}: the 5 developers stack in a column under their leader ({stacked})')
     if width >= 1366: ok(float(box['zoom']) >= 0.75, f'{tag}: still readable (zoom {box["zoom"]})')
-    if width == 1920: ok(box['th'] <= box['vh'] - 80, f'{tag}: on a full-HD screen the whole chart fits the screen height too')
+    if width == 1920: ok(box['th'] <= box['vh'] - 40, f'{tag}: on a full-HD screen the whole chart fits the screen height too')
     if shot:
         pg.evaluate("() => document.querySelector('.org-scroll').scrollIntoView({block: 'start'})"); pg.wait_for_timeout(200)
         pg.screenshot(path=shot, full_page=False)

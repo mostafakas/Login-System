@@ -445,7 +445,7 @@ async function renderFile(root, email) {
       <div class="grow"><h2 style="font-size:22px">${esc(u.name || email)}</h2><div class="muted">${esc(u.title || '')}${u.department ? ' · ' + esc(u.department) : ''}</div>
         <div class="row-wrap mt-8"><span class="badge brand">${esc(roleLabel(u.role))}</span>${u.isSuspended ? `<span class="badge bad">${L('موقوف', 'Suspended')}</span>` : presenceBadge(u.status)}
         ${u.leaderEmail ? `<span class="badge">${L('المدير:', 'Manager:')} ${esc(nameOf(u.leaderEmail))}</span>` : ''}${u.hireDate ? `<span class="badge">${L('تعيين', 'Hired')} ${esc(fmtDate(u.hireDate))}</span>` : ''}</div></div>
-      <div class="row gap-8">${isAdmin() ? `<a class="btn btn-on-navy" href="#/activity/${encodeURIComponent(email)}"><i class="fas fa-list-check"></i> ${L('نشاطه', 'Activity')}</a>` : ''}<button class="btn btn-on-navy" id="edit"><i class="fas fa-pen"></i> ${L('تعديل', 'Edit')}</button></div></div></section>
+      <div class="row gap-8"><button class="btn btn-on-navy" id="edit"><i class="fas fa-pen"></i> ${L('تعديل', 'Edit')}</button></div></div></section>
     <div class="tabs mb-16" id="ft"><button class="tab active" data-p="att">${L('الحضور', 'Attendance')}</button><button class="tab" data-p="bal">${L('الأرصدة', 'Balances')}</button><button class="tab" data-p="req">${L('الطلبات', 'Requests')}</button><button class="tab" data-p="pay">${L('الراتب', 'Salary')}</button></div>
     <div data-pane="att"></div><div data-pane="bal" class="hidden"></div><div data-pane="req" class="hidden"></div><div data-pane="pay" class="hidden"></div>`;
   root.querySelector('#edit').onclick = () => openEditor(email);

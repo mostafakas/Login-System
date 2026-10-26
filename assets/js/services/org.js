@@ -68,7 +68,7 @@ export function groupStats(people, statOf) {
   const tracked = rows.filter(x => x.s.commitment != null && x.s.tracked);
   const worst = worstOf(rows);
   return {
-    count: rows.length, cost: sum('cost'), deductions: sum('deductions'), penalty: sum('penalty'), net: sum('net'),
+    count: rows.length, cost: sum('cost'), gross: sum('gross'), deductions: sum('deductions'), penalty: sum('penalty'), net: sum('net'),
     absent: sum('absent'), lateMinutes: sum('lateMinutes'),
     commitment: tracked.length ? Math.round(tracked.reduce((t, x) => t + x.s.commitment, 0) / tracked.length) : null,
     worst

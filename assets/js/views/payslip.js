@@ -47,7 +47,7 @@ export function payslipHTML(i) {
   const a = i.att || {};
   const line = (label, v, sub = '', neg = false) => `<tr><td>${esc(label)}${sub ? `<div class="xs muted">${esc(sub)}</div>` : ''}</td><td class="num" style="white-space:nowrap;color:${neg ? 'var(--bad)' : 'inherit'}">${neg ? '−' : ''}${esc(money(v, false))}</td></tr>`;
   const earnings = [
-    [L('الراتب الأساسي', 'Basic salary'), i.basic, ''],
+    [i.freelancer ? L('الراتب (فريلانسر)', 'Salary (freelancer)') : L('الراتب الأساسي', 'Basic salary'), i.basic, ''],
     ...((i.allowanceLines || []).length ? i.allowanceLines.map(x => [x.name || L('بدل', 'Allowance'), x.amount, L('بدل ثابت', 'Fixed allowance')]) : (i.allowances ? [[L('البدلات', 'Allowances'), i.allowances, '']] : [])),
     ...(i.regularity ? [[L('بدل الانتظام', 'Regularity'), i.regularity, '']] : []),
     ...(i.kpiFull || i.kpi ? [['KPI', i.kpi || 0, i.kpiMode === 'pct' ? L(`${i.kpiValue}% من ${money(i.kpiFull, false)}`, `${i.kpiValue}% of ${money(i.kpiFull, false)}`) : (i.kpiMode === 'amt' ? L(`من ${money(i.kpiFull, false)}`, `of ${money(i.kpiFull, false)}`) : '')]] : []),

@@ -11,7 +11,7 @@ import { activePeople, person } from './directory.js';
 import { teamMonth } from './reports.js';
 import { notify } from './notify.js';
 import { track } from './activity.js';
-import { salaryParts, rulesOf, violationsFrom, priceViolations } from './salary.js';
+import { payParts, isFreelancer, rulesOf, violationsFrom, priceViolations } from './salary.js';
 import { evalSettings, evalId } from './evaluations.js';
 
 export const itemId = (month, email) => `${month}_${email}`;
@@ -42,18 +42,21 @@ export function allowedMoves(i) {
  * One salary. `violations` are the month's raw attendance violations (services/salary.violationsFrom), priced
  * with the employee's own rules. `manual` carries bonus / incentive / other deductions / note and this month's
  * KPI ({ kpiMode: 'pct'|'amt', kpiValue }; empty = the full KPI).
+ * A freelancer is paid the full agreed salary: attendance (absence, lateness, unpaid leave…) is not priced and
+ * nothing is split into allowances; only advances and the admin's own bonus / deductions apply.
  */
 export function computeItem({ person: p, priv, totals, violations = [], advances, manual = {} }) {
-  const parts = salaryParts(priv);
+  const freelancer = isFreelancer(priv);
+  const parts = payParts(priv);
   const rules = rulesOf(priv);
   const divisor = Number(policy.payrollDayDivisor) || 30;
-  const priced = priceViolations(violations, parts, rules, divisor);
+  const priced = priceViolations(freelancer ? [] : violations, parts, rules, divisor);
   // KPI of the month: admin-set % or amount, otherwise paid in full
-  const kpiMode = manual.kpiMode === 'pct' || manual.kpiMode === 'amt' ? manual.kpiMode : '';
+  const kpiMode = !freelancer && (manual.kpiMode === 'pct' || manual.kpiMode === 'amt') ? manual.kpiMode : '';
   const kpiValue = kpiMode ? Number(manual.kpiValue) || 0 : null;
   const kpi = r2(kpiMode === 'pct' ? parts.kpi * kpiValue / 100 : (kpiMode === 'amt' ? kpiValue : parts.kpi));
   // unpaid leave: the day's basic, from what is left of the basic after absences
-  const unpaidDays = totals ? totals.unpaidLeave || 0 : 0;
+  const unpaidDays = totals && !freelancer ? totals.unpaidLeave || 0 : 0;
   const unpaid = r2(Math.min(unpaidDays * parts.basic / divisor, priced.left.basic));
   const advance = advances.reduce((s, a) => s + a.installment, 0);
   const other = (manual.otherDeductions || []).reduce((s, d) => s + (Number(d.amount) || 0), 0);
@@ -66,7 +69,7 @@ export function computeItem({ person: p, priv, totals, violations = [], advances
   const payTo = (priv && priv.instapay) ? 'InstaPay' : (bank ? `${L('حساب بنكي', 'Bank account')} •••${bank.slice(-4)}` : '');
   return {
     email: p.email, name: p.name || p.email, title: p.title || '', department: p.department || '', hireDate: p.hireDate || '', payTo,
-    structured: parts.structured, totalSalary: parts.total,
+    structured: parts.structured, totalSalary: parts.total, freelancer,
     basic: parts.basic, allowances: parts.allowances, regularity: parts.regularity, kpiFull: parts.kpi, kpi, kpiMode, kpiValue,
     allowanceLines: [], bonus, incentive, fixed,
     violations: priced.lines, deductionByPart: priced.byPart,
@@ -119,7 +122,6 @@ export async function buildRun(month) {
   let count = 0;
   for (const p of people) {
     const priv = privs.find(x => x.id === p.email) || {};
-    if (priv.contract === 'freelancer') continue;
     const old = existing.find(x => x.email === p.email) || {};
     if (old.status && payStatus(old) !== 'pending') continue; // approved / transferred / sent are frozen
     const pm = att.people.find(x => x.person.email === p.email) || {};

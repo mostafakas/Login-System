@@ -6,7 +6,7 @@ import { now, isAdmin } from '../core/session.js';
 import { watch, query, col, where, ref, list, toMs } from '../core/fb.js';
 import { buildRun, saveManual, recordAdvancePayout, PAY_ORDER, PAY_STATUS, payStatus, payStatusLabel, allowedMoves, setPayStatus, MAX_PROOF } from '../services/payroll.js';
 import { openPayslip } from './payslip.js';
-import { salaryParts } from '../services/salary.js';
+import { payParts } from '../services/salary.js';
 import { exportSheet } from './export.js';
 
 const fmtSize = (n) => n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
@@ -15,13 +15,13 @@ export default async function render(root) {
   const admin = isAdmin();
   let month = ymOf(now()), run = null, items = [], unsubs = [], privs = null;
   // salary data changed after the salary was calculated? (only matters while it is still pending)
-  const salaryOf = (email) => salaryParts((privs && privs.find(x => x.id === email)) || {});
+  const salaryOf = (email) => payParts((privs && privs.find(x => x.id === email)) || {});
   const extrasOf = (x) => Number(x.allowances || 0) + Number(x.regularity || 0) + Number(x.kpiFull ?? x.kpi ?? 0);
   const isStale = (i) => { if (!privs || !admin || payStatus(i) !== 'pending') return false; const c = salaryOf(i.email); return c.basic !== Number(i.basic || 0) || Math.round(c.allowances + c.regularity + c.kpi) !== Math.round(extrasOf(i)) || c.fixed !== Number(i.fixed || 0); };
   const loadPrivs = () => list(col('employees_private')).then(r => { privs = r; draw(); }).catch(() => {});
   root.innerHTML = `
     <div class="page-head"><div><h2>${L('الرواتب', 'Payroll')}</h2><p>${admin
-      ? L('الخصومات بتتحسب تلقائياً من الغياب والإجازات بدون أجر والتأخير (لو مفعّل) وأقساط السلف. غيّر حالة كل راتب من العمود «الحالة».', 'Deductions come from absence, unpaid leave, lateness (if enabled) and advance installments. Change each salary\'s status in the "Status" column.')
+      ? L('الخصومات بتتحسب تلقائياً من الغياب والإجازات بدون أجر والتأخير (لو مفعّل) وأقساط السلف. الفريلانسر بياخد راتبه كامل ومفيش عليه غير الخصومات اللي بتضيفها بإيدك. غيّر حالة كل راتب من العمود «الحالة».', 'Deductions come from absence, unpaid leave, lateness (if enabled) and advance installments. Freelancers get their full salary, minus only the deductions you add by hand. Change each salary\'s status in the "Status" column.')
       : L('بعد ما الأدمن يعتمد الراتب، سجّل التحويل بإيصاله، وبعدين ابعت القسيمة للموظف.', 'Once the admin approves a salary, record the transfer with its receipt, then send the payslip.')}</p></div>
       <div class="row gap-8"><button class="btn btn-icon" data-m="-1"><i class="fas fa-chevron-right" data-flip></i></button><b id="ml" style="min-width:130px;text-align:center"></b><button class="btn btn-icon" data-m="1"><i class="fas fa-chevron-left" data-flip></i></button></div></div>
     <div class="card mb-16"><div class="card-body row between" style="flex-wrap:wrap;gap:12px" id="bar"></div></div>
@@ -59,7 +59,7 @@ export default async function render(root) {
     root.querySelector('#kpi').innerHTML = k('fa-sack-dollar', '', L('إجمالي الرواتب', 'Total gross'), sum('gross')) + k('fa-minus', 'bad', L('إجمالي الاستقطاعات', 'Total deductions'), sum('deductions')) +
       k('fa-wallet', 'ok', L('صافي المطلوب صرفه', 'Net payable'), sum('net')) + k('fa-money-bill-transfer', 'info', L('اتحوّل', 'Transferred'), items.filter(i => ['paid', 'sent'].includes(payStatus(i))).reduce((s, i) => s + (i.net || 0), 0));
     root.querySelector('#rows').innerHTML = items.length ? items.map(i => `<tr>
-      <td><div class="person">${avatar({ name: i.name, email: i.email }, 'sm')}<div><b>${esc(i.name)}</b><span>${esc(i.title || '')}</span></div></div></td>
+      <td><div class="person">${avatar({ name: i.name, email: i.email }, 'sm')}<div><b>${esc(i.name)}</b><span>${esc(i.title || '')}${i.freelancer ? ` <span class="badge">${L('فريلانسر', 'Freelancer')}</span>` : ''}</span></div></div></td>
       <td class="num">${esc(money(i.basic || 0, false))}${isStale(i) && salaryOf(i.email).basic !== Number(i.basic || 0) ? `<div><span class="badge warn" title="${L('القيمة الجديدة في ملف الموظف', 'New value in the employee file')}">${L('الجديد', 'New')}: ${esc(money(salaryOf(i.email).basic, false))}</span></div>` : ''}</td>
       <td class="num">${esc(money(Number(i.gross || 0) - Number(i.basic || 0), false))}${isStale(i) && Math.round(salaryOf(i.email).allowances + salaryOf(i.email).regularity + salaryOf(i.email).kpi) !== Math.round(extrasOf(i)) ? `<div><span class="badge warn">${L('الجديد', 'New')}: ${esc(money(salaryOf(i.email).allowances + salaryOf(i.email).regularity + salaryOf(i.email).kpi, false))}</span></div>` : ''}${(() => {
         const bits = [...(i.allowanceLines || []).map(a => [a.name || L('بدل', 'Allowance'), a.amount]),
@@ -165,25 +165,25 @@ export default async function render(root) {
       const m = modal({
         title: `${L('تعديل', 'Adjust')} — ${i.name}`, icon: 'fa-pen', size: '',
         body: `<form class="form-grid" id="ef">
-          <div class="field span-2"><label>${L(`KPI الشهر ده (الكامل ${money(i.kpiFull || 0, false)})`, `This month's KPI (full ${money(i.kpiFull || 0, false)})`)}</label>
+          ${i.freelancer ? '' : `<div class="field span-2"><label>${L(`KPI الشهر ده (الكامل ${money(i.kpiFull || 0, false)})`, `This month's KPI (full ${money(i.kpiFull || 0, false)})`)}</label>
             <div class="row gap-8"><select class="select" name="kpiMode" style="max-width:170px"><option value="" ${!i.kpiMode ? 'selected' : ''}>${L('كامل', 'Full')}</option><option value="pct" ${i.kpiMode === 'pct' ? 'selected' : ''}>${L('نسبة %', '%')}</option><option value="amt" ${i.kpiMode === 'amt' ? 'selected' : ''}>${L('قيمة', 'Amount')}</option></select>
-              <input class="input num" type="number" min="0" step="0.01" name="kpiValue" value="${esc(i.kpiMode ? i.kpiValue : '')}" style="max-width:140px" ${!i.kpiMode ? 'disabled' : ''}></div></div>
+              <input class="input num" type="number" min="0" step="0.01" name="kpiValue" value="${esc(i.kpiMode ? i.kpiValue : '')}" style="max-width:140px" ${!i.kpiMode ? 'disabled' : ''}></div></div>`}
           <div class="field"><label>${L('مكافأة', 'Bonus')}</label><input class="input num" type="number" min="0" name="bonus" value="${esc(i.bonus || 0)}"></div>
           <div class="field"><label>${L('حوافز', 'Incentive')}</label><input class="input num" type="number" min="0" name="incentive" value="${esc(i.incentive || 0)}"></div>
           <div class="field span-2"><label>${L('خصومات إضافية', 'Other deductions')}</label><div id="od" class="col gap-8"></div><button type="button" class="btn btn-sm btn-soft mt-8" id="addod" style="align-self:flex-start"><i class="fas fa-plus"></i> ${L('خصم', 'Deduction')}</button></div>
           <div class="field span-2"><label>${L('ملاحظة تظهر في القسيمة', 'Note shown on payslip')}</label><input class="input" name="note" value="${esc(i.note || '')}"></div></form>
-          <p class="xs muted mt-8">${L('الغياب والتأخير والسلف بتتحسب تلقائياً. لتغييرها صحّح الحضور واضغط «إعادة الحساب».', 'Absence, lateness and advances are automatic. To change them, correct attendance and recalculate.')}</p>`,
+          <p class="xs muted mt-8">${i.freelancer ? L('فريلانسر: الراتب كامل، والغياب والتأخير مش بيتحسبوا. الخصومات اللي فوق بس (والسلف لو فيه) هي اللي بتتخصم.', 'Freelancer: full salary; absence and lateness are not counted. Only the deductions above (and any advance) are taken off.') : L('الغياب والتأخير والسلف بتتحسب تلقائياً. لتغييرها صحّح الحضور واضغط «إعادة الحساب».', 'Absence, lateness and advances are automatic. To change them, correct attendance and recalculate.')}</p>`,
         foot: `<button class="btn" data-close>${L('إلغاء', 'Cancel')}</button><button class="btn btn-primary" id="sv">${L('حفظ', 'Save')}</button>`
       });
       const od = m.$('#od');
       const add = (d = {}) => { const r = document.createElement('div'); r.className = 'row gap-8'; r.innerHTML = `<input class="input" data-r placeholder="${L('السبب', 'Reason')}" value="${esc(d.reason || '')}"><input class="input num" type="number" min="0" data-a value="${esc(d.amount ?? '')}" style="max-width:130px"><button type="button" class="btn btn-ghost btn-icon btn-sm"><i class="fas fa-trash"></i></button>`; r.querySelector('button').onclick = () => r.remove(); od.appendChild(r); };
       (i.otherDeductions || []).forEach(add);
       m.$('#addod').onclick = () => add();
-      m.$('[name=kpiMode]').onchange = (e) => { const v = m.$('[name=kpiValue]'); v.disabled = !e.target.value; if (!e.target.value) v.value = ''; else v.focus(); };
+      if (!i.freelancer) m.$('[name=kpiMode]').onchange = (e) => { const v = m.$('[name=kpiValue]'); v.disabled = !e.target.value; if (!e.target.value) v.value = ''; else v.focus(); };
       m.$('#sv').onclick = (e) => busy(e.currentTarget, async () => {
         const f = m.$('#ef');
         const otherDeductions = [...od.children].map(r => ({ reason: r.querySelector('[data-r]').value.trim(), amount: Number(r.querySelector('[data-a]').value || 0) })).filter(d => d.amount);
-        const kpiMode = f.kpiMode.value;
+        const kpiMode = f.kpiMode ? f.kpiMode.value : '';
         try { await saveManual(month, i.email, { bonus: Number(f.bonus.value || 0), incentive: Number(f.incentive.value || 0), otherDeductions, note: f.note.value.trim(), kpiMode, kpiValue: kpiMode ? Number(f.kpiValue.value || 0) : null }); m.close(); toast(L('تم الحفظ', 'Saved')); } catch (ex) { toastErr(ex); }
       });
     },

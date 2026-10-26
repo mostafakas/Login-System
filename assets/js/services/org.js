@@ -3,7 +3,7 @@
 // payroll_items; a salary that is not calculated yet (or still pending) is priced live from attendance with the
 // same rules as payroll, so the numbers follow every change without anyone pressing "Recalculate".
 import { computeItem, payStatus } from './payroll.js';
-import { violationsFrom, salaryParts } from './salary.js';
+import { violationsFrom, payParts } from './salary.js';
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
@@ -40,12 +40,12 @@ export function teamsOf(roots) {
  * early leave, unpaid leave); deductions also count advances, fixed and other deductions.
  */
 export function personMonth({ person: p, priv, item, att, advances }) {
-  const parts = salaryParts(priv || {});
+  const parts = payParts(priv || {});
   const contract = (priv && priv.contract) || 'fulltime';
   const pm = att ? att.people.find(x => x.person.email === p.email) : null;
   let it = null, source = 'none';
   if (item && payStatus(item) !== 'pending') { it = item; source = 'final'; }
-  else if (contract !== 'freelancer' && (priv || item)) {
+  else if (priv || item) {   // a freelancer goes through payroll too: full salary, no attendance deductions
     const violations = pm && pm.rows ? violationsFrom(pm.rows, pm.requests) : [];
     it = computeItem({ person: p, priv: priv || {}, totals: pm ? pm.totals : null, violations, advances: (advances || []).filter(a => a.email === p.email), manual: item || {} });
     source = 'live';
@@ -76,7 +76,8 @@ export function groupStats(people, statOf) {
 }
 export const slipScore = (s) => [s.penalty || 0, -(s.commitment == null ? 100 : s.commitment), s.lateMinutes || 0];
 export function rankSlips(rows) {
-  return rows.filter(x => x.s && (x.s.penalty > 0 || x.s.absent > 0 || x.s.lateMinutes > 0)).sort((a, b) => {
+  // a freelancer is not held to attendance, so never ranked as slipping
+  return rows.filter(x => x.s && x.s.contract !== 'freelancer' && (x.s.penalty > 0 || x.s.absent > 0 || x.s.lateMinutes > 0)).sort((a, b) => {
     const A = slipScore(a.s), B = slipScore(b.s);
     return (B[0] - A[0]) || (B[1] - A[1]) || (B[2] - A[2]);
   });

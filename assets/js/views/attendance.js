@@ -4,7 +4,7 @@ import { modal, empty, loader, STATUS_META } from '../core/ui.js';
 import { session, now } from '../core/session.js';
 import { modeLabel, leaveTypeLabel, dayKey, shiftLabel } from '../core/policy.js';
 import { toMs, read } from '../core/fb.js';
-import { salaryParts, rulesOf, violationsFrom, priceViolations, violationText } from '../services/salary.js';
+import { salaryParts, isFreelancer, rulesOf, violationsFrom, priceViolations, violationText } from '../services/salary.js';
 import { personMonth, STATUS_DAY } from '../services/reports.js';
 import { dayLogs, scopeFor } from '../services/attendance.js';
 import { openRequestForm } from './request-form.js';
@@ -146,7 +146,7 @@ export default async function render(root) {
   const drawDeductions = (data, ym) => {
     const box = root.querySelector('#ded');
     const parts = salaryParts(priv || {});
-    if (!priv || !parts.structured) { box.innerHTML = ''; return; }
+    if (!priv || !parts.structured || isFreelancer(priv)) { box.innerHTML = ''; return; }   // a freelancer has no attendance deductions
     const priced = priceViolations(violationsFrom(data.rows, data.requests), parts, rulesOf(priv));
     const total = priced.lines.reduce((s, l) => s + l.total, 0);
     box.innerHTML = `<div class="card"><div class="card-head"><h3>${L(`خصومات ${fmtMonth(ym)} لحد دلوقتي`, `${fmtMonth(ym)} deductions so far`)}</h3><b class="num" style="color:${total ? 'var(--bad)' : 'var(--ok)'}">${esc(money(total))}</b></div>

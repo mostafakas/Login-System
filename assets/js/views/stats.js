@@ -18,7 +18,7 @@ import {
 } from '../services/evaluations.js';
 import { startTasks, onTasks, allTasks, periodRange, inPeriod, doneDay, isLate } from '../services/tasks.js';
 import { watchTodos } from '../services/todos.js';
-import { salaryParts, rulesOf, violationsFrom, priceViolations, violationText } from '../services/salary.js';
+import { salaryParts, isFreelancer, rulesOf, violationsFrom, priceViolations, violationText } from '../services/salary.js';
 import { periodPicker, monthName } from './task-ui.js';
 import { showDayDetails } from './attendance.js';
 import { setTabLabel } from '../tabs.js';
@@ -334,7 +334,7 @@ export default async function render(root, { params = [] }) {
     const reqByType = {};
     m.reqs.forEach(q => { const x = reqByType[q.type] = reqByType[q.type] || { all: 0, ok: 0, no: 0, wait: 0 }; x.all++; if (q.status === 'approved') x.ok++; else if (q.status === 'rejected') x.no++; else x.wait++; });
     let ded = '';
-    if (admin && priv) {
+    if (admin && priv && !isFreelancer(priv)) {   // a freelancer has no attendance deductions
       const parts = salaryParts(priv);
       if (parts.structured) {
         const priced = priceViolations(violationsFrom(cur.rows.filter(r => inR(r, range)), cur.requests), parts, rulesOf(priv));

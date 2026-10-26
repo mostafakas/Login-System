@@ -54,6 +54,16 @@ export function salaryParts(priv) {
   return { total: r2(basic + allowances), basic, allowances: r2(allowances), regularity: 0, kpi: 0, fixed, structured: false };
 }
 
+export const isFreelancer = (priv) => !!priv && priv.contract === 'freelancer';
+/**
+ * What payroll pays from. A freelancer gets the whole agreed salary as one amount: no allowances / regularity / KPI
+ * split, no fixed deductions, and (in payroll.computeItem) no absence, lateness or unpaid-leave deductions.
+ */
+export function payParts(priv) {
+  const parts = salaryParts(priv);
+  return isFreelancer(priv) ? { ...parts, basic: parts.total, allowances: 0, regularity: 0, kpi: 0, fixed: 0 } : parts;
+}
+
 const covers = (r, d) => r.startDate <= d && (r.endDate || r.startDate) >= d;
 /** Raw violations of a month from the classified attendance rows (see reports.classifyDay) */
 export function violationsFrom(rows, requests = []) {

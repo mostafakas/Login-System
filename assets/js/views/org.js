@@ -80,16 +80,49 @@ export default async function render(root) {
     const p = n.person, s = statOf(p.email), hue = hueOf(p.department);
     const kids = n.children.length;
     return `<div class="org-node" style="--hue:${hue}" data-action="person" data-email="${esc(p.email)}" tabindex="0">
-      <div class="org-top">${avatar(p, 'sm')}<div class="min0"><b class="truncate">${esc(p.name || p.email)}</b><span class="truncate">${esc(p.title || roleLabel(p.role))}</span></div></div>
-      <div class="org-dept"><span class="org-dot"></span>${esc(p.department || L('بدون قسم', 'No department'))}</div>
+      <div class="org-top">${avatar(p, 'sm')}<div class="min0"><b>${esc(p.name || p.email)}</b><span>${esc(p.title || roleLabel(p.role))}</span><span class="org-dept"><span class="org-dot"></span>${esc(p.department || L('بدون قسم', 'No department'))}</span></div></div>
       <div class="org-money"><b class="num">${esc(money(s ? s.cost : 0, false))}</b>${dedBadge(s)}${commitBadge(s)}</div>
-      ${team ? `<div class="org-team" title="${L('التيم شامل التيمز اللي تحته', 'Team including the teams under it')}"><i class="fas fa-people-group"></i> ${num(team.all.length - 1)} · <b class="num">${esc(money(team.allStats.cost, false))}</b></div>` : ''}
+      ${team ? `<div class="org-team" title="${L('التيم شامل التيمز اللي تحته', 'Team including the teams under it')}"><span><i class="fas fa-people-group"></i> ${num(team.all.length - 1)} ${L('في التيم', 'in team')}</span><b class="num">${esc(money(team.allStats.cost, false))}</b></div>` : ''}
       ${kids ? `<button class="org-toggle" data-action="toggle" data-email="${esc(p.email)}" aria-label="${collapsed.has(p.email) ? L('افتح', 'Expand') : L('اقفل', 'Collapse')}">${collapsed.has(p.email) ? `+${num(kids)}` : '<i class="fas fa-minus"></i>'}</button>` : ''}
     </div>`;
   }
-  function treeHTML(nodes, teamBy) {
-    return `<ul>${nodes.map(n => `<li>${nodeCard(n, teamBy.get(n.person.email))}${n.children.length && !collapsed.has(n.person.email) ? treeHTML(n.children, teamBy) : ''}</li>`).join('')}</ul>`;
+  // People without a team of their own are stacked in a column under their manager instead of being spread
+  // side by side, so the chart stays narrow enough to fit the screen; managers keep their own column.
+  const isTeam = (n) => n.children.length > 0;
+  // a long column folds into two, so a big team doesn't make the chart tall
+  const stackHTML = (nodes, teamBy) => `<div class="org-stack${nodes.length > 3 ? ' two' : ''}">${nodes.map(n => nodeCard(n, teamBy.get(n.person.email))).join('')}</div>`;
+  function childrenHTML(n, teamBy) {
+    if (!n.children.length || collapsed.has(n.person.email)) return '';
+    const subs = n.children.filter(isTeam), solo = n.children.filter(c => !isTeam(c));
+    if (!subs.length) return `<div class="org-down"></div>${stackHTML(solo, teamBy)}`;
+    return `<ul>${subs.map(c => `<li>${nodeCard(c, teamBy.get(c.person.email))}${childrenHTML(c, teamBy)}</li>`).join('')}${solo.length ? `<li class="org-solo">${stackHTML(solo, teamBy)}</li>` : ''}</ul>`;
   }
+  const treeHTML = (roots, teamBy) => `<ul>${roots.map(n => `<li>${nodeCard(n, teamBy.get(n.person.email))}${childrenHTML(n, teamBy)}</li>`).join('')}</ul>`;
+
+  /** Shrink the chart until it fits the card's width and the screen's height (never below a readable size) */
+  function fitChart() {
+    const box = root.querySelector('.org-scroll'), tree = root.querySelector('.org-tree');
+    if (!box || !tree) return;
+    tree.style.zoom = 1;
+    const w = tree.scrollWidth, h = tree.scrollHeight;
+    const full = document.fullscreenElement && document.fullscreenElement.contains(box);
+    const availW = box.clientWidth - 24;
+    const availH = (full ? window.innerHeight - box.getBoundingClientRect().top : window.innerHeight - 90) - 16;
+    const fitW = availW / w, fitH = availH / h;
+    // fit the width always and the height when that keeps the text readable (otherwise the page scrolls down);
+    // a phone can't show a whole company legibly, so there the chart scrolls sideways inside its card
+    const phone = window.innerWidth < 700;
+    const minZoom = phone ? 0.5 : 0.75;
+    const z = phone ? Math.min(1, Math.max(fitW, minZoom)) : Math.min(1, fitW, Math.max(fitH, minZoom));
+    tree.style.zoom = z.toFixed(3);
+    box.classList.toggle('org-overflow', tree.getBoundingClientRect().width > availW + 30);
+  }
+  let lastW = 0;   // react to the card's width only (the zoom itself changes its height)
+  const ro = new ResizeObserver((es) => { const w = Math.round(es[0].contentRect.width); if (w !== lastW) { lastW = w; fitChart(); } });
+  unsubs.push(() => ro.disconnect());
+  const onFull = () => setTimeout(fitChart, 60);
+  document.addEventListener('fullscreenchange', onFull);
+  unsubs.push(() => document.removeEventListener('fullscreenchange', onFull));
 
   function memberRow(p, worstEmail, isLead) {
     const s = statOf(p.email) || {};
@@ -156,9 +189,12 @@ export default async function render(root) {
     if (view === 'chart') {
       const depts = [...new Set(people.map(p => p.department || '—'))];
       depts.forEach(hueOf);
-      body.innerHTML = `<div class="card"><div class="card-head"><div class="row-wrap gap-8">${depts.map(d => `<span class="org-legend" style="--hue:${hueOf(d === '—' ? '' : d)}"><span class="org-dot"></span>${esc(d === '—' ? L('بدون قسم', 'No department') : d)} <b class="num">${num(people.filter(p => (p.department || '—') === d).length)}</b></span>`).join('')}</div>
-        <div class="row gap-8"><button class="btn btn-sm btn-ghost" data-action="expand">${L('افتح الكل', 'Expand all')}</button><button class="btn btn-sm btn-ghost" data-action="collapse">${L('اقفل التيمز', 'Collapse teams')}</button></div></div>
+      body.innerHTML = `<div class="card"><div class="card-head org-head"><div class="row-wrap gap-8">${depts.map(d => `<span class="org-legend" style="--hue:${hueOf(d === '—' ? '' : d)}"><span class="org-dot"></span>${esc(d === '—' ? L('بدون قسم', 'No department') : d)} <b class="num">${num(people.filter(p => (p.department || '—') === d).length)}</b></span>`).join('')}</div>
+        <div class="row-wrap gap-8"><button class="btn btn-sm btn-ghost" data-action="expand">${L('افتح الكل', 'Expand all')}</button><button class="btn btn-sm btn-ghost" data-action="collapse">${L('اقفل التيمز', 'Collapse teams')}</button><button class="btn btn-sm" data-action="full"><i class="fas fa-expand"></i> ${L('ملء الشاشة', 'Full screen')}</button></div></div>
         <div class="org-scroll"><div class="org-tree">${treeHTML(roots, teamBy)}</div></div></div>`;
+      const box = body.querySelector('.org-scroll');
+      ro.disconnect(); lastW = 0; ro.observe(box);
+      fitChart();
     } else if (view === 'teams') {
       body.innerHTML = teams.length ? `<div class="grid g-2 org-teams">${teams.sort((a, b) => b.stats.cost - a.stats.cost).map(teamCard).join('')}</div>`
         : `<div class="card">${empty('fa-people-group', L('مفيش تيمز', 'No teams'), L('حدد «المدير المباشر» لكل موظف من ملفه.', 'Set each employee\'s direct manager in their file.'))}</div>`;
@@ -266,7 +302,13 @@ export default async function render(root) {
     // keep the top of the company open, fold every team under it
     collapse: () => { collapsed.clear(); buildTree(people).forEach(r => flatten(r.children).forEach(n => { if (n.children.length) collapsed.add(n.person.email); })); draw(); },
     refresh: () => { window.dispatchEvent(new Event('am:data-changed')); loadAttendance(); toast(L('بيحدّث الحضور…', 'Refreshing attendance…'), '', 'info'); },
-    xls: () => exportXls()
+    xls: () => exportXls(),
+    full: () => {
+      const card = root.querySelector('.org-scroll') && root.querySelector('.org-scroll').closest('.card');
+      if (!card) return;
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      else if (card.requestFullscreen) card.requestFullscreen().catch(() => {});
+    }
   });
   root.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.matches('.org-node')) openPerson(e.target.dataset.email); });
 

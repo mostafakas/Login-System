@@ -49,7 +49,7 @@ pg.evaluate("h => location.hash = h", '#/org'); pg.wait_for_selector('.org-tree'
 pg.wait_for_function("() => !document.querySelector('#note .spinner')", timeout=8000); pg.wait_for_timeout(300)
 nodes = pg.locator('.org-node'); ok(nodes.count() == 6, f'a card for each of the 6 people ({nodes.count()})')
 top = pg.locator('.org-tree > ul > li > .org-node').inner_text(); ok('أحمد شحاتة' in top, 'the admin (no manager) is at the top')
-lead_kids = pg.locator('.org-tree li:has(> .org-node[data-email="leader@almaster.tech"]) > ul > li').count()
+lead_kids = pg.locator('.org-node[data-email="leader@almaster.tech"] ~ .org-stack .org-node').count()
 ok(lead_kids == 2, f'the two developers hang under their leader ({lead_kids})')
 kpi = pg.locator('#kpi').inner_text().replace('\n', ' | '); print('kpi:', kpi)
 # cost: admin 18800 + hr 18800 + leader 18800 + fin 18800 (basic 18000 + 800 allowance) + emp1 14000 + emp2 9000 = 98200

@@ -87,7 +87,7 @@ export function computeItem({ person: p, priv, totals, violations = [], advances
   };
 }
 
-async function activeAdvances(month) {
+export async function activeAdvances(month) {
   const all = await list(query(col('advances'), where('status', '==', 'active'))).catch(() => []);
   return all.filter(a => (a.startMonth || '') <= month).map(a => {
     const left = r2((Number(a.amount) || 0) - (Number(a.paid) || 0));

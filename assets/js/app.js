@@ -36,6 +36,7 @@ const ROUTES = [
   { id: 'schedules', group: 'hr', icon: 'fa-calendar-days', ar: 'الجداول', en: 'Schedules', when: () => isHR() || isLeader(), load: () => import('./views/schedules.js') },
 
   { id: 'payroll', group: 'finance', icon: 'fa-money-check-dollar', ar: 'الرواتب', en: 'Payroll', when: isFinance, load: () => import('./views/payroll.js') },
+  { id: 'org', group: 'finance', icon: 'fa-sitemap', ar: 'الهيكل التنظيمي', en: 'Org chart', when: isFinance, load: () => import('./views/org.js') },
   { id: 'treasury', group: 'finance', icon: 'fa-vault', ar: 'الخزينة والمصروفات', en: 'Treasury', when: isFinance, load: () => import('./views/treasury.js') },
 
   { id: 'activity', group: 'admin', icon: 'fa-list-check', ar: 'سجل النشاط', en: 'Activity log', when: isAdmin, load: () => import('./views/activity.js') },

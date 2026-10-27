@@ -25,14 +25,33 @@ export function statTiles(t) {
   </div>`;
 }
 
+/** Day-type filters over the month table: office, remote, leave and absence days */
+export const DAY_FILTERS = [
+  ['all', 'fa-list', 'الكل', 'All', () => true],
+  ['office', 'fa-building', 'المقر', 'Office', r => r.status === 'present'],
+  ['remote', 'fa-laptop-house', 'أونلاين', 'Remote', r => r.status === 'remote'],
+  ['leave', 'fa-umbrella-beach', 'إجازات', 'Leave', r => r.status === 'leave'],
+  ['absent', 'fa-user-xmark', 'غياب', 'Absent', r => r.status === 'absent']
+];
+const visibleDays = (rows) => { const todayKey = dayKey(now()); return rows.filter(r => r.date <= todayKey && r.status !== 'future'); };
+
+/** The filter buttons, each with how many days of the month it matches */
+export function dayFilterHTML(rows, filter = 'all') {
+  const days = visibleDays(rows);
+  return `<div class="seg day-filter" role="group" aria-label="${L('فلتر الأيام', 'Filter days')}" style="flex-wrap:wrap;max-width:100%">${DAY_FILTERS.map(([k, ic, ar, en, fn]) =>
+    `<button type="button" data-f="${k}" class="${k === filter ? 'on' : ''}" aria-pressed="${k === filter}"><i class="fas ${ic}"></i>${esc(L(ar, en))} <span class="badge xs num">${days.filter(fn).length}</span></button>`).join('')}</div>`;
+}
+
 /**
  * The month as a table: one row per day up to today — check-in, check-out, work (working + meetings),
  * meetings, breaks, lateness and early leave — with the month's totals at the bottom.
  */
-export function dayTableHTML(rows) {
+export function dayTableHTML(rows, filter = 'all') {
   const todayKey = dayKey(now());
-  const shown = rows.filter(r => r.date <= todayKey && r.status !== 'future');
-  if (!shown.length) return empty('fa-calendar', L('مفيش أيام لسه في الشهر ده', 'No days yet this month'));
+  const f = DAY_FILTERS.find(x => x[0] === filter) || DAY_FILTERS[0];
+  const shown = visibleDays(rows).filter(f[4]);
+  if (!shown.length) return f[0] === 'all' ? empty('fa-calendar', L('مفيش أيام لسه في الشهر ده', 'No days yet this month'))
+    : empty('fa-filter', L(`مفيش أيام «${f[2]}» في الشهر ده`, `No "${f[3]}" days this month`));
   const dash = '<span class="muted">—</span>';
   const tm = (ms) => ms ? esc(fmtTime(ms)) : dash;
   const hrs = (ms) => ms ? esc(fmtHours(ms)) : dash;
@@ -112,6 +131,7 @@ export async function showDayDetails(email, row, { canRequest = false } = {}) {
 export async function personMonthView(el, email, { initialYm, canRequest = false, title = '', onData } = {}) {
   let ym = initialYm || ymOf(now());
   let data = null;
+  let filter = 'all';                                        // kept when switching months
   el.innerHTML = `<div class="row between mb-16" style="flex-wrap:wrap;gap:10px">
       <div>${title}</div>
       <div class="row gap-8"><button class="btn btn-icon btn-sm" data-m="-1" aria-label="prev"><i class="fas fa-chevron-right" data-flip></i></button>
@@ -124,16 +144,22 @@ export async function personMonthView(el, email, { initialYm, canRequest = false
     try {
       data = await personMonth(email, ym, scopeFor(email));
       el.querySelector('#pm-body').innerHTML = `${statTiles(data.totals)}
-        <div class="card mt-16">${dayTableHTML(data.rows)}</div>`;
-      el.querySelectorAll('[data-day]').forEach(d => {
-        const open = () => { const r = data.rows.find(x => x.date === d.dataset.day); if (r && r.status !== 'future') showDayDetails(email, r, { canRequest }); };
-        d.onclick = open; d.onkeydown = (e) => { if (e.key === 'Enter') open(); };
-      });
+        <div class="card mt-16"><div class="card-head" id="pm-filter"></div><div id="pm-table"></div></div>`;
+      drawTable();
       onData && onData(data, ym);
     } catch (e) {
       console.error(e);
       el.querySelector('#pm-body').innerHTML = `<div class="card">${empty('fa-triangle-exclamation', L('تعذّر تحميل البيانات', 'Could not load data'), e.message)}</div>`;
     }
+  }
+  function drawTable() {
+    el.querySelector('#pm-filter').innerHTML = dayFilterHTML(data.rows, filter);
+    el.querySelector('#pm-table').innerHTML = dayTableHTML(data.rows, filter);
+    el.querySelectorAll('#pm-filter [data-f]').forEach(b => b.onclick = () => { filter = b.dataset.f; drawTable(); });
+    el.querySelectorAll('#pm-table [data-day]').forEach(d => {
+      const open = () => { const r = data.rows.find(x => x.date === d.dataset.day); if (r && r.status !== 'future') showDayDetails(email, r, { canRequest }); };
+      d.onclick = open; d.onkeydown = (e) => { if (e.key === 'Enter') open(); };
+    });
   }
   el.querySelectorAll('[data-m]').forEach(b => b.onclick = () => { ym = addMonths(ym, Number(b.dataset.m)); load(); });
   await load();

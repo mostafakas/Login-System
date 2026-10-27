@@ -2,9 +2,12 @@
 import { L, esc, fmtDur, fmtTime, fmtHours, fmtMin, ymd, addDays, fmtDate, num, zparts } from '../core/utils.js';
 import { toast, toastErr, modal, avatar, presenceBadge, STATUS_META, busy, confirmDialog, empty, livePop } from '../core/ui.js';
 import { session, now } from '../core/session.js';
-import { policy, dayKey, planFor, lateness, modeLabel, MODE_META, typeLabel, statusLabel, REQUEST_STATUS, leaveTypeLabel, isWorkingPlan, withShift, canPickShift, shiftList, shiftLabel, requestChoices } from '../core/policy.js';
+import { policy, dayKey, planFor, lateness, modeLabel, MODE_META, typeLabel, statusLabel, REQUEST_STATUS, leaveTypeLabel, isWorkingPlan, withShift, canPickShift, shiftList, shiftLabel, requestChoices, requiredWorkMs } from '../core/policy.js';
 import { toMs, watch, query, col, where } from '../core/fb.js';
-import { startDay, changeStatus, endDay, liveBank, staleDay, closeStaleDay, dayLogs, COUNTED, countFrom } from '../services/attendance.js';
+import { startDay, changeStatus, endDay, liveBank, staleDay, closeStaleDay, dayLogs, COUNTED, countFrom, workedMs } from '../services/attendance.js';
+import { isOffDay, fileOvertime, msToHours } from '../services/overtime.js';
+import { notifyMany } from '../services/notify.js';
+import { approversFor } from '../services/requests.js';
 import { getSchedule, watchBalance, remaining, watchMyRequests } from '../services/requests.js';
 import { openRequestForm } from './request-form.js';
 import { meetingLine, nameOf } from '../services/directory.js';
@@ -91,8 +94,9 @@ export default async function render(root) {
       const stale = staleDay(p);
       const note = plan.mode === 'leave' ? `<div class="alert warn mb-16"><i class="fas fa-umbrella-beach"></i><span>${L('النهارده إجازة معتمدة ليك', 'You have approved leave today')}${plan.leaveType ? ` (${esc(leaveTypeLabel(plan.leaveType))})` : ''}.</span></div>`
         : (plan.mode === 'off' || plan.mode === 'holiday') ? `<div class="alert info mb-16"><i class="fas fa-bed"></i><span>${plan.mode === 'holiday' ? esc(L('عطلة رسمية', 'Public holiday')) + (plan.name ? ` — ${esc(plan.name)}` : '') : L('النهارده يوم راحة.', 'Today is a day off.')}</span></div>` : '';
+      const otNote = isOffDay(plan) ? `<div class="alert ok mb-16" id="ot-note"><i class="fas fa-business-time"></i><span>${L('لو اشتغلت النهارده، ساعات شغلك هتتحسب أوفر تايم: لما تنهي اليوم بيتبعت طلب للإدارة، ولو اتوافق عليه المبلغ بينزل على مرتبك.', 'If you work today, your hours count as overtime: ending the day sends a request to management, and once approved the amount is added to your salary.')}</span></div>` : '';
       card.innerHTML = `<div class="card-body">
-        ${note}
+        ${note}${otNote}
         ${stale ? `<div class="alert warn mb-16"><i class="fas fa-triangle-exclamation"></i><span>${L(`يوم ${fmtDate(stale)} ما اتقفلش. هيتقفل تلقائياً على ميعاد الانصراف لما تبدأ النهارده، ولو فيه خطأ قدّم طلب تصحيح.`, `Your day on ${fmtDate(stale)} was not ended. It will be closed at the planned end time when you start today; request a correction if needed.`)}</span></div>` : ''}
         <div class="row between" style="flex-wrap:wrap;gap:16px">
           <div><h3 style="font-size:17px">${endedToday() ? L('خلّصت يومك', 'Your day is ended') : L('جاهز تبدأ؟', 'Ready to start?')}</h3>
@@ -122,11 +126,77 @@ export default async function render(root) {
       try { await changeStatus(session.email, b.dataset.st); } catch (e) { toastErr(e); }
     }));
     renderMeeting();
-    card.querySelector('#end-btn').onclick = async (e) => {
-      const ok = await confirmDialog({ title: L('إنهاء اليوم', 'End day'), message: L('هيتسجل وقت انصرافك دلوقتي. متأكد؟', 'Your check-out will be recorded now. Continue?'), okText: L('إنهاء اليوم', 'End day'), okClass: 'btn-danger' });
-      if (!ok) return;
-      try { await endDay(); toast(L('يومك اتقفل. شكراً على مجهودك!', 'Day ended. Thanks for your work!')); } catch (ex) { toastErr(ex); }
+    card.querySelector('#end-btn').onclick = () => openEnd();
+  }
+
+  /** The day's actual hours: what the plan asks for (minus approved permission time) and what was worked so far */
+  function dayHours() {
+    const p = u();
+    const plan = withShift(planFor(today(), schedule, session.email), p.shift, p.workLocation);
+    const worked = workedMs(p);
+    let required = requiredWorkMs(plan);
+    // a permission that did not move the day's hours (someone who picks a shift) is taken off what is required
+    const moved = !!(schedule && schedule.days && (schedule.days[today()] || {}).excuseId);
+    if (!moved) required -= myReqs.filter(r => r.type === 'excuse' && r.status === 'approved' && r.startDate === today()).reduce((s, r) => s + (r.minutes || 0) * 60000, 0);
+    return { plan, worked, required: Math.max(0, required) };
+  }
+
+  async function openEnd() {
+    const { plan, worked, required } = dayHours();
+    const finish = async (extra) => {
+      const p = u(), fo = toMs(p.firstOnlineAt);
+      await endDay(extra);
+      toast(L('يومك اتقفل. شكراً على مجهودك!', 'Day ended. Thanks for your work!'));
+      if (isOffDay(plan)) {
+        try {
+          const r = await fileOvertime({ date: today(), plan, checkInMs: fo, checkOutMs: now(), workMs: worked });
+          if (r) livePop({ icon: 'fa-business-time', cls: 'ok', title: L('اتبعت طلب أوفر تايم', 'Overtime request sent'), text: r.status === 'pending_admin' ? L(`${msToHours(worked)} ساعة شغل في يوم إجازة. الطلب عند الإدارة، ولو اتوافق عليه المبلغ هينزل على مرتبك.`, `${msToHours(worked)} h worked on a day off. The request is with management; once approved the amount is added to your salary.`) : L('طلب الأوفر تايم بتاع النهارده اتقرر بالفعل.', "Today's overtime request was already decided."), ttl: 15000 });
+        } catch (e) { console.warn(e); toast(L('مقدرتش أبعت طلب الأوفر تايم', 'Could not send the overtime request'), e.userMessage || '', 'warn'); }
+      }
     };
+    // short of the day's actual hours: tell the employee, who accepts it or objects (both are kept on the day)
+    if (isWorkingPlan(plan) && required > 0 && worked < required) {
+      const missing = required - worked;
+      const m = modal({
+        title: L('لم يتم استكمال عدد ساعات اليوم الفعلية', "Today's actual hours are not complete"), icon: 'fa-hourglass-half', size: 'narrow',
+        body: `<div class="col gap-12" id="short-box">
+          <div class="alert warn"><i class="fas fa-triangle-exclamation"></i><span>${L(`إنت بتنهي يومك قبل ما تكمّل ساعات الشغل الفعلية (من غير الاستراحة). ناقصك <b class="num">${esc(fmtHours(missing))}</b>.`, `You are ending the day before completing the actual work hours (breaks excluded). You are <b class="num">${esc(fmtHours(missing))}</b> short.`)}</span></div>
+          <dl class="kv">
+            <dt>${L('المطلوب النهارده', 'Required today')}</dt><dd class="num">${esc(fmtHours(required))}</dd>
+            <dt>${L('اشتغلت', 'Worked')}</dt><dd class="num">${esc(fmtHours(worked))}</dd>
+            <dt>${L('الناقص', 'Missing')}</dt><dd class="num bad-txt"><b>${esc(fmtHours(missing))}</b></dd>
+          </dl>
+          <p class="small muted">${L('لو موافق، اليوم بيتسجل إن ساعاته ناقصة. ولو رافض، اكتب السبب وهيوصل لمديرك. في الحالتين ده بيظهر في تقارير حضورك.', 'If you accept, the day is recorded as short. If you object, write why and your manager is told. Either way it shows in your attendance reports.')}</p>
+          <div class="field"><label>${L('سبب الرفض (لو رافض)', 'Reason (if you object)')}</label><textarea class="textarea" id="short-note" maxlength="500" placeholder="${L('مثلاً: كنت في مأمورية / الوقت متسجلش صح', 'e.g. I was on an errand / time was not recorded right')}"></textarea></div>
+        </div>`,
+        foot: `<button class="btn" data-close id="short-back"><i class="fas fa-rotate-left"></i> ${L('أكمّل شغلي', 'Keep working')}</button>
+          <button class="btn" id="short-refuse"><i class="fas fa-hand"></i> ${L('رافض', 'Object')}</button>
+          <button class="btn btn-danger" id="short-accept"><i class="fas fa-check"></i> ${L('موافق — أنهي اليوم', 'Accept — end day')}</button>`
+      });
+      const answer = (response) => async (e) => {
+        const note = m.$('#short-note').value.trim();
+        if (response === 'refused' && !note) { m.$('#short-note').focus(); toast(L('اكتب سبب الرفض', 'Write why you object'), '', 'warn'); return; }
+        await busy(e.currentTarget, async () => {
+          try {
+            const { worked: w } = dayHours();
+            const shortfall = { requiredMs: Math.round(required), workedMs: Math.round(w), missingMs: Math.max(0, Math.round(required - w)), response, note: note.slice(0, 500), at: now() };
+            await finish({ shortfall });
+            m.close();
+            if (response === 'refused') {
+              const me = u();
+              const to = [...new Set([me.leaderEmail, ...approversFor('hr', {})].filter(e => e && e !== session.email))];
+              notifyMany(to, L(`${me.name || session.email} اعترض على ساعات يوم ناقصة`, `${me.name || session.email} objected to a short day`), `${fmtHours(shortfall.missingMs)} — ${note}`, '#/reports', 'request');
+            }
+          } catch (ex) { toastErr(ex); }
+        });
+      };
+      m.$('#short-accept').onclick = answer('accepted');
+      m.$('#short-refuse').onclick = answer('refused');
+      return;
+    }
+    const ok = await confirmDialog({ title: L('إنهاء اليوم', 'End day'), message: isOffDay(plan) ? L(`النهارده يوم إجازة: اشتغلت ${fmtHours(worked)}. لما تنهي اليوم هيتبعت طلب أوفر تايم للإدارة.`, `Today is a day off: you worked ${fmtHours(worked)}. Ending the day sends an overtime request to management.`) : L('هيتسجل وقت انصرافك دلوقتي. متأكد؟', 'Your check-out will be recorded now. Continue?'), okText: L('إنهاء اليوم', 'End day'), okClass: 'btn-danger' });
+    if (!ok) return;
+    try { await finish({ shortfall: null }); } catch (ex) { toastErr(ex); }
   }
 
   async function openStart() {

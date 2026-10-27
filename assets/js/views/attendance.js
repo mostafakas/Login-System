@@ -22,7 +22,9 @@ export function statTiles(t) {
     ${tile('fa-mug-hot', 'warn', L('استراحات', 'Breaks'), esc(fmtHours(t.breakMs)))}
     ${tile('fa-door-open', 'neutral', L('انصراف مبكر', 'Early leave'), esc(fmtMin(t.earlyMinutes)))}
     ${tile('fa-chart-simple', t.commitment >= 90 ? 'ok' : (t.commitment >= 75 ? 'warn' : 'bad'), L('نسبة الالتزام', 'Commitment'), num(t.commitment), '%')}
-  </div>`;
+  </div>${t.shortDays || t.extraDays ? `<div class="row-wrap mt-8" style="gap:6px">
+    ${t.shortDays ? `<span class="badge warn"><i class="fas fa-hourglass-half"></i>${L(`${t.shortDays} يوم ساعاته الفعلية ناقصة (${fmtHours(t.shortMs)})`, `${t.shortDays} short day(s) (${fmtHours(t.shortMs)})`)}${t.shortRefused ? ` · ${L(`اعترض على ${t.shortRefused}`, `objected to ${t.shortRefused}`)}` : ''}</span>` : ''}
+    ${t.extraDays ? `<span class="badge ok"><i class="fas fa-business-time"></i>${L(`شغل في ${t.extraDays} يوم إجازة (${fmtHours(t.extraMs)})`, `Worked ${t.extraDays} day(s) off (${fmtHours(t.extraMs)})`)}</span>` : ''}</div>` : ''}`;
 }
 
 /** Day-type filters over the month table: office, remote, leave and absence days */
@@ -69,7 +71,9 @@ export function dayTableHTML(rows, filter = 'all') {
       r.plan.shift && rec.checkInMs ? `<span class="badge info xs">${esc(shiftLabel(r.plan.shift))}</span>` : '',
       r.flags.includes('forgot') ? `<span class="badge warn xs" title="${L('نسي ينهي اليوم', 'Day not ended')}">${L('اتقفل تلقائياً', 'Auto-closed')}</span>` : '',
       r.flags.includes('excused') ? `<span class="badge ok xs">${L('بإذن', 'Excused')}</span>` : '',
-      r.flags.includes('remote-pending') ? `<span class="badge warn xs">${L('مستني موافقة', 'Pending')}</span>` : ''
+      r.flags.includes('remote-pending') ? `<span class="badge warn xs">${L('مستني موافقة', 'Pending')}</span>` : '',
+      r.flags.includes('extra-day') ? `<span class="badge ok xs" title="${L('شغل في يوم إجازة', 'Worked on a day off')}">${L('أوفر تايم', 'Overtime')}</span>` : '',
+      r.short ? shortBadge(r.short, 'xs') : ''
     ].join('');
     return `<tr data-day="${r.date}" tabindex="0" role="button" style="cursor:pointer;${idle ? 'opacity:.55' : ''}" class="${r.date === todayKey ? 'today-row' : ''}">
       <td class="nowrap"><b class="num">${+r.date.slice(8)}</b> <span class="muted small">${esc(DOW()[weekday(r.date)])}</span></td>
@@ -93,6 +97,12 @@ export function dayTableHTML(rows, filter = 'all') {
   </table></div>`;
 }
 
+/** A short day (ended before its actual hours): how much was missing, and the employee's answer */
+export function shortBadge(sh, size = '') {
+  const refused = sh.response === 'refused';
+  return `<span class="badge ${refused ? 'bad' : 'warn'} ${size}" title="${esc(sh.note || '')}"><i class="fas fa-hourglass-half"></i>${L('ناقص', 'Short')} ${esc(fmtHours(sh.missingMs))} · ${refused ? L('اعترض', 'objected') : L('وافق', 'accepted')}</span>`;
+}
+
 export async function showDayDetails(email, row, { canRequest = false } = {}) {
   const meta = STATUS_DAY[row.status] || STATUS_DAY.none;
   const m = modal({
@@ -111,6 +121,9 @@ export async function showDayDetails(email, row, { canRequest = false } = {}) {
         <dt>${L('ساعات الشغل', 'Work hours')}</dt><dd>${esc(fmtHours((row.workMs || 0) + (row.meetingMs || 0)))} <span class="xs muted">${L('شغل + اجتماعات', 'work + meetings')}</span></dd>
         <dt>${L('استراحة', 'Break')}</dt><dd>${esc(fmtHours(row.breakMs))}</dd>
         <dt>${L('اجتماعات', 'Meetings')}</dt><dd>${esc(fmtHours(row.meetingMs))}</dd>
+        ${row.short ? `<dt>${L('ساعات اليوم الفعلية', 'Actual hours')}</dt><dd>${L(`المطلوب ${fmtHours(row.short.requiredMs)} · اشتغل ${fmtHours(row.short.workedMs)} · ناقص`, `Required ${fmtHours(row.short.requiredMs)} · worked ${fmtHours(row.short.workedMs)} · short`)} <b class="bad-txt">${esc(fmtHours(row.short.missingMs))}</b> ${shortBadge(row.short, 'xs')}</dd>
+          ${row.short.note ? `<dt>${L('سبب الاعتراض', 'Objection')}</dt><dd>${esc(row.short.note)}</dd>` : ''}` : ''}
+        ${row.flags.includes('extra-day') ? `<dt>${L('أوفر تايم', 'Overtime')}</dt><dd>${L(`شغل في يوم إجازة: ${fmtHours((row.workMs || 0) + (row.meetingMs || 0))}`, `Worked on a day off: ${fmtHours((row.workMs || 0) + (row.meetingMs || 0))}`)}</dd>` : ''}
         ${row.rec && row.rec.correctionNote ? `<dt>${L('ملاحظة التصحيح', 'Correction note')}</dt><dd>${esc(row.rec.correctionNote)}</dd>` : ''}
       </dl>
       <div class="mt-16"><div class="label mb-8">${L('سجل الحالات', 'Status log')}</div><div id="day-logs">${loader()}</div></div>`,

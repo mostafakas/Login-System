@@ -5,13 +5,15 @@ import { REQUEST_TYPES, REQUEST_STATUS, typeLabel, statusLabel, leaveTypeLabel, 
 import { toMs } from '../core/fb.js';
 import { person, nameOf } from '../services/directory.js';
 import { getAttachment } from '../services/requests.js';
+import { read } from '../core/fb.js';
+import { hourValue, overtimeAmount, offDayLabel, msToHours, otMultiplier } from '../services/overtime.js';
 
 const STAGE_NAME = { leader: { ar: 'المدير المباشر', en: 'Manager' }, hr: { ar: 'HR', en: 'HR' }, finance: { ar: 'المالية', en: 'Finance' }, admin: { ar: 'الأدمن', en: 'Admin' } };
 const ACTION_TXT = {
   submitted: ['قدّم الطلب', 'submitted'], cancelled: ['ألغى الطلب', 'cancelled'], revoked: ['ألغى الاعتماد', 'revoked approval'],
   approved_leader: ['وافق (المدير)', 'approved (manager)'], approved_hr: ['وافق (HR)', 'approved (HR)'], approved_finance: ['وافق (المالية)', 'approved (finance)'],
   rejected_leader: ['رفض (المدير)', 'rejected (manager)'], rejected_hr: ['رفض (HR)', 'rejected (HR)'], rejected_finance: ['رفض (المالية)', 'rejected (finance)'],
-  approved_admin: ['وافق (الأدمن)', 'approved (admin)'], rejected_admin: ['رفض (الأدمن)', 'rejected (admin)'], edited: ['عدّل الطلب', 'edited the request']
+  approved_admin: ['وافق (الأدمن)', 'approved (admin)'], rejected_admin: ['رفض (الأدمن)', 'rejected (admin)'], edited: ['عدّل الطلب', 'edited the request'], updated: ['حدّث الساعات', 'updated the hours']
 };
 
 export function requestTitle(r) {
@@ -24,6 +26,7 @@ export function requestWhen(r) {
   if (r.type === 'excuse') return `${fmtDate(r.startDate)} · ${r.fromTime}–${r.toTime} (${fmtMin(r.minutes)})`;
   if (r.type === 'advance') return `${money(r.amount)} · ${num(r.installments)} ${L('قسط', 'installments')}${r.perMonth ? ` × ${money(r.perMonth, false)}` : ''}${r.startMonth ? ` · ${fmtMonth(r.startMonth)}${r.endMonth && r.endMonth !== r.startMonth ? ` ← ${fmtMonth(r.endMonth)}` : ''}` : ''}`;
   if (r.type === 'correction') return `${fmtDate(r.startDate)}${r.correction ? ` · ${r.correction.checkIn || '—'} → ${r.correction.checkOut || '—'}` : ''}`;
+  if (r.type === 'overtime') return `${fmtDate(r.startDate)} · ${offDayLabel(r)} · ${num(Number(r.hours) || msToHours(r.workMs), 2)} ${L('ساعة', 'h')}${r.amount != null ? ` = ${money(r.amount)}` : ''}`;
   if (r.type === 'letter') return r.addressedTo ? `${L('إلى:', 'To:')} ${r.addressedTo}` : fmtDate(r.startDate);
   if (!r.startDate) return '';
   return `${fmtDate(r.startDate)}${r.endDate && r.endDate !== r.startDate ? ' → ' + fmtDate(r.endDate) : ''}${r.days ? ` · ${num(r.days)} ${L('يوم عمل', 'working days')}` : ''}`;
@@ -69,6 +72,12 @@ export function requestCard(r, { showPerson = false, actions = '' } = {}) {
     </div>
   </article>`;
 }
+/** hours × the hour's value (× multiplier) = amount, with how the hour's value was found */
+function otCalcHTML(o, hv) {
+  const mult = Number(o.multiplier) || 1;
+  return `<b class="num">${esc(money(o.amount))}</b> <span class="xs muted num">= ${num(o.hours, 2)} ${L('ساعة', 'h')} × ${esc(money(o.hourlyRate, false))}${mult !== 1 ? ` × ${mult}` : ''}</span>
+    ${o.dayHours ? `<div class="xs muted">${L(`قيمة الساعة = ${hv ? `المرتب ${money(hv.monthly, false)} ÷ ${hv.divisor} يوم` : 'المرتب ÷ أيام الشهر'} ÷ ${o.dayHours} ساعة شغل في اليوم`, `Hour value = ${hv ? `salary ${money(hv.monthly, false)} ÷ ${hv.divisor} days` : 'salary ÷ days'} ÷ ${o.dayHours} work hours a day`)}</div>` : ''}`;
+}
 export async function showRequestDetails(r) {
   const p = person(r.email) || { name: r.name, email: r.email };
   const hist = (r.history || []).slice().sort((a, b) => (a.at || 0) - (b.at || 0));
@@ -78,6 +87,10 @@ export async function showRequestDetails(r) {
       <dl class="kv">
         <dt>${L('النوع', 'Type')}</dt><dd>${esc(requestLabel(r))}</dd>
         <dt>${L('التفاصيل', 'Details')}</dt><dd>${esc(requestWhen(r))}</dd>
+        ${r.type === 'overtime' ? `<dt>${L('اليوم', 'Day')}</dt><dd>${esc(offDayLabel(r))}</dd>
+          <dt>${L('الحضور / الانصراف', 'In / out')}</dt><dd class="num">${esc(r.checkInMs ? fmtTime(r.checkInMs) : '—')} → ${esc(r.checkOutMs ? fmtTime(r.checkOutMs) : '—')}</dd>
+          <dt>${L('ساعات الشغل', 'Hours worked')}</dt><dd class="num"><b>${num(Number(r.hours) || msToHours(r.workMs), 2)}</b> ${L('ساعة', 'h')} <span class="xs muted">${L('شغل + اجتماعات، من غير الاستراحة', 'work + meetings, breaks excluded')}</span></dd>
+          <dt>${L('قيمة الأوفر تايم', 'Overtime pay')}</dt><dd id="ot-calc">${r.amount != null ? otCalcHTML(r) : `<span class="muted">—</span>`}</dd>` : ''}
         ${r.correction && r.correction.mode ? `<dt>${L('مكان العمل', 'Location')}</dt><dd>${esc(modeLabel(r.correction.mode))}</dd>` : ''}
         ${r.leaderEmail ? `<dt>${L('المدير المباشر', 'Manager')}</dt><dd>${esc(nameOf(r.leaderEmail))}</dd>` : ''}
         <dt>${L('تاريخ التقديم', 'Submitted')}</dt><dd>${esc(fmtDate(toMs(r.createdAt) || r.createdMs))} ${esc(fmtTime(toMs(r.createdAt) || r.createdMs))}</dd>
@@ -91,6 +104,16 @@ export async function showRequestDetails(r) {
           ${h.note ? `<div class="xs muted">${esc(h.note)}</div>` : ''}</div>`).join('') || empty('fa-clock', L('مفيش سجل', 'No history'))}</div></div>`,
     foot: `<button class="btn" data-close>${L('إغلاق', 'Close')}</button>`
   });
+  // a pending overtime: the amount it would add, for whoever can see salaries (admin, HR, finance)
+  if (r.type === 'overtime' && r.amount == null) {
+    try {
+      const priv = await read('employees_private', r.email);
+      if (priv) {
+        const hv = hourValue(priv, r.email), hours = Number(r.hours) || msToHours(r.workMs), mult = Number(r.multiplier) || otMultiplier();
+        m.$('#ot-calc').innerHTML = otCalcHTML({ hours, hourlyRate: hv.rate, dayHours: hv.dayHours, multiplier: mult, amount: overtimeAmount(hours, hv.rate, mult) }, hv);
+      }
+    } catch { /* no access to salaries: the amount is worked out when the admin approves */ }
+  }
   if (r.attachmentId) {
     m.$('#att').innerHTML = `<div class="label mb-8">${L('المرفق', 'Attachment')}</div><span class="spinner"></span>`;
     try {

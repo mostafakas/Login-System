@@ -32,6 +32,8 @@ export const DEFAULT_POLICY = {
   lateDeductionEnabled: false,
   absenceDeductDays: 1,
   payrollDayDivisor: 30,
+  overtimeMultiplier: 1,          // overtime on a day off: hours × the hour's value × this
+  overtimeDayHours: 0,            // hours in a working day for the hour's value (0 = the person's shift minus the break)
   breakMaxMinutes: 60,
   carryOverMax: 0,                // unused annual days carried to next year
   trackingStart: '',              // first day attendance is tracked by this system (set at go-live)
@@ -68,6 +70,7 @@ export const REQUEST_TYPES = {
   correction: { ar: 'تصحيح حضور', en: 'Attendance correction', icon: 'fa-pen-to-square', tile: 'neutral' },
   advance:    { ar: 'سلفة', en: 'Salary advance', icon: 'fa-hand-holding-dollar', tile: 'ok' },
   letter:     { ar: 'خطاب من HR', en: 'HR letter', icon: 'fa-file-signature', tile: 'info' },
+  overtime:   { ar: 'أوفر تايم', en: 'Overtime', icon: 'fa-business-time', tile: 'ok', internal: true }, // filed automatically when a day off is worked
   custom:     { ar: 'طلب آخر', en: 'Other request', icon: 'fa-file-lines', tile: 'neutral', internal: true } // admin-defined types (settings → request types)
 };
 export const EXCUSE_KINDS = {
@@ -221,6 +224,22 @@ export function withShift(plan, shift, mode) {
   return p;
 }
 
+/** Actual work a working day asks for (work + meetings, breaks excluded): the plan's hours minus the allowed break */
+export function requiredWorkMs(plan) {
+  if (!plan || !isWorkingPlan(plan) || !plan.start || !plan.end) return 0;
+  const mins = hmToMin(plan.end) - hmToMin(plan.start) - (Number(policy.breakMaxMinutes) || 0);
+  return Math.max(0, mins) * 60000;
+}
+/** Hours in one working day of a person, for the value of an hour: the setting, else their hours (or the first shift) minus the break */
+export function dayWorkHours(who) {
+  const set = Number(policy.overtimeDayHours) || 0;
+  if (set > 0) return set;
+  const h = hoursFor(who);
+  const s = h.fixed ? h : (shiftList()[0] || h);
+  const mins = hmToMin(s.end) - hmToMin(s.start) - (Number(policy.breakMaxMinutes) || 0);
+  return mins > 0 ? Math.round(mins / 6) / 10 : 8;
+}
+
 /** Count working days in a range (excludes weekends & holidays; schedule overrides respected) */
 export function workingDays(from, to, schedulesByMonth = {}) {
   return dateRange(from, to).filter(d => {
@@ -257,7 +276,7 @@ export function lateDeductionDays(lateMin) {
 export const activeRequestTypes = () => Object.keys(REQUEST_TYPES).filter(k => !REQUEST_TYPES[k].retired && !REQUEST_TYPES[k].internal);
 /** type = a request type or a workflow key (custom_<id> for an admin-defined type) */
 export function stagesFor(type, requester) {
-  if (type === 'advance') return ['admin']; // salary advances are decided by the admin only
+  if (type === 'advance' || type === 'overtime') return ['admin']; // money: salary advances and overtime are decided by the admin only
   // with no saved workflow, an admin-defined type goes to the manager (the same default the security rules use)
   const wf = (policy.workflow && policy.workflow[type]) || (String(type).startsWith('custom') ? ['leader'] : ['hr']);
   const st = wf.filter(s => !(s === 'leader' && !(requester && requester.leaderEmail)));

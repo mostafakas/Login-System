@@ -13,6 +13,7 @@ import { notify } from './notify.js';
 import { track } from './activity.js';
 import { payParts, isFreelancer, rulesOf, violationsFrom, priceViolations } from './salary.js';
 import { evalSettings, evalId } from './evaluations.js';
+import { overtimeLines } from './overtime.js';
 
 export const itemId = (month, email) => `${month}_${email}`;
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -44,8 +45,9 @@ export function allowedMoves(i) {
  * KPI ({ kpiMode: 'pct'|'amt', kpiValue }; empty = the full KPI).
  * A freelancer is paid the full agreed salary: attendance (absence, lateness, unpaid leave…) is not priced and
  * nothing is split into allowances; only advances and the admin's own bonus / deductions apply.
+ * `overtime` = the month's approved overtime (services/overtime.overtimeLines), added to the gross.
  */
-export function computeItem({ person: p, priv, totals, violations = [], advances, manual = {} }) {
+export function computeItem({ person: p, priv, totals, violations = [], advances, manual = {}, overtime = [] }) {
   const freelancer = isFreelancer(priv);
   const parts = payParts(priv);
   const rules = rulesOf(priv);
@@ -62,8 +64,9 @@ export function computeItem({ person: p, priv, totals, violations = [], advances
   const other = (manual.otherDeductions || []).reduce((s, d) => s + (Number(d.amount) || 0), 0);
   const bonus = Number(manual.bonus) || 0, incentive = Number(manual.incentive) || 0;
   const fixed = parts.fixed;
+  const overtimeTotal = r2(overtime.reduce((s, o) => s + (Number(o.amount) || 0), 0));
   const violationTotal = r2(priced.byPart.basic + priced.byPart.allowances + priced.byPart.regularity);
-  const gross = r2(parts.basic + parts.allowances + parts.regularity + kpi + bonus + incentive);
+  const gross = r2(parts.basic + parts.allowances + parts.regularity + kpi + bonus + incentive + overtimeTotal);
   const deductions = r2(fixed + violationTotal + unpaid + advance + other);
   const bank = String((priv && priv.bank) || '').replace(/\s/g, '');
   const payTo = (priv && priv.instapay) ? 'InstaPay' : (bank ? `${L('حساب بنكي', 'Bank account')} •••${bank.slice(-4)}` : '');
@@ -72,6 +75,7 @@ export function computeItem({ person: p, priv, totals, violations = [], advances
     structured: parts.structured, totalSalary: parts.total, freelancer,
     basic: parts.basic, allowances: parts.allowances, regularity: parts.regularity, kpiFull: parts.kpi, kpi, kpiMode, kpiValue,
     allowanceLines: [], bonus, incentive, fixed,
+    overtime: overtimeTotal, overtimeLines: overtime, overtimeHours: r2(overtime.reduce((s, o) => s + (Number(o.hours) || 0), 0)),
     violations: priced.lines, deductionByPart: priced.byPart,
     lateDeduction: priced.byKind.late, absenceDeduction: priced.byKind.absence, remoteDeduction: priced.byKind.remote, earlyDeduction: priced.byKind.early,
     absenceDays: violations.filter(v => v.kind === 'absence').length, unpaidDays, unpaidDeduction: unpaid,
@@ -132,7 +136,8 @@ export async function buildRun(month) {
       if (k != null) manual = { ...old, kpiMode: 'pct', kpiValue: k };
       else if (old.kpiFromReview) manual = { ...old, kpiMode: '', kpiValue: null };     // the link was switched off / no review any more
     }
-    const item = computeItem({ person: p, priv, totals: pm.totals, violations, advances: advs.filter(a => a.email === p.email), manual });
+    const overtime = overtimeLines(pm.requests, priv, p.email);
+    const item = computeItem({ person: p, priv, totals: pm.totals, violations, advances: advs.filter(a => a.email === p.email), manual, overtime });
     b.set(doc(db, 'payroll_items', itemId(month, p.email)), { ...item, kpiFromReview: manual !== old ? manual.kpiMode === 'pct' : !!old.kpiFromReview && !!old.kpiMode, month, status: 'pending', published: false, updatedAt: serverTimestamp() });
     count++;
   }
@@ -149,7 +154,7 @@ export async function saveManual(month, email, manual) {
   const priv = await read('employees_private', email).catch(() => ({})) || {};
   const totals = it.att || null; // attendance numbers captured when the run was built
   const advances = (it.advanceRefs || []).map(a => ({ id: a.id, installment: a.amount, amount: a.total, paid: a.paidBefore, installments: a.count, perMonth: a.perMonth, startMonth: a.startMonth, endMonth: a.endMonth }));
-  const next = computeItem({ person: p, priv, totals, violations: (it.att && it.att.violations) || [], advances, manual });
+  const next = computeItem({ person: p, priv, totals, violations: (it.att && it.att.violations) || [], advances, manual, overtime: it.overtimeLines || [] });
   // a KPI changed by hand is the admin's from now on (no longer follows the review)
   const fromReview = !!it.kpiFromReview && next.kpiMode === it.kpiMode && Number(next.kpiValue) === Number(it.kpiValue);
   await updateDoc(doc(db, 'payroll_items', itemId(month, email)), { ...next, kpiFromReview: fromReview, updatedAt: serverTimestamp(), editedBy: session.email });

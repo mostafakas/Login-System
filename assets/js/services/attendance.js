@@ -162,8 +162,9 @@ function withDiag(e, u, dayDoc) {
 /**
  * Change live status for a user (self, or a manager forcing it).
  * meeting = { meetingWith: [emails], meetingExternal, meetingTopic, meetingId } when the new status is Meeting.
+ * dayExtra = more fields for the day record when the day ends (the employee's answer to a short day: { shortfall }).
  */
-export async function changeStatus(email, newStatus, by = session.email, meeting = null) {
+export async function changeStatus(email, newStatus, by = session.email, meeting = null, dayExtra = null) {
   window.dispatchEvent(new Event('am:data-changed'));
   const u = await read('users', email);
   if (!u) throw new Error('no user');
@@ -187,7 +188,7 @@ export async function changeStatus(email, newStatus, by = session.email, meeting
   if (newStatus === 'Offline') upd.checkedOut = true;
   b.update(doc(db, 'users', email), upd);
   const dayUpd = { workMs: bank.Online, breakMs: bank.Break, meetingMs: bank.Meeting, updatedAt: serverTimestamp() };
-  if (newStatus === 'Offline') Object.assign(dayUpd, { checkOutMs: at, closed: true, closedBy: by === email ? 'user' : closerRole() });
+  if (newStatus === 'Offline') Object.assign(dayUpd, { checkOutMs: at, closed: true, closedBy: by === email ? 'user' : closerRole() }, by === email ? (dayExtra || {}) : {});
   b.set(doc(db, 'attendance_days', dayDocId(email, key)), dayUpd, { merge: true });
   const log = logEntry(u, email, old, newStatus, dur, by, key);
   if (newStatus === 'Meeting') Object.assign(log, { meeting_with: meet.meetingWith, meeting_external: meet.meetingExternal, meeting_topic: meet.meetingTopic });
@@ -196,7 +197,11 @@ export async function changeStatus(email, newStatus, by = session.email, meeting
   // leaving my own meeting withdraws the invitations nobody answered
   if (old === 'Meeting' && email === session.email) import('./meetings.js').then(m => m.cancelMyInvites()).catch(() => {});
 }
-export const endDay = () => changeStatus(session.email, 'Offline');
+/** extra = { shortfall } when the day ends before its actual hours are done (null = the hours were done) */
+export const endDay = (extra = null) => changeStatus(session.email, 'Offline', session.email, null, extra);
+
+/** Work counted today so far (work + meetings, breaks excluded) */
+export const workedMs = (u, at = now()) => { const b = liveBank(u, at); return b.Online + b.Meeting; };
 
 /** HR/admin: reset a person's live counters (e.g. wrong start). Keeps the archived day. */
 export async function resetLive(email) {

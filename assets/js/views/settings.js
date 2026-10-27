@@ -226,10 +226,12 @@ export default async function render(root, { params = [] } = {}) {
         <div class="card"><form class="card-body form-grid" id="f">
           ${numField('payrollDayDivisor', L('قسمة الراتب لحساب قيمة اليوم', 'Divisor for a day\'s value'), policy.payrollDayDivisor, L('قيمة اليوم من أي جزء = الجزء ÷ الرقم ده (عادة 30).', 'A day of any part = the part ÷ this number (usually 30).'), 'min="20" max="31"')}
           ${numField('carryOverMax', L('أقصى ترحيل للاعتيادي (أيام)', 'Max annual carry-over (days)'), policy.carryOverMax || 0, '', 'min="0"')}
+          ${numField('overtimeMultiplier', L('معامل الأوفر تايم', 'Overtime multiplier'), policy.overtimeMultiplier ?? 1, L('مبلغ الأوفر تايم = الساعات × قيمة الساعة × الرقم ده (1 = نفس قيمة الساعة، 1.5 = ساعة ونص).', 'Overtime pay = hours × the hour\'s value × this (1 = same rate, 1.5 = time and a half).'), 'min="0.5" max="5" step="0.25"')}
+          ${numField('overtimeDayHours', L('ساعات يوم الشغل لحساب قيمة الساعة', 'Work hours a day (for the hour\'s value)'), policy.overtimeDayHours || 0, L('قيمة الساعة = المرتب ÷ قسمة اليوم ÷ الرقم ده. 0 = مدة شيفت الموظف ناقص الاستراحة (مثلاً 9 − 1 = 8 ساعات).', 'Hour value = salary ÷ the day divisor ÷ this. 0 = the person\'s shift minus the break (e.g. 9 − 1 = 8 h).'), 'min="0" max="16" step="0.5"')}
         </form>${saveBar()}</div>`;
       pane.querySelector('#save').onclick = (e) => busy(e.currentTarget, async () => {
         const f = pane.querySelector('#f');
-        try { await savePolicy({ payrollDayDivisor: Number(f.payrollDayDivisor.value) || 30, carryOverMax: Number(f.carryOverMax.value) || 0 }); toast(L('تم الحفظ', 'Saved')); } catch (ex) { toastErr(ex); }
+        try { await savePolicy({ payrollDayDivisor: Number(f.payrollDayDivisor.value) || 30, carryOverMax: Number(f.carryOverMax.value) || 0, overtimeMultiplier: Math.max(0.5, Math.min(5, Number(f.overtimeMultiplier.value) || 1)), overtimeDayHours: Math.max(0, Math.min(16, Number(f.overtimeDayHours.value) || 0)) }); toast(L('تم الحفظ', 'Saved')); } catch (ex) { toastErr(ex); }
       });
     },
     async system() {

@@ -15,6 +15,7 @@ import { notify, notifyMany } from './notify.js';
 import { activePeople, person, nameOf } from './directory.js';
 import { correctDay } from './attendance.js';
 import { track } from './activity.js';
+import { hourValue, overtimeAmount, msToHours, otMultiplier } from './overtime.js';
 
 // ---------- balances ----------
 export const balanceId = (email, year) => `${email}_${year}`;
@@ -326,6 +327,15 @@ export async function applyApproval(id, entry) {
   const months = [...new Set(dates.map(d => d.slice(0, 7)))];
   const year = Number((r0.startDate || ymd(now())).slice(0, 4));
   const owner = person(email) || {};
+  // overtime: the hour's value from the salary at the time of approval (the approver must be able to read salaries)
+  let ot = null;
+  if (r0.type === 'overtime') {
+    const priv = await read('employees_private', email).catch(() => null);
+    const hours = Number(r0.hours) || msToHours(r0.workMs);
+    const mult = Number(r0.multiplier) || otMultiplier();
+    if (priv) { const hv = hourValue(priv, email); ot = { hours, hourlyRate: hv.rate, dayHours: hv.dayHours, multiplier: mult, amount: overtimeAmount(hours, hv.rate, mult) }; }
+    else ot = { hours, multiplier: mult };
+  }
 
   await runTransaction(db, async (tx) => {
     const reqRef = doc(db, 'requests', id);
@@ -389,7 +399,7 @@ export async function applyApproval(id, entry) {
         startMonth: plan.startMonth, endMonth: plan.endMonth, paid: 0, status: 'active', createdAt: serverTimestamp()
       });
     }
-    const upd = { status: 'approved', updatedAt: serverTimestamp(), approvedBy: session.email, approvedAt: serverTimestamp() };
+    const upd = { status: 'approved', updatedAt: serverTimestamp(), approvedBy: session.email, approvedAt: serverTimestamp(), ...(ot || {}) };
     if (entry) upd.history = arrayUnion(entry);
     tx.update(reqRef, upd);
   });
@@ -416,6 +426,7 @@ export async function applyApproval(id, entry) {
   const fin = r0.type === 'advance' ? await read('requests', id).catch(() => r0) : r0;
   const body = r0.type === 'excuse' && ['late', 'early'].includes(r0.excuseKind || 'late')
     ? ((r0.excuseKind || 'late') === 'late' ? L(`ميعاد حضورك يوم ${r0.startDate} بقى ${r0.toTime}`, `Your start time on ${r0.startDate} is now ${r0.toTime}`) : L(`ميعاد انصرافك يوم ${r0.startDate} بقى ${r0.fromTime}`, `Your end time on ${r0.startDate} is now ${r0.fromTime}`))
+    : r0.type === 'overtime' ? L(`${ot.hours} ساعة يوم ${r0.startDate}${ot.amount != null ? ` = ${ot.amount} ج.م هتنزل على مرتب الشهر` : ''}`, `${ot.hours} h on ${r0.startDate}${ot.amount != null ? ` = ${ot.amount} EGP added to this month's salary` : ''}`)
     : r0.type === 'advance' ? L(`${fin.amount} ج.م على ${fin.installments} قسط (${fin.perMonth} شهرياً) من ${fin.startMonth} لـ ${fin.endMonth}`, `${fin.amount} EGP in ${fin.installments} installments (${fin.perMonth}/month), ${fin.startMonth} → ${fin.endMonth}`) : (r0.startDate || '');
   notify(email, L(`تم اعتماد طلبك: ${requestLabel(r0)}`, `Request approved: ${requestLabel(r0)}`), body, '#/requests', 'approved');
 }

@@ -48,6 +48,8 @@ export function classifyDay(date, plan, rec, excuses, todayKey, since = '') {
     if (rec.autoClosed) row.flags.push('forgot');
     if (rec.remotePending) row.flags.push('remote-pending');
     if (rec.corrected) row.flags.push('corrected');
+    // ended before the day's actual hours were done: what was missing, and whether the employee accepted or objected
+    if (rec.shortfall && rec.shortfall.missingMs > 0 && isWorkingPlan(plan)) { row.short = rec.shortfall; row.flags.push('short'); }
     return row;
   }
   if (row.status !== 'none') return row;
@@ -62,7 +64,7 @@ export function classifyDay(date, plan, rec, excuses, todayKey, since = '') {
 }
 
 export function summarize(rows) {
-  const t = { planned: 0, present: 0, office: 0, remote: 0, mission: 0, absent: 0, leave: 0, leaveByType: {}, unpaidLeave: 0, off: 0, holiday: 0, lateDays: 0, lateMinutes: 0, earlyMinutes: 0, workMs: 0, breakMs: 0, meetingMs: 0, forgot: 0, lateDeductDays: 0, extraDays: 0 };
+  const t = { planned: 0, present: 0, office: 0, remote: 0, mission: 0, absent: 0, leave: 0, leaveByType: {}, unpaidLeave: 0, off: 0, holiday: 0, lateDays: 0, lateMinutes: 0, earlyMinutes: 0, workMs: 0, breakMs: 0, meetingMs: 0, forgot: 0, lateDeductDays: 0, extraDays: 0, extraMs: 0, shortDays: 0, shortMs: 0, shortRefused: 0 };
   rows.forEach(r => {
     if (r.flags.includes('untracked')) return;
     if (isWorkingPlan(r.plan) || r.plan.mode === 'leave') t.planned++;
@@ -85,7 +87,8 @@ export function summarize(rows) {
     t.earlyMinutes += r.early || 0;
     t.workMs += r.workMs; t.breakMs += r.breakMs; t.meetingMs += r.meetingMs;
     if (r.flags.includes('forgot')) t.forgot++;
-    if (r.flags.includes('extra-day')) t.extraDays++;
+    if (r.flags.includes('extra-day')) { t.extraDays++; t.extraMs += (r.workMs || 0) + (r.meetingMs || 0); }
+    if (r.short) { t.shortDays++; t.shortMs += r.short.missingMs || 0; if (r.short.response === 'refused') t.shortRefused++; }
   });
   // attendance commitment: share of planned working days not lost to absence
   const attended = Math.max(0, t.present - t.extraDays);

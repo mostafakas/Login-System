@@ -51,7 +51,9 @@ export function payslipHTML(i) {
     ...((i.allowanceLines || []).length ? i.allowanceLines.map(x => [x.name || L('بدل', 'Allowance'), x.amount, L('بدل ثابت', 'Fixed allowance')]) : (i.allowances ? [[L('البدلات', 'Allowances'), i.allowances, '']] : [])),
     ...(i.regularity ? [[L('بدل الانتظام', 'Regularity'), i.regularity, '']] : []),
     ...(i.kpiFull || i.kpi ? [['KPI', i.kpi || 0, i.kpiMode === 'pct' ? L(`${i.kpiValue}% من ${money(i.kpiFull, false)}`, `${i.kpiValue}% of ${money(i.kpiFull, false)}`) : (i.kpiMode === 'amt' ? L(`من ${money(i.kpiFull, false)}`, `of ${money(i.kpiFull, false)}`) : '')]] : []),
-    ...(i.bonus ? [[L('مكافأة', 'Bonus'), i.bonus, '']] : []), ...(i.incentive ? [[L('حوافز', 'Incentive'), i.incentive, '']] : [])
+    ...(i.bonus ? [[L('مكافأة', 'Bonus'), i.bonus, '']] : []), ...(i.incentive ? [[L('حوافز', 'Incentive'), i.incentive, '']] : []),
+    // overtime: one line per day off worked — hours × the value of an hour
+    ...(i.overtimeLines || []).map(o => [L('أوفر تايم', 'Overtime'), o.amount, L(`${fmtDate(o.date)} · ${num(o.hours, 2)} ساعة × ${money(o.rate, false)}${o.multiplier && o.multiplier !== 1 ? ` × ${o.multiplier}` : ''}`, `${fmtDate(o.date)} · ${num(o.hours, 2)} h × ${money(o.rate, false)}${o.multiplier && o.multiplier !== 1 ? ` × ${o.multiplier}` : ''}`)])
   ];
   const fromParts = (l) => Object.entries(l.amounts || {}).map(([p, v]) => `${partLabel(p)} ${money(v, false)}`).join(' + ');
   const violationRows = (i.violations || []).map(l => [violationText(l), l.total, `${fmtDate(l.date)}${Object.keys(l.amounts || {}).length > 1 ? ` · ${fromParts(l)}` : ''}`]);

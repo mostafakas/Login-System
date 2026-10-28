@@ -235,6 +235,18 @@ export function shiftForCheckIn(plan, checkInMs, mode) {
   return fit ? String(fit.id) : '';
 }
 
+/**
+ * The shift a day runs on, the same everywhere (live monitor, home, dashboard, monthly reports, payroll):
+ * the picked one, else for a day saved with shift '' and a check-in, the shift that check-in fits (shiftForCheckIn).
+ * undefined (days from before shifts) stays as it is.
+ */
+export function dayShift(plan, shift, checkInMs, mode) {
+  if (shift || shift !== '' || !checkInMs) return shift;
+  return shiftForCheckIn(plan, checkInMs, mode) || shift;
+}
+/** withShift with the day's shift resolved by dayShift */
+export const planOfDay = (plan, shift, checkInMs, mode) => withShift(plan, dayShift(plan, shift, checkInMs, mode), mode);
+
 /** Actual work a working day asks for (work + meetings, breaks excluded): the plan's hours minus the allowed break */
 export function requiredWorkMs(plan) {
   if (!plan || !isWorkingPlan(plan) || !plan.start || !plan.end) return 0;

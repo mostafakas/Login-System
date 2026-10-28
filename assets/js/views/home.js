@@ -2,7 +2,7 @@
 import { L, esc, fmtDur, fmtTime, fmtHours, fmtMin, ymd, addDays, fmtDate, num, zparts } from '../core/utils.js';
 import { toast, toastErr, modal, avatar, presenceBadge, STATUS_META, busy, confirmDialog, empty, livePop } from '../core/ui.js';
 import { session, now } from '../core/session.js';
-import { policy, dayKey, planFor, lateness, modeLabel, MODE_META, typeLabel, statusLabel, REQUEST_STATUS, leaveTypeLabel, isWorkingPlan, withShift, canPickShift, shiftList, shiftLabel, requestChoices, requiredWorkMs } from '../core/policy.js';
+import { policy, dayKey, planFor, lateness, modeLabel, MODE_META, typeLabel, statusLabel, REQUEST_STATUS, leaveTypeLabel, isWorkingPlan, withShift, planOfDay, canPickShift, shiftList, shiftLabel, requestChoices, requiredWorkMs } from '../core/policy.js';
 import { toMs, watch, query, col, where } from '../core/fb.js';
 import { startDay, changeStatus, endDay, liveBank, staleDay, closeStaleDay, dayLogs, COUNTED, countFrom, workedMs } from '../services/attendance.js';
 import { isOffDay, fileOvertime, msToHours } from '../services/overtime.js';
@@ -54,7 +54,7 @@ export default async function render(root) {
     const p = u();
     const st = started() ? p.status : 'Offline';
     const meta = STATUS_META[st] || STATUS_META.Offline;
-    const plan = withShift(planFor(today(), schedule, session.email), p.dayKey === today() ? p.shift : '', p.dayKey === today() ? p.workLocation : '');
+    const plan = planOfDay(planFor(today(), schedule, session.email), p.dayKey === today() ? p.shift : '', p.dayKey === today() ? toMs(p.firstOnlineAt) : null, p.dayKey === today() ? p.workLocation : '');
     const h = zparts(now()).h;
     const greet = h < 12 ? L('صباح الخير', 'Good morning') : (h < 17 ? L('مساء الخير', 'Good afternoon') : L('مساء النور', 'Good evening'));
     const fo0 = p.dayKey === today() ? toMs(p.firstOnlineAt) : null;
@@ -132,7 +132,7 @@ export default async function render(root) {
   /** The day's actual hours: what the plan asks for (minus approved permission time) and what was worked so far */
   function dayHours() {
     const p = u();
-    const plan = withShift(planFor(today(), schedule, session.email), p.shift, p.workLocation);
+    const plan = planOfDay(planFor(today(), schedule, session.email), p.shift, toMs(p.firstOnlineAt), p.workLocation);
     const worked = workedMs(p);
     let required = requiredWorkMs(plan);
     // a permission that did not move the day's hours (someone who picks a shift) is taken off what is required

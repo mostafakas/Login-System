@@ -4,7 +4,7 @@ import {
   db, doc, col, writeBatch, serverTimestamp, toMs, read, list, query, where, addDoc, getDoc, setDoc, listF, updateDoc
 } from '../core/fb.js';
 import { session, now, isHR, seesAll, isFinance, syncClock } from '../core/session.js';
-import { policy, dayKey, planFor, withShift, shiftById } from '../core/policy.js';
+import { policy, dayKey, planFor, withShift, planOfDay, shiftById } from '../core/policy.js';
 import { cairoMs, addDays, L } from '../core/utils.js';
 import { userError } from '../core/ui.js';
 
@@ -63,7 +63,7 @@ export async function closeStaleDay(email, u, by = session.email) {
   window.dispatchEvent(new Event('am:data-changed'));
   const key = u.dayKey;
   const sched = await read('schedules', `${email}_${key.slice(0, 7)}`).catch(() => null);
-  const plan = withShift(planFor(key, sched, email), u.shift, u.workLocation);
+  const plan = planOfDay(planFor(key, sched, email), u.shift, toMs(u.firstOnlineAt), u.workLocation);
   const endCap = cairoMs(key, plan.end || policy.workEnd);
   const bank = { ...zeroBank(), ...(u.timeBank || {}) };
   const last = toMs(u.lastChange) || endCap;

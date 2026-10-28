@@ -2,7 +2,7 @@
 import { L, esc, fmtDur, fmtTime, fmtMin, fmtHours, num, debounce, hmToMin, ymd } from '../core/utils.js';
 import { toast, toastErr, avatar, STATUS_META, empty, confirmDialog, bindActions, modal } from '../core/ui.js';
 import { session, now, isHR, seesAll } from '../core/session.js';
-import { dayKey, planFor, lateness, modeLabel, roleLabel, isWorkingPlan, policy, leaveType, withShift, shiftLabel } from '../core/policy.js';
+import { dayKey, planFor, lateness, modeLabel, roleLabel, isWorkingPlan, policy, leaveType, withShift, planOfDay, shiftLabel } from '../core/policy.js';
 import { toMs, list, query, col, where } from '../core/fb.js';
 import { onDirectory, supervisedPeople as managedPeople, departments, meetingLine } from '../services/directory.js';
 import { liveBank, staleDay, closeStaleDay, changeStatus, resetLive, COUNTED } from '../services/attendance.js';
@@ -67,10 +67,11 @@ export default async function render(root) {
   const info = (u) => {
     const t = today();
     const isToday = u.dayKey === t;
-    const plan = withShift(planFor(t, schedules[u.email] || null, u), isToday ? u.shift : '', isToday ? u.workLocation : '');
     const on = isToday && u.status && u.status !== 'Offline';
     const fo0 = isToday ? toMs(u.firstOnlineAt) : null;
     const fo = fo0 && dayKey(fo0) === t ? fo0 : null; // a check-in from another day (wrong device clock) is ignored
+    // the same shift the dashboard and the monthly report use (a day started with no shift: the one its check-in fits)
+    const plan = planOfDay(planFor(t, schedules[u.email] || null, u), isToday ? u.shift : '', fo, isToday ? u.workLocation : '');
     let state;
     if (on) state = FROM_STATUS[u.status] || 'working';
     else if (fo) state = 'ended';
@@ -79,7 +80,7 @@ export default async function render(root) {
     const late = fo ? lateness(fo, plan).late : 0;
     const bank = isToday ? liveBank(u) : { Online: 0, Break: 0, Meeting: 0 };
     return {
-      state, plan, fo, late, bank, on,
+      state, plan, fo, late, bank, on, guessed: isToday && u.shift === '' && !!plan.shift,
       stale: staleDay(u),
       remote: isToday && u.workLocation === 'remote',
       pending: isToday && !!u.remotePending,
@@ -129,7 +130,7 @@ export default async function render(root) {
       </div>
       <div class="mon-metrics">
         ${metric('remote', 'fa-house-laptop', '', L('أونلاين النهارده', 'Remote today'), people.filter(p => { const i = infos.get(p.email); return i.remote && (i.on || i.state === 'ended'); }).length)}
-        ${metric('late', 'fa-clock', 'warn', L('متأخرين', 'Late today'), people.filter(p => infos.get(p.email).late > 0).length, L(`بعد ${policy.workStart} + ${policy.graceMinutes || 0} د سماح`, `after ${policy.workStart} + ${policy.graceMinutes || 0}m grace`))}
+        ${metric('late', 'fa-clock', 'warn', L('متأخرين', 'Late today'), people.filter(p => infos.get(p.email).late > 0).length, L('بعد ميعاد شيفت كل واحد + السماح', "after each person's shift start + grace"))}
         ${metric('review', 'fa-triangle-exclamation', 'bad', L('محتاجين مراجعة', 'Need review'), people.filter(p => { const i = infos.get(p.email); return i.stale || i.pending; }).length, L('يوم مفتوح أو أونلاين من غير موافقة', 'Open day or unapproved remote'))}
         ${metric('notstarted', 'fa-hourglass-start', '', L('ما بدأوش', 'Not started'), counts.notstarted)}
       </div>`;
@@ -146,7 +147,7 @@ export default async function render(root) {
     return `<span class="badge ${s.cls} ${live}"><span class="dot"></span>${esc(L(s.ar, s.en))}</span>${sub ? `<small class="sub">${esc(sub)}</small>` : ''}${meet ? `<small class="sub meet" title="${esc(meet)}"><i class="fas fa-users"></i> ${esc(meet.replace(/^في ميتنج /, '').replace(/^In a meeting /, ''))}</small>` : ''}`;
   };
   const flags = (i) => [
-    i.plan.shift && (i.on || i.fo) ? `<span class="badge info"><i class="fas fa-business-time"></i>${esc(shiftLabel(i.plan.shift))}</span>` : '',
+    i.plan.shift && (i.on || i.fo) ? `<span class="badge info"><i class="fas fa-business-time"></i>${esc(shiftLabel(i.plan.shift))}${i.guessed ? ` ${L('(حسب الحضور)', '(by check-in)')}` : ''}</span>` : '',
     i.late ? `<span class="badge bad">${L('تأخير', 'Late')} ${esc(fmtMin(i.late))}</span>` : '',
     i.pending ? `<span class="badge warn"><i class="fas fa-circle-exclamation"></i>${L('أونلاين بدون موافقة', 'Remote not approved')}</span>` : '',
     i.stale ? `<span class="badge bad"><i class="fas fa-triangle-exclamation"></i>${L('يوم مفتوح', 'Open day')} <span class="num">${esc(i.stale)}</span></span>` : ''
@@ -231,7 +232,7 @@ export default async function render(root) {
       const bank = liveBank(u);
       bank.Total = bankTotal(bank);
       root.querySelectorAll(`[data-live^="${CSS.escape(u.email)}|"]`).forEach(el => { el.textContent = fmtDur(bank[el.dataset.live.split('|')[1]]); });
-      const w = segWidths(bank, planMs(withShift(planFor(t, schedules[u.email] || null, u), u.shift)));
+      const w = segWidths(bank, planMs(planOfDay(planFor(t, schedules[u.email] || null, u), u.shift, toMs(u.firstOnlineAt), u.workLocation)));
       SEGS.forEach((k, n) => { const s = root.querySelector(`[data-seg="${CSS.escape(u.email)}|${k}"]`); if (s) s.style.width = w[n] + '%'; });
     });
   }

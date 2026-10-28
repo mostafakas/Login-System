@@ -86,9 +86,9 @@ export function dayTableHTML(rows, filter = 'all') {
     else if (r.status === 'holiday' && r.plan.name) label = r.plan.name;
     const ed = editInfo(r);
     const tags = [
-      r.plan.shift && rec.checkInMs ? `<span class="badge info xs">${esc(shiftLabel(r.plan.shift))}</span>` : '',
+      r.plan.shift && rec.checkInMs ? `<span class="badge info xs"${r.flags.includes('shift-guessed') ? ` title="${L('اليوم اتسجل من غير شيفت، فاتحسب على الشيفت اللي يناسب ميعاد حضوره', 'Saved without a shift: counted on the shift the check-in fits')}"` : ''}>${esc(shiftLabel(r.plan.shift))}${r.flags.includes('shift-guessed') ? ` ${L('(حسب الحضور)', '(by check-in)')}` : ''}</span>` : '',
       // no shift picked (fixed / company hours): the hours lateness and early leave are measured against
-      !r.plan.shift && rec.checkInMs && isWorkingPlan(r.plan) && r.plan.start ? `<span class="badge xs num" title="${L('مواعيد ثابتة (من غير اختيار شيفت)', 'Fixed hours (no shift picked)')}">${esc(r.plan.start)}–${esc(r.plan.end)}</span>` : '',
+      !r.plan.shift && rec.checkInMs && isWorkingPlan(r.plan) && r.plan.start ? `<span class="badge xs num" dir="ltr" title="${L('مواعيد ثابتة (من غير اختيار شيفت)', 'Fixed hours (no shift picked)')}">${esc(r.plan.start)}–${esc(r.plan.end)}</span>` : '',
       ed ? `<span class="badge info xs edited-day" title="${esc(editTitle(ed))}"><i class="fas fa-user-pen"></i>${L('تعديل يدوي', 'Edited')}${ed.by ? ` · ${esc(ed.by)}` : ''}</span>` : '',
       r.flags.includes('forgot') ? `<span class="badge warn xs" title="${L('نسي ينهي اليوم', 'Day not ended')}">${L('اتقفل تلقائياً', 'Auto-closed')}</span>` : '',
       r.flags.includes('excused') ? `<span class="badge ok xs">${L('بإذن', 'Excused')}</span>` : '',

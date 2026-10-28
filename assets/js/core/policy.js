@@ -224,6 +224,17 @@ export function withShift(plan, shift, mode) {
   return p;
 }
 
+/**
+ * The shift a check-in fits: the earliest one it is not late for (what the start-day picker suggests), else the last.
+ * For a day saved without a shift (the person had fixed hours then) by someone who now picks one every day.
+ */
+export function shiftForCheckIn(plan, checkInMs, mode) {
+  if (!checkInMs || !canPickShift(plan)) return '';
+  const all = shiftList();
+  const fit = all.find(s => !lateness(checkInMs, withShift(plan, s.id, mode)).late) || all[all.length - 1];
+  return fit ? String(fit.id) : '';
+}
+
 /** Actual work a working day asks for (work + meetings, breaks excluded): the plan's hours minus the allowed break */
 export function requiredWorkMs(plan) {
   if (!plan || !isWorkingPlan(plan) || !plan.start || !plan.end) return 0;

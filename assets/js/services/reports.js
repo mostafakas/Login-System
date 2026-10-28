@@ -1,7 +1,7 @@
 // Monthly calculations shared by "My attendance", monthly reports and payroll.
 import { list, query, col, where, toMs, listF } from '../core/fb.js';
 import { session, now, isHR, seesAll, isFinance } from '../core/session.js';
-import { policy, planFor, lateness, earlyLeave, isWorkingPlan, lateDeductionDays, dayKey, leaveType, trackedSince, withShift } from '../core/policy.js';
+import { policy, planFor, lateness, earlyLeave, isWorkingPlan, lateDeductionDays, dayKey, leaveType, trackedSince, withShift, shiftForCheckIn } from '../core/policy.js';
 import { person } from './directory.js';
 import { monthDates, hmToMin, minutesOfDay, ymd } from '../core/utils.js';
 import { rangeDays, monthDays } from './attendance.js';
@@ -28,8 +28,10 @@ function excuseCovers(excuses, date, kind, minute) {
 
 /** Classify one day for one person */
 export function classifyDay(date, plan, rec, excuses, todayKey, since = '') {
-  plan = withShift(plan, rec && rec.shift, rec && rec.mode);
-  const row = { date, plan, rec: rec || null, status: 'none', mode: plan.mode, late: 0, early: 0, workMs: 0, breakMs: 0, meetingMs: 0, flags: [] };
+  // saved with no shift ('' = the person had fixed hours that day) but picks one every day now: the shift the check-in fits
+  const guess = rec && rec.shift === '' && rec.checkInMs ? shiftForCheckIn(plan, rec.checkInMs, rec.mode) : '';
+  plan = withShift(plan, guess || (rec && rec.shift), rec && rec.mode);
+  const row = { date, plan, rec: rec || null, status: 'none', mode: plan.mode, late: 0, early: 0, workMs: 0, breakMs: 0, meetingMs: 0, flags: guess ? ['shift-guessed'] : [] };
   if (rec && rec.status) {
     row.status = rec.status;
   }

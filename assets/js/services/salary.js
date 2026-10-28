@@ -71,7 +71,9 @@ export function violationsFrom(rows, requests = []) {
   const out = [];
   (rows || []).forEach(r => {
     if (r.flags && r.flags.includes('untracked')) return;
-    if (r.status === 'absent') out.push({ date: r.date, kind: 'absence' });
+    // an absent day costs the whole day (basic + allowances + regularity), which already covers anything else that
+    // day (lateness, leaving early, a rejected remote day): never price it twice
+    if (r.status === 'absent') { out.push({ date: r.date, kind: 'absence' }); return; }
     if (r.late) out.push({ date: r.date, kind: 'late', minutes: r.late });
     if (r.early) out.push({ date: r.date, kind: 'early', minutes: r.early });
     if (r.rec && r.rec.mode === 'remote' && r.plan && r.plan.mode !== 'remote'

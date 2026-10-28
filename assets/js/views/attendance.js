@@ -2,7 +2,8 @@
 import { L, esc, fmtTime, fmtHours, fmtMin, num, ym as ymOf, addMonths, fmtMonth, weekday, fmtDay, isAr, money } from '../core/utils.js';
 import { modal, empty, loader, STATUS_META } from '../core/ui.js';
 import { session, now } from '../core/session.js';
-import { modeLabel, leaveTypeLabel, dayKey, shiftLabel } from '../core/policy.js';
+import { modeLabel, leaveTypeLabel, dayKey, shiftLabel, isWorkingPlan } from '../core/policy.js';
+import { person } from '../services/directory.js';
 import { toMs, read } from '../core/fb.js';
 import { salaryParts, isFreelancer, rulesOf, violationsFrom, priceViolations, violationText } from '../services/salary.js';
 import { personMonth, STATUS_DAY } from '../services/reports.js';
@@ -35,6 +36,20 @@ export const DAY_FILTERS = [
   ['leave', 'fa-umbrella-beach', 'إجازات', 'Leave', r => r.status === 'leave'],
   ['absent', 'fa-user-xmark', 'غياب', 'Absent', r => r.status === 'absent']
 ];
+/**
+ * A day HR / a manager corrected by hand: who did it, and which of check-in / check-out changed (with the time it had before).
+ * null = not corrected. in / out = the previous time (ms, or 0 when there was none), undefined = that one did not change.
+ */
+export function editInfo(r) {
+  const rec = (r && r.rec) || {};
+  if (!r || !r.flags.includes('corrected')) return null;
+  const by = rec.correctedBy ? ((person(rec.correctedBy) || {}).name || rec.correctedBy) : '';
+  const pv = rec.previous;
+  const was = (k) => (pv && (pv[k] || 0) !== (rec[k] || 0) ? (pv[k] || 0) : undefined);
+  return { by, note: rec.correctionNote || '', in: was('checkInMs'), out: was('checkOutMs') };
+}
+const editTitle = (ed, prev) => [L('اتعدل يدوي', 'Edited by hand') + (ed.by ? ` ${L('من', 'by')} ${ed.by}` : ''),
+  prev !== undefined ? `${L('كان', 'was')} ${prev ? fmtTime(prev) : '—'}` : '', ed.note].filter(Boolean).join(' · ');
 const visibleDays = (rows) => { const todayKey = dayKey(now()); return rows.filter(r => r.date <= todayKey && r.status !== 'future'); };
 
 /** The filter buttons, each with how many days of the month it matches */
@@ -56,6 +71,8 @@ export function dayTableHTML(rows, filter = 'all') {
     : empty('fa-filter', L(`مفيش أيام «${f[2]}» في الشهر ده`, `No "${f[3]}" days this month`));
   const dash = '<span class="muted">—</span>';
   const tm = (ms) => ms ? esc(fmtTime(ms)) : dash;
+  // a pen next to a time HR / the manager changed by hand
+  const pen = (ed, prev) => ed && prev !== undefined ? ` <span class="badge info xs edited-time" title="${esc(editTitle(ed, prev))}"><i class="fas fa-user-pen"></i></span>` : '';
   const hrs = (ms) => ms ? esc(fmtHours(ms)) : dash;
   const tot = { work: 0, meet: 0, brk: 0, late: 0, early: 0 };
   const body = shown.map(r => {
@@ -67,8 +84,12 @@ export function dayTableHTML(rows, filter = 'all') {
     let label = L(meta.ar, meta.en) || modeLabel(r.plan.mode);
     if (r.status === 'leave') label = leaveTypeLabel(r.plan.leaveType || rec.leaveType);
     else if (r.status === 'holiday' && r.plan.name) label = r.plan.name;
+    const ed = editInfo(r);
     const tags = [
       r.plan.shift && rec.checkInMs ? `<span class="badge info xs">${esc(shiftLabel(r.plan.shift))}</span>` : '',
+      // no shift picked (fixed / company hours): the hours lateness and early leave are measured against
+      !r.plan.shift && rec.checkInMs && isWorkingPlan(r.plan) && r.plan.start ? `<span class="badge xs num" title="${L('مواعيد ثابتة (من غير اختيار شيفت)', 'Fixed hours (no shift picked)')}">${esc(r.plan.start)}–${esc(r.plan.end)}</span>` : '',
+      ed ? `<span class="badge info xs edited-day" title="${esc(editTitle(ed))}"><i class="fas fa-user-pen"></i>${L('تعديل يدوي', 'Edited')}${ed.by ? ` · ${esc(ed.by)}` : ''}</span>` : '',
       r.flags.includes('forgot') ? `<span class="badge warn xs" title="${L('نسي ينهي اليوم', 'Day not ended')}">${L('اتقفل تلقائياً', 'Auto-closed')}</span>` : '',
       r.flags.includes('excused') ? `<span class="badge ok xs">${L('بإذن', 'Excused')}</span>` : '',
       r.flags.includes('remote-pending') ? `<span class="badge warn xs">${L('مستني موافقة', 'Pending')}</span>` : '',
@@ -78,8 +99,8 @@ export function dayTableHTML(rows, filter = 'all') {
     return `<tr data-day="${r.date}" tabindex="0" role="button" style="cursor:pointer;${idle ? 'opacity:.55' : ''}" class="${r.date === todayKey ? 'today-row' : ''}">
       <td class="nowrap"><b class="num">${+r.date.slice(8)}</b> <span class="muted small">${esc(DOW()[weekday(r.date)])}</span></td>
       <td><div class="row-wrap" style="gap:4px"><span class="badge ${meta.badge}">${esc(label)}</span>${tags}</div></td>
-      <td class="num">${tm(rec.checkInMs)}</td>
-      <td class="num">${rec.checkOutMs ? tm(rec.checkOutMs) : (rec.checkInMs && r.date === todayKey ? `<span class="badge ok xs">${L('لسه شغال', 'Working')}</span>` : dash)}</td>
+      <td class="num nowrap">${tm(rec.checkInMs)}${pen(ed, ed && ed.in)}</td>
+      <td class="num nowrap">${rec.checkOutMs ? tm(rec.checkOutMs) : (rec.checkInMs && r.date === todayKey ? `<span class="badge ok xs">${L('لسه شغال', 'Working')}</span>` : dash)}${pen(ed, ed && ed.out)}</td>
       <td class="num"><b>${hrs(work)}</b></td>
       <td class="num">${hrs(r.meetingMs)}</td>
       <td class="num">${hrs(r.breakMs)}</td>
@@ -103,6 +124,9 @@ export function shortBadge(sh, size = '') {
   return `<span class="badge ${refused ? 'bad' : 'warn'} ${size}" title="${esc(sh.note || '')}"><i class="fas fa-hourglass-half"></i>${L('ناقص', 'Short')} ${esc(fmtHours(sh.missingMs))} · ${refused ? L('اعترض', 'objected') : L('وافق', 'accepted')}</span>`;
 }
 
+/** "(was 08:20 before the edit)" next to a time changed by hand */
+const wasTxt = (ed, k) => ed && ed[k] !== undefined ? ` <span class="xs muted">${L('(قبل التعديل', '(before the edit')} ${esc(ed[k] ? fmtTime(ed[k]) : '—')})</span>` : '';
+
 export async function showDayDetails(email, row, { canRequest = false } = {}) {
   const meta = STATUS_DAY[row.status] || STATUS_DAY.none;
   const m = modal({
@@ -112,12 +136,12 @@ export async function showDayDetails(email, row, { canRequest = false } = {}) {
         ${row.late ? `<span class="badge bad">${L('تأخير', 'Late')} ${esc(fmtMin(row.late))}</span>` : ''}
         ${row.early ? `<span class="badge warn">${L('انصراف مبكر', 'Early')} ${esc(fmtMin(row.early))}</span>` : ''}
         ${row.flags.includes('forgot') ? `<span class="badge warn">${L('اتقفل تلقائياً', 'Auto-closed')}</span>` : ''}
-        ${row.flags.includes('corrected') ? `<span class="badge info">${L('متعدّل من HR', 'Corrected by HR')}</span>` : ''}
+        ${row.flags.includes('corrected') ? `<span class="badge info"><i class="fas fa-user-pen"></i>${L('تعديل يدوي', 'Edited by hand')}${editInfo(row).by ? ` ${L('من', 'by')} ${esc(editInfo(row).by)}` : ''}</span>` : ''}
         ${row.flags.includes('excused') ? `<span class="badge ok">${L('بإذن', 'Excused')}</span>` : ''}</div>
       <dl class="kv">
         <dt>${L('الخطة', 'Plan')}</dt><dd>${esc(modeLabel(row.plan.mode))}${row.plan.start ? ` · ${esc(row.plan.start)}–${esc(row.plan.end)}` : ''}</dd>
-        <dt>${L('الحضور', 'Check-in')}</dt><dd class="num">${esc(row.rec && row.rec.checkInMs ? fmtTime(row.rec.checkInMs) : '—')}</dd>
-        <dt>${L('الانصراف', 'Check-out')}</dt><dd class="num">${esc(row.rec && row.rec.checkOutMs ? fmtTime(row.rec.checkOutMs) : '—')}</dd>
+        <dt>${L('الحضور', 'Check-in')}</dt><dd class="num">${esc(row.rec && row.rec.checkInMs ? fmtTime(row.rec.checkInMs) : '—')}${wasTxt(editInfo(row), 'in')}</dd>
+        <dt>${L('الانصراف', 'Check-out')}</dt><dd class="num">${esc(row.rec && row.rec.checkOutMs ? fmtTime(row.rec.checkOutMs) : '—')}${wasTxt(editInfo(row), 'out')}</dd>
         <dt>${L('ساعات الشغل', 'Work hours')}</dt><dd>${esc(fmtHours((row.workMs || 0) + (row.meetingMs || 0)))} <span class="xs muted">${L('شغل + اجتماعات', 'work + meetings')}</span></dd>
         <dt>${L('استراحة', 'Break')}</dt><dd>${esc(fmtHours(row.breakMs))}</dd>
         <dt>${L('اجتماعات', 'Meetings')}</dt><dd>${esc(fmtHours(row.meetingMs))}</dd>

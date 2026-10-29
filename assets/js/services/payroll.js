@@ -1,7 +1,7 @@
 // Payroll: monthly run computed from salary data + attendance + advances, with manual adjustments.
 // Each employee's salary then moves through: pending → approved (admin) → paid (transfer receipt attached,
 // accountant or admin) → sent (payslip published to the employee). Admins may move a salary to any status.
-import { db, doc, col, list, query, where, read, writeBatch, serverTimestamp, setDoc, updateDoc, runTransaction } from '../core/fb.js';
+import { db, doc, col, list, query, where, read, writeBatch, serverTimestamp, setDoc, updateDoc, runTransaction, arrayUnion } from '../core/fb.js';
 import { session, now, isAdmin } from '../core/session.js';
 import { policy } from '../core/policy.js';
 import { fmtMonth, ymd, L, imageToDataUrl } from '../core/utils.js';
@@ -14,6 +14,7 @@ import { track } from './activity.js';
 import { payParts, isFreelancer, rulesOf, violationsFrom, priceViolations } from './salary.js';
 import { evalSettings, evalId } from './evaluations.js';
 import { overtimeLines } from './overtime.js';
+import { advancePlan } from './requests.js';
 
 export const itemId = (month, email) => `${month}_${email}`;
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -290,4 +291,40 @@ export async function setPayStatus(item, target, opts = {}) {
 export async function recordAdvancePayout(adv) {
   await setDoc(doc(db, 'treasury', `advance_${adv.id}`), { type: 'advance', amount: adv.amount, title: `سلفة — ${adv.name || adv.email}`, email: adv.email, month: ymd(now()).slice(0, 7), date: ymd(now()), by: session.email, at: serverTimestamp() });
   await updateDoc(doc(db, 'advances', adv.id), { paidOut: true });
+}
+
+/**
+ * Admin: change an active advance — the amount, the number of installments, the first month, how much was already
+ * repaid, and (when it was paid out of the treasury) the payout date. The treasury entry follows the new amount / date.
+ * Salaries that are still pending pick the new installment up on the next "Recalculate".
+ */
+export async function updateAdvance(adv, f) {
+  if (!isAdmin()) throw userError('تعديل السلف للأدمن بس.', 'Only admins can edit advances.');
+  const plan = advancePlan(f.amount, Math.min(60, Number(f.installments) || 1), f.startMonth);
+  const paid = r2(f.paid);
+  if (!(plan.amount > 0)) throw userError('اكتب مبلغ صحيح.', 'Enter a valid amount.');
+  if (!/^\d{4}-\d{2}$/.test(plan.startMonth || '')) throw userError('اختار أول شهر خصم.', 'Pick the first deduction month.');
+  if (paid < 0 || paid > plan.amount + 0.005) throw userError('المسدّد لازم يكون بين صفر ومبلغ السلفة.', 'Repaid must be between 0 and the advance amount.');
+  if (f.payoutDate && !/^\d{4}-\d{2}-\d{2}$/.test(f.payoutDate)) throw userError('تاريخ الصرف مش صحيح.', 'The payout date is not valid.');
+  const changes = [
+    plan.amount !== r2(adv.amount) ? L(`المبلغ ${adv.amount} ← ${plan.amount}`, `amount ${adv.amount} → ${plan.amount}`) : '',
+    plan.installments !== Number(adv.installments) ? L(`الأقساط ${adv.installments} ← ${plan.installments}`, `installments ${adv.installments} → ${plan.installments}`) : '',
+    plan.startMonth !== adv.startMonth ? L(`أول شهر ${adv.startMonth || '—'} ← ${plan.startMonth}`, `first month ${adv.startMonth || '—'} → ${plan.startMonth}`) : '',
+    paid !== r2(adv.paid) ? L(`المسدد ${r2(adv.paid)} ← ${paid}`, `repaid ${r2(adv.paid)} → ${paid}`) : '',
+    f.payoutDate && f.payoutDate !== (adv.payoutDate || '') ? L(`تاريخ الصرف ${adv.payoutDate || '—'} ← ${f.payoutDate}`, `payout date ${adv.payoutDate || '—'} → ${f.payoutDate}`) : ''
+  ].filter(Boolean);
+  if (!changes.length) return false;
+  await updateDoc(doc(db, 'advances', adv.id), {
+    amount: plan.amount, installments: plan.installments, perMonth: plan.perMonth, startMonth: plan.startMonth, endMonth: plan.endMonth, paid,
+    ...(f.payoutDate ? { payoutDate: f.payoutDate } : {}), updatedAt: serverTimestamp(), editedBy: session.email,
+    edits: arrayUnion({ at: now(), by: session.email, note: changes.join(' · ') })
+  });
+  // paid out of the treasury already: the entry follows the new amount / date
+  if (adv.paidOut) {
+    const t = { amount: plan.amount };
+    if (f.payoutDate) { t.date = f.payoutDate; t.month = f.payoutDate.slice(0, 7); }
+    await updateDoc(doc(db, 'treasury', `advance_${adv.id}`), t).catch(e => console.warn('[advance treasury]', e && e.message));
+  }
+  track('advance.edit', { target: adv.email || adv.name, detail: changes.join(' · ') });
+  return true;
 }

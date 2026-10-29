@@ -4,7 +4,7 @@ import { L, esc, money, fmtMonth, addMonths, ym as ymOf, fmtDate, fmtTime } from
 import { toast, toastErr, modal, avatar, empty, busy, bindActions, confirmDialog, loader } from '../core/ui.js';
 import { now, isAdmin } from '../core/session.js';
 import { watch, query, col, where, ref, list, toMs } from '../core/fb.js';
-import { buildRun, saveManual, recordAdvancePayout, PAY_ORDER, PAY_STATUS, payStatus, payStatusLabel, allowedMoves, setPayStatus, MAX_PROOF } from '../services/payroll.js';
+import { buildRun, saveManual, recordAdvancePayout, updateAdvance, PAY_ORDER, PAY_STATUS, payStatus, payStatusLabel, allowedMoves, setPayStatus, MAX_PROOF } from '../services/payroll.js';
 import { openPayslip } from './payslip.js';
 import { payParts } from '../services/salary.js';
 import { exportSheet } from './export.js';
@@ -141,12 +141,42 @@ export default async function render(root) {
   }
   root.addEventListener('change', (e) => { const s = e.target.closest('[data-status]'); if (s) changeStatus(s); });
 
-  async function drawAdvances() {
+  /** Admin: edit an active advance (amount, installments, first month, repaid so far, payout date) */
+  function editAdvance(a) {
+    const m = modal({
+      title: `${L('تعديل سلفة', 'Edit advance')} — ${a.name || a.email}`, icon: 'fa-hand-holding-dollar', size: 'narrow',
+      body: `<form class="form-grid" id="af">
+          <div class="field span-2"><label>${L('المبلغ (ج.م)', 'Amount (EGP)')}</label><input class="input num" type="number" min="1" step="0.01" name="amount" value="${esc(a.amount)}"></div>
+          <div class="field"><label>${L('عدد الأقساط', 'Installments')}</label><input class="input num" type="number" min="1" max="60" step="1" name="installments" value="${esc(a.installments || 1)}"></div>
+          <div class="field"><label>${L('أول شهر خصم', 'First month')}</label><input class="input" type="month" name="startMonth" value="${esc(a.startMonth || '')}"></div>
+          <div class="field"><label>${L('المسدّد لحد دلوقتي', 'Repaid so far')}</label><input class="input num" type="number" min="0" step="0.01" name="paid" value="${esc(a.paid || 0)}"></div>
+          <div class="field"><label>${L('تاريخ صرف السلفة', 'Payout date')}</label><input class="input" type="date" name="payoutDate" value="${esc(a.payoutDate || '')}"></div>
+          <div class="span-2 alert info" id="ap"></div>
+          ${a.paidOut ? `<p class="span-2 xs muted">${L('السلفة اتصرفت من الخزينة: حركة الخزينة هتتعدّل بالمبلغ والتاريخ الجديدين.', 'This advance was paid out of the treasury: the treasury entry follows the new amount and date.')}</p>` : ''}
+        </form>`,
+      foot: `<button class="btn" data-close>${L('إلغاء', 'Cancel')}</button><button class="btn btn-primary" id="asv"><i class="fas fa-floppy-disk"></i> ${L('حفظ', 'Save')}</button>`
+    });
+    const f = m.$('#af');
+    const prev = () => {
+      const n = Math.max(1, Math.round(Number(f.installments.value) || 1)), amount = Number(f.amount.value) || 0;
+      m.$('#ap').innerHTML = amount > 0 && f.startMonth.value ? `<i class="fas fa-calendar-check"></i><span>${L('القسط الشهري:', 'Monthly installment:')} <b class="num">${esc(money(amount / n, false))}</b> · ${esc(fmtMonth(f.startMonth.value))}${n > 1 ? ` ← ${esc(fmtMonth(addMonths(f.startMonth.value, n - 1)))}` : ''}</span>` : `<i class="fas fa-circle-info"></i><span>${L('اكتب المبلغ وأول شهر.', 'Enter the amount and first month.')}</span>`;
+    };
+    f.addEventListener('input', prev); prev();
+    m.$('#asv').onclick = (e) => busy(e.currentTarget, async () => {
+      try {
+        const changed = await updateAdvance(a, { amount: f.amount.value, installments: f.installments.value, startMonth: f.startMonth.value, paid: f.paid.value, payoutDate: f.payoutDate.value });
+        m.close(); drawAdvances();
+        toast(changed ? L('اتعدّلت السلفة', 'Advance updated') : L('مفيش تغيير', 'No change'), changed ? L('الرواتب المعلّقة تتحدّث بعد «إعادة الحساب».', 'Pending salaries update after "Recalculate".') : '');
+      } catch (ex) { toastErr(ex); }
+    });
+  }  async function drawAdvances() {
     const advs = await list(query(col('advances'), where('status', '==', 'active'))).catch(() => []);
     root.querySelector('#adv').innerHTML = `<div class="card-head"><h3>${L('السلف الجارية', 'Active advances')}</h3></div>${advs.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>${L('الموظف', 'Employee')}</th><th class="num">${L('المبلغ', 'Amount')}</th><th class="num">${L('القسط', 'Installment')}</th><th class="num">${L('المسدد', 'Repaid')}</th><th>${L('من شهر', 'From')}</th><th></th></tr></thead><tbody>
-      ${advs.map(a => `<tr><td>${esc(a.name || a.email)}</td><td class="num">${esc(money(a.amount, false))}</td><td class="num">${esc(money(a.perMonth, false))}</td><td class="num">${esc(money(a.paid || 0, false))}</td><td>${esc(a.startMonth ? fmtMonth(a.startMonth) : '')}</td>
-        <td style="text-align:end">${a.paidOut ? `<span class="badge ok">${L('اتصرفت من الخزينة', 'Paid out')}</span>` : `<button class="btn btn-sm" data-action="payout" data-id="${esc(a.id)}">${L('تسجيل صرفها من الخزينة', 'Record cash payout')}</button>`}</td></tr>`).join('')}</tbody></table></div>` : `<div class="card-body">${empty('fa-hand-holding-dollar', L('مفيش سلف جارية', 'No active advances'))}</div>`}`;
+      ${advs.map(a => `<tr><td>${esc(a.name || a.email)}</td><td class="num">${esc(money(a.amount, false))}</td><td class="num">${esc(money(a.perMonth, false))}</td><td class="num">${esc(money(a.paid || 0, false))}</td><td>${esc(a.startMonth ? fmtMonth(a.startMonth) : '')}${a.endMonth && a.endMonth !== a.startMonth ?  <span class="muted">← ${esc(fmtMonth(a.endMonth))}</span> : ''}<div class="xs muted">${esc(a.installments || 1)} ${L('قسط', 'installments')}</div></td>
+        <td style="text-align:end;white-space:nowrap">${admin ? `<button class="btn btn-sm btn-icon" data-action="adv-edit" data-id="${esc(a.id)}" title="${L('تعديل السلفة', 'Edit advance')}"><i class="fas fa-pen"></i></button> ` : ''}${a.paidOut ? `<span class="badge ok">${L('اتصرفت من الخزينة', 'Paid out')}</span>` : `<button class="btn btn-sm" data-action="payout" data-id="${esc(a.id)}">${L('تسجيل صرفها من الخزينة', 'Record cash payout')}</button>`}</td></tr>`).join('')}</tbody></table></div>` : `<div class="card-body">${empty('fa-hand-holding-dollar', L('مفيش سلف جارية', 'No active advances'))}</div>`}`;
     root.querySelector('#adv').onclick = async (e) => {
+      const eb = e.target.closest('[data-action="adv-edit"]');
+      if (eb) { const a = advs.find(x => x.id === eb.dataset.id); if (a) editAdvance(a); return; }
       const b = e.target.closest('[data-action="payout"]'); if (!b) return;
       const a = advs.find(x => x.id === b.dataset.id);
       await busy(b, async () => { try { await recordAdvancePayout(a); toast(L('اتسجلت في الخزينة', 'Recorded in treasury')); drawAdvances(); } catch (ex) { toastErr(ex); } });

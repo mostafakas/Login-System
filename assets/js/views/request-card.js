@@ -29,6 +29,7 @@ export function requestWhen(r) {
   if (r.type === 'excuse') return `${fmtDate(r.startDate)} · ${r.fromTime}–${r.toTime} (${fmtMin(r.minutes)})`;
   if (r.type === 'advance') return `${money(r.amount)} · ${num(r.installments)} ${L('قسط', 'installments')}${r.perMonth ? ` × ${money(r.perMonth, false)}` : ''}${r.startMonth ? ` · ${fmtMonth(r.startMonth)}${r.endMonth && r.endMonth !== r.startMonth ? ` ← ${fmtMonth(r.endMonth)}` : ''}` : ''}`;
   if (r.type === 'correction') return `${fmtDate(r.startDate)}${r.correction ? ` · ${r.correction.checkIn || '—'} → ${r.correction.checkOut || '—'}` : ''}`;
+  if (r.type === 'overtime' && r.kind === 'manual') return `${fmtDate(r.startDate)} · ${fmtHMS(otActual(r))}${r.taskTitle ? ` · ${r.taskTitle}` : ''}${r.amount != null ? ` = ${money(r.amount)}` : ''}`;
   if (r.type === 'overtime') return `${r.taskTitle ? `${r.taskTitle} · ` : ''}${L('المحدد', 'Allotted')} ${fmtHMS(otAllot(r))} · ${L('الفعلي', 'Taken')} ${fmtHMS(otActual(r))}${r.amount != null ? ` = ${money(r.amount)}` : ''}`;
   if (r.type === 'letter') return r.addressedTo ? `${L('إلى:', 'To:')} ${r.addressedTo}` : fmtDate(r.startDate);
   if (!r.startDate) return '';
@@ -91,8 +92,8 @@ export async function showRequestDetails(r) {
         <dt>${L('النوع', 'Type')}</dt><dd>${esc(requestLabel(r))}</dd>
         <dt>${L('التفاصيل', 'Details')}</dt><dd>${esc(requestWhen(r))}</dd>
         ${r.type === 'overtime' ? `<dt>${L('التاسك', 'Task')}</dt><dd>${esc(r.taskTitle || '—')}${r.taskNum ? ` <span class="xs muted num">#${esc(r.taskNum)}</span>` : ''}</dd>
-          <dt>${L('اتحدد بواسطة', 'Assigned by')}</dt><dd>${esc(r.assignedByName || nameOf(r.assignedBy) || '—')}</dd>
-          <dt>${L('الوقت المحدد', 'Allotted time')}</dt><dd class="num"><b>${esc(fmtHMS(otAllot(r)))}</b>${(r.plan || []).length ? `<div class="xs muted">${esc((r.plan || []).map(d => `${fmtDate(d.date)} (${fmtHMS(dayMs(d))})`).join(' · '))}</div>` : ''}</dd>
+          ${r.kind === 'manual' ? '' : `<dt>${L('اتحدد بواسطة', 'Assigned by')}</dt><dd>${esc(r.assignedByName || nameOf(r.assignedBy) || '—')}</dd>`}
+          ${r.kind === 'manual' ? '' : `<dt>${L('الوقت المحدد', 'Allotted time')}</dt><dd class="num"><b>${esc(fmtHMS(otAllot(r)))}</b>${(r.plan || []).length ? `<div class="xs muted">${esc((r.plan || []).map(d => `${fmtDate(d.date)} (${fmtHMS(dayMs(d))})`).join(' · '))}</div>` : ''}</dd>`}
           <dt>${L('الوقت الفعلي', 'Time taken')}</dt><dd class="num"><b>${esc(fmtHMS(otActual(r)))}</b> <span class="xs muted">${L('شغل + اجتماعات، من غير الاستراحة', 'work + meetings, breaks excluded')}</span>${(r.days || []).length ? `<div class="xs muted">${esc((r.days || []).map(d => `${fmtDate(d.date)}: ${fmtHMS(d.workMs)}${d.autoClosed ? ` (${L('اتقفل تلقائياً', 'auto-closed')})` : ''}`).join(' · '))}</div>` : ''}</dd>
           <dt>${L('الوقت اللي هيتحاسب', 'Time to pay')}</dt><dd class="num"><b>${esc(fmtHMS(otPay(r)))}</b></dd>
           <dt>${L('قيمة الأوفر تايم', 'Overtime pay')}</dt><dd id="ot-calc">${r.amount != null ? otCalcHTML(r) : `<span class="muted">—</span>`}</dd>` : ''}

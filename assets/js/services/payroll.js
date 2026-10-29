@@ -1,7 +1,7 @@
 // Payroll: monthly run computed from salary data + attendance + advances, with manual adjustments.
 // Each employee's salary then moves through: pending → approved (admin) → paid (transfer receipt attached,
 // accountant or admin) → sent (payslip published to the employee). Admins may move a salary to any status.
-import { db, doc, col, list, query, where, read, writeBatch, serverTimestamp, setDoc, updateDoc, runTransaction, arrayUnion } from '../core/fb.js';
+import { db, doc, col, list, query, where, read, writeBatch, serverTimestamp, setDoc, updateDoc, runTransaction, arrayUnion, deleteDoc } from '../core/fb.js';
 import { session, now, isAdmin } from '../core/session.js';
 import { policy } from '../core/policy.js';
 import { fmtMonth, ymd, L, imageToDataUrl } from '../core/utils.js';
@@ -13,7 +13,7 @@ import { notify } from './notify.js';
 import { track } from './activity.js';
 import { payParts, isFreelancer, rulesOf, violationsFrom, priceViolations } from './salary.js';
 import { evalSettings, evalId } from './evaluations.js';
-import { overtimeLines } from './overtime.js';
+import { overtimeLines, hourValue, overtimeAmount, otMultiplier, msToHours, fmtHMS } from './overtime.js';
 import { advancePlan } from './requests.js';
 
 export const itemId = (month, email) => `${month}_${email}`;
@@ -327,4 +327,60 @@ export async function updateAdvance(adv, f) {
   }
   track('advance.edit', { target: adv.email || adv.name, detail: changes.join(' · ') });
   return true;
+}
+
+// ---------- overtime the admin registers by hand ----------
+// An approved overtime request (kind 'manual') for the employee: it is paid with that month's salary like any approved
+// overtime, shows on the payslip and in the Excel report, and the employee sees it in "My requests".
+const advRefsOf = (it) => (it.advanceRefs || []).map(a => ({ id: a.id, installment: a.amount, amount: a.total, paid: a.paidBefore, installments: a.count, perMonth: a.perMonth, startMonth: a.startMonth, endMonth: a.endMonth }));
+/** Re-price this month's salary of one employee with the overtime now approved (frozen salaries — transferred / sent — are left alone) */
+async function refreshItemOvertime(month, email) {
+  const it = await read('payroll_items', itemId(month, email)).catch(() => null);
+  if (!it) return 'none';
+  if (['paid', 'sent'].includes(payStatus(it))) return 'frozen';
+  const [reqs, priv] = await Promise.all([list(query(col('requests'), where('email', '==', email))).catch(() => []), read('employees_private', email).catch(() => null)]);
+  const lines = overtimeLines(reqs.filter(r => (r.startDate || '').slice(0, 7) === month), priv || {}, email);
+  const p = person(email) || { email, name: it.name };
+  const next = computeItem({ person: p, priv: priv || {}, totals: it.att || null, violations: (it.att && it.att.violations) || [], advances: advRefsOf(it), manual: it, overtime: lines });
+  await updateDoc(doc(db, 'payroll_items', itemId(month, email)), { ...next, kpiFromReview: !!it.kpiFromReview, updatedAt: serverTimestamp(), editedBy: session.email });
+  return 'updated';
+}
+/** Admin: register overtime { email, date, ms, note } → { state: 'updated' | 'none' | 'frozen', amount } */
+export async function addManualOvertime({ email, date, ms, note = '' }) {
+  if (!isAdmin()) throw userError('تسجيل الأوفر تايم للأدمن بس.', 'Only admins can register overtime.');
+  const t = Math.round((Number(ms) || 0) / 1000) * 1000;
+  if (!person(email)) throw userError('اختار الموظف.', 'Pick the employee.');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ''))) throw userError('اختار اليوم.', 'Pick the day.');
+  if (!(t >= 60000) || t > 24 * 3600000) throw userError('اكتب وقت من دقيقة لـ 24 ساعة.', 'Enter a time between 1 minute and 24 hours.');
+  const priv = await read('employees_private', email).catch(() => null);
+  if (!priv) throw userError('مفيش بيانات راتب للموظف ده، فمينفعش يتحسب له مبلغ.', 'This employee has no salary data, so no amount can be worked out.');
+  const p = person(email), hv = hourValue(priv, email), hours = msToHours(t), mult = otMultiplier();
+  const amount = overtimeAmount(hours, hv.rate, mult);
+  const id = `ot_manual_${email}_${Date.now().toString(36)}`;
+  const by = (session.profile && session.profile.name) || session.email;
+  await setDoc(doc(db, 'requests', id), {
+    email, name: p.name || email, leaderEmail: '', department: p.department || '',
+    type: 'overtime', kind: 'manual', startDate: date, endDate: date, taskTitle: String(note || '').trim().slice(0, 200) || L('أوفر تايم مسجّل بواسطة الأدمن', 'Overtime registered by the admin'),
+    assignedBy: session.email, assignedByName: by, workMs: t, actualMs: t, payMs: t, allotMs: 0, actualHours: hours, hours,
+    hourlyRate: hv.rate, dayHours: hv.dayHours, multiplier: mult, amount,
+    reason: String(note || '').trim().slice(0, 500) || L('أوفر تايم مسجّل بواسطة الأدمن', 'Overtime registered by the admin'),
+    status: 'approved', stages: ['admin'], approvedBy: session.email, approvedAt: serverTimestamp(), decidedBy: session.email, createdMs: now(), createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    history: [{ at: now(), by: session.email, byName: by, action: 'approved_admin', note: L('سجّله الأدمن واعتمده', 'Registered and approved by the admin') }]
+  });
+  const state = await refreshItemOvertime(date.slice(0, 7), email);
+  notify(email, L('اتسجّل لك أوفر تايم', 'Overtime was registered for you'), `${fmtHMS(t)} · ${date} = ${amount} ${L('ج.م', 'EGP')}`, '#/requests', 'approved');
+  track('overtime.manual', { target: email, detail: `${date} ${fmtHMS(t)} = ${amount}` });
+  return { state, amount };
+}
+/** the overtime registered by hand for a month (newest first) */
+export const manualOvertimeOf = (month) => list(query(col('requests'), where('type', '==', 'overtime')))
+  .then(rows => rows.filter(r => r.kind === 'manual' && (r.startDate || '').slice(0, 7) === month).sort((a, b) => (b.createdMs || 0) - (a.createdMs || 0)));
+/** Admin: delete one of them (a wrong entry) and re-price the salary */
+export async function removeManualOvertime(r) {
+  if (!isAdmin()) throw userError('الحذف للأدمن بس.', 'Only admins can delete this.');
+  if (r.kind !== 'manual') throw userError('ده مش أوفر تايم مسجّل يدوياً.', 'This is not a manually registered overtime.');
+  await deleteDoc(doc(db, 'requests', r.id));
+  const state = await refreshItemOvertime((r.startDate || '').slice(0, 7), r.email);
+  track('overtime.manual.delete', { target: r.email, detail: `${r.startDate} ${fmtHMS(r.workMs)}` });
+  return state;
 }

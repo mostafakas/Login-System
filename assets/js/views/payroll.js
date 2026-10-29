@@ -9,6 +9,7 @@ import { openPayslip } from './payslip.js';
 import { payParts } from '../services/salary.js';
 import { exportSheet } from './export.js';
 import { exportPayrollReport } from './payroll-report.js';
+import { openManualOvertime } from './overtime-manual.js';
 
 const fmtSize = (n) => n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
 
@@ -49,6 +50,7 @@ export default async function render(root) {
         ${run && run.builtAt ? `<span class="xs muted">${L('آخر حساب:', 'Last calculated:')} ${esc(fmtDate(toMs(run.builtAt)))} ${esc(fmtTime(toMs(run.builtAt)))}</span>` : ''}</div>
       <div class="row-wrap gap-8">
         ${admin && !(run && run.status === 'closed') ? `<button class="btn btn-primary" data-action="build"><i class="fas fa-calculator"></i> ${items.length ? L('إعادة الحساب من الحضور', 'Recalculate from attendance') : L('إنشاء رواتب الشهر', 'Create this month\'s payroll')}</button>` : ''}
+        ${admin ? `<button class="btn" data-action="ot-add"><i class="fas fa-business-time"></i> ${L('تسجيل أوفر تايم', 'Register overtime')}</button>` : ''}
         ${items.length ? `<button class="btn" data-action="xls"><i class="fas fa-file-excel"></i> Excel</button>` : ''}
       </div>`;
     const stale = items.filter(isStale);
@@ -218,6 +220,7 @@ export default async function render(root) {
         try { await saveManual(month, i.email, { bonus: Number(f.bonus.value || 0), incentive: Number(f.incentive.value || 0), otherDeductions, note: f.note.value.trim(), kpiMode, kpiValue: kpiMode ? Number(f.kpiValue.value || 0) : null }); m.close(); toast(L('تم الحفظ', 'Saved')); } catch (ex) { toastErr(ex); }
       });
     },
+    'ot-add': () => openManualOvertime({ month, onDone: () => { subscribe(); } }),
     xls: async () => {
       try { await exportPayrollReport({ month, items, run }); return; }
       catch (e) { console.warn('[payroll report]', e); toast(L('تعذّر التقرير المنسّق، اتنزل الملف العادي', 'Could not build the formatted report; downloading the plain file'), '', 'warn'); }

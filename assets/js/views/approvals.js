@@ -8,12 +8,13 @@ import { requestCard, showRequestDetails, requestTitle } from './request-card.js
 import { play } from '../core/sounds.js';
 
 export default async function render(root) {
-  let inbox = [], history = [], tab = 'inbox', typeF = '', histUnsub = null;
+  let inbox = [], history = [], tab = 'inbox', typeF = '', empF = '', histUnsub = null;
   root.innerHTML = `
     <div class="page-head"><div><h2>${L('الموافقات', 'Approvals')}</h2><p>${L('الطلبات اللي مستنية قرارك، وسجل الطلبات اللي اتقررت.', 'Requests waiting for your decision, and decided history.')}</p></div></div>
     <div class="filters">
       <div class="tabs" id="tabs"><button class="tab active" data-t="inbox">${L('مستنية قرارك', 'Waiting for me')} <span class="num" id="n-inbox"></span></button>
         <button class="tab" data-t="history">${L('السجل (آخر 90 يوم)', 'History (90 days)')}</button></div>
+      <select class="select" id="emp-f"><option value="">${L('كل الموظفين', 'All employees')}</option></select>
       <select class="select" id="type-f"><option value="">${L('كل الأنواع', 'All types')}</option>${Object.keys(REQUEST_TYPES).map(k => `<option value="${k}">${esc(typeLabel(k))}</option>`).join('')}</select>
     </div>
     <div class="grid g-auto" id="list"></div>`;
@@ -29,7 +30,12 @@ export default async function render(root) {
   }
   async function draw() {
     root.querySelector('#n-inbox').textContent = inbox.length ? `(${num(inbox.length)})` : '';
-    const src = (tab === 'inbox' ? inbox : history).filter(r => !typeF || r.type === typeF);
+    const base = tab === 'inbox' ? inbox : history;
+    const people = new Map(base.map(r => [r.email, r.name || r.email]));
+    if (empF && !people.has(empF)) empF = '';
+    root.querySelector('#emp-f').innerHTML = `<option value="">${L('كل الموظفين', 'All employees')}</option>`
+      + [...people].sort((a, b) => String(a[1]).localeCompare(String(b[1]), 'ar')).map(([e, n]) => `<option value="${esc(e)}"${e === empF ? ' selected' : ''}>${esc(n)}</option>`).join('');
+    const src = base.filter(r => (!empF || r.email === empF) && (!typeF || r.type === typeF));
     const el = root.querySelector('#list');
     if (!src.length) {
       el.innerHTML = `<div class="card" style="grid-column:1/-1">${tab === 'inbox' ? empty('fa-inbox', L('مفيش طلبات مستنياك', 'Nothing waiting for you'), L('كله تمام 👌', 'All caught up 👌')) : empty('fa-folder-open', L('مفيش سجل', 'No history'))}</div>`;
@@ -126,6 +132,7 @@ export default async function render(root) {
       histUnsub = watchManaged(addDays(ymd(now()), -90), rows => { history = rows.filter(r => !String(r.status).startsWith('pending')); if (tab === 'history') draw(); });
     } else draw();
   });
+  root.querySelector('#emp-f').onchange = (e) => { empF = e.target.value; draw(); };
   root.querySelector('#type-f').onchange = (e) => { typeF = e.target.value; draw(); };
   const unsub = watchInbox(rows => { inbox = rows; if (tab === 'inbox') draw(); });
   return () => { unsub && unsub(); histUnsub && histUnsub(); };

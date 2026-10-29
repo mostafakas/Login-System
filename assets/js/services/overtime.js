@@ -28,7 +28,12 @@ const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 export const overtimeId = (email, taskId) => `ot_${email}_${taskId}`;
 const r4 = (n) => Math.round((Number(n) || 0) * 10000) / 10000;
 export const msToHours = (ms) => r4((Number(ms) || 0) / 3600000);
-/** 3 725 000 ms → \
+/** 3 725 000 ms → "1 س 2 د 5 ث" (hours, minutes and seconds; zero parts left out) */
+export function fmtHMS(ms) {
+  const s = Math.max(0, Math.round((Number(ms) || 0) / 1000)), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
+  const parts = [h ? `${h} ${L('س', 'h')}` : '', m ? `${m} ${L('د', 'm')}` : '', x || !s ? `${x} ${L('ث', 's')}` : ''].filter(Boolean);
+  return parts.join(' ');
+}
 export const otMultiplier = () => Number(policy.overtimeMultiplier) > 0 ? Number(policy.overtimeMultiplier) : 1;
 
 /** The value of one working hour from the salary: { rate, dayHours, monthly, divisor } */

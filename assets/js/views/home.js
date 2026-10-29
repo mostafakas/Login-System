@@ -1,5 +1,5 @@
 // "My day": start/end the day, switch status, live timers, balances, today's log.
-import { L, esc, fmtDur, fmtTime, fmtHours, fmtMin, ymd, addDays, fmtDate, num, zparts } from '../core/utils.js';
+import { L, esc, cairoMs, fmtDur, fmtTime, fmtHours, fmtMin, ymd, addDays, fmtDate, num, zparts } from '../core/utils.js';
 import { toast, toastErr, modal, avatar, presenceBadge, STATUS_META, busy, confirmDialog, empty, livePop } from '../core/ui.js';
 import { session, now } from '../core/session.js';
 import { policy, dayKey, planFor, lateness, modeLabel, MODE_META, typeLabel, statusLabel, REQUEST_STATUS, leaveTypeLabel, isWorkingPlan, withShift, planOfDay, canPickShift, shiftList, shiftLabel, requestChoices, requiredWorkMs } from '../core/policy.js';
@@ -385,7 +385,7 @@ export default async function render(root) {
         <div class="row gap-8 mt-8"><button class="btn btn-sm" data-ot-end="${esc(d.id)}"><i class="fas fa-stop"></i> ${L('إنهاء شغل النهارده', "End today's work")}</button></div></div>`
       : (!day ? `<p class="muted small mt-16">${L('النهارده مش من أيام التاسك ده.', "Today is not one of this task's days.")}</p>`
         : `<div class="row between mt-16" style="flex-wrap:wrap;gap:12px"><div><b class="small">${L(`النهارده: ${day.hours} ساعة`, `Today: ${day.hours} h`)}</b>
-            <p class="muted small">${ctx.canToday ? L('العداد بيحسب الشغل والاجتماعات بس.', 'The counter counts work and meetings only.') : (started() ? L('أنهي يومك العادي الأول.', 'End your normal day first.') : L('بيتفتح بعد ما تنهي شيفتك.', 'Opens once your shift is ended.'))}</p></div>
+            <p class="muted small">${ctx.canToday ? L('العداد بيحسب الشغل والاجتماعات بس.', 'The counter counts work and meetings only.') : (started() ? L('أنهي يومك العادي الأول.', 'End your normal day first.') : L('مش متاح في وقت الشيفت. أنهي الشيفت أو استنى بعد ميعاده.', 'Not available during the shift hours. End the shift or wait until it is over.'))}</p></div>
             <button class="btn btn-grad" data-ot-start="${esc(t.id)}" ${ctx.canToday && !ctx.anyOpen ? '' : 'disabled'}><i class="fas fa-play"></i> ${d ? L('كمّل', 'Resume') : L('ابدأ الأوفر تايم', 'Start overtime')}</button></div>`);
     return `<div style="border:1px solid var(--border);border-radius:12px;padding:14px">${head}
       <div class="row between mt-16" style="flex-wrap:wrap;gap:8px"><span class="small">${L('اشتغلت لحد دلوقتي', 'Worked so far')}: <b class="num" data-ot-total="${esc(t.id)}">${esc(fmtDur(total))}</b></span>
@@ -397,7 +397,9 @@ export default async function render(root) {
     card.classList.toggle('hidden', !list.length);
     if (!list.length) { card.innerHTML = ''; return; }
     const plan = planFor(today(), schedule, session.email);
-    const ctx = { canToday: !started() && (!isWorkingPlan(plan) || endedToday()), anyOpen: otOpen() };
+    // blocked only while the normal shift is running, or (shift not ended) inside the shift's hours; ended or never started = allowed
+    const inShift = isWorkingPlan(plan) && !endedToday() && !!plan.start && !!plan.end && now() >= cairoMs(today(), plan.start) && now() < cairoMs(today(), plan.end);
+    const ctx = { canToday: !started() && !inShift, anyOpen: otOpen(), inShift };
     card.innerHTML = `<div class="card-head"><h3><i class="fas fa-business-time"></i> ${L('الأوفر تايم', 'Overtime')}</h3></div><div class="card-body col gap-16">${list.map(t => otBlock(t, ctx)).join('')}</div>`;
     tickOT();
   }

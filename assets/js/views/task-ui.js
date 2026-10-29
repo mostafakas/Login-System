@@ -5,7 +5,7 @@ import { toast, toastErr, avatar, modal, busy, confirmDialog } from '../core/ui.
 import { session, now } from '../core/session.js';
 import { toMs } from '../core/fb.js';
 import { person, nameOf } from '../services/directory.js';
-import { OT_STATE } from '../services/overtime.js';
+import { OT_STATE, fmtHMS, dayMs, otPlanMs } from '../services/overtime.js';
 import {
   STATUS, ORDER, PRIORITY, isLate, WEEK_DAYS, lastDayOf, canManage, canEdit, canDelete, canMove, needsReason, assignable, allProjects, projectById, taskById,
   createTasks, editTask, moveTask, toggleCheck, deleteTask, watchComments, addComment, deleteComment, uploadFile, loadFile, MAX_FILE
@@ -44,8 +44,8 @@ export function dueText(t) {
 const checkProgress = (t) => { const c = t.checklist || []; return c.length ? { done: c.filter(x => x.done).length, all: c.length } : null; };
 
 /** overtime task: the hours allotted and where it stands */
-const otBadge = (t) => { const s = OT_STATE[t.ot.state] || {}; return `<span class="badge ${s.cls || ''} xs"><i class="fas fa-business-time"></i>${esc(L('أوفر تايم', 'Overtime'))} ${esc(t.ot.totalHours || 0)}${esc(L(' س', 'h'))} · ${esc(L(s.ar || '', s.en || ''))}</span>`; };
-const otDetails = (t) => `<div class="ct-note ok mb-8"><b><i class="fas fa-business-time"></i> ${L('تاسك أوفر تايم', 'Overtime task')} · ${esc(t.ot.totalHours || 0)} ${L('ساعة', 'h')}</b>${(t.ot.plan || []).map(d => `<div class="xs num">${esc(fmtDate(d.date))} — ${esc(d.hours)} ${L('ساعة', 'h')}</div>`).join('')}${t.ot.declineNote ? `<div class="xs">${esc(t.ot.declineNote)}</div>` : ''}</div>`;
+const otBadge = (t) => { const s = OT_STATE[t.ot.state] || {}; return `<span class="badge ${s.cls || ''} xs"><i class="fas fa-business-time"></i>${esc(L('أوفر تايم', 'Overtime'))} ${esc(fmtHMS(Number(t.ot.totalMs) || otPlanMs(t.ot.plan)))} · ${esc(L(s.ar || '', s.en || ''))}</span>`; };
+const otDetails = (t) => `<div class="ct-note ok mb-8"><b><i class="fas fa-business-time"></i> ${L('تاسك أوفر تايم', 'Overtime task')} · ${esc(fmtHMS(Number(t.ot.totalMs) || otPlanMs(t.ot.plan)))}</b>${(t.ot.plan || []).map(d => `<div class="xs num">${esc(fmtDate(d.date))} — ${esc(fmtHMS(dayMs(d)))}</div>`).join('')}${t.ot.declineNote ? `<div class="xs">${esc(t.ot.declineNote)}</div>` : ''}</div>`;
 
 /** a task card (board / lists) */
 export function card(t, { draggable = false } = {}) {

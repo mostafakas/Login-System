@@ -6,6 +6,8 @@ import { REQUEST_TYPES, typeLabel } from '../core/policy.js';
 import { watchInbox, watchManaged, decide, revokeRequest, setResponse, getBalance, remaining, advancePlan } from '../services/requests.js';
 import { requestCard, showRequestDetails, requestTitle } from './request-card.js';
 import { play } from '../core/sounds.js';
+import { startTasks, onTasks, taskById } from '../services/tasks.js';
+import { fmtHMS } from '../services/overtime.js';
 
 export default async function render(root) {
   let inbox = [], history = [], tab = 'inbox', typeF = '', empF = '', histUnsub = null;
@@ -19,6 +21,8 @@ export default async function render(root) {
     </div>
     <div class="grid g-auto" id="list"></div>`;
 
+  // an overtime request reaches the admin only after the task's leader finished the task
+  const otReady = (r) => { if (r.type !== 'overtime' || !r.taskId) return true; const t = taskById(r.taskId); return !t || !t.ot || t.ot.state === 'done'; };
   const canDecideOwn = (r) => r.email !== session.email || isAdmin();
   async function balanceHint(r) {
     if (r.type !== 'leave') return '';
@@ -29,8 +33,9 @@ export default async function render(root) {
     } catch { return ''; }
   }
   async function draw() {
-    root.querySelector('#n-inbox').textContent = inbox.length ? `(${num(inbox.length)})` : '';
-    const base = tab === 'inbox' ? inbox : history;
+    const ready = inbox.filter(otReady);
+    root.querySelector('#n-inbox').textContent = ready.length ? `(${num(ready.length)})` : '';
+    const base = tab === 'inbox' ? ready : history;
     const people = new Map(base.map(r => [r.email, r.name || r.email]));
     if (empF && !people.has(empF)) empF = '';
     root.querySelector('#emp-f').innerHTML = `<option value="">${L('كل الموظفين', 'All employees')}</option>`
@@ -91,36 +96,40 @@ export default async function render(root) {
       try { await decide(r.id, 'approve', '', v); play('approved'); m.close(); toast(L('تم اعتماد السلفة', 'Advance approved'), `${r.name} — ${money(v.amount)}`); } catch (ex) { toastErr(ex); }
     });
   }
-  /** Admin: an overtime task came back — pay the hours the leader allotted, everything the employee took, or a number in between */
+  /** Admin: an overtime task the leader finished — pay the time the leader allotted, everything the employee took, or any time in between */
   function approveOvertime(r) {
-    const actual = Number(r.actualHours) || Math.round((r.workMs || 0) / 36000) / 100, allot = Number(r.allotHours) || 0;
-    const first = allot > 0 ? Math.min(allot, actual) : actual;
+    const actualMs = Number(r.actualMs) || Number(r.workMs) || 0, allotMs = Number(r.allotMs) || 0;
+    const firstMs = allotMs > 0 ? Math.min(allotMs, actualMs) : actualMs;
+    const split = (ms) => { const s = Math.round(ms / 1000); return { h: Math.floor(s / 3600), m: Math.floor(s % 3600 / 60), s: s % 60 }; };
+    const cur = split(firstMs);
     const m = modal({
       title: `${L('اعتماد أوفر تايم', 'Approve overtime')} — ${r.name}`, icon: 'fa-business-time', size: 'narrow',
       body: `<form class="col gap-12" id="of">
           <dl class="kv">
             <dt>${L('التاسك', 'Task')}</dt><dd>${esc(r.taskTitle || '—')}${r.taskNum ? ` <span class="xs muted num">#${esc(r.taskNum)}</span>` : ''}</dd>
             <dt>${L('اتحدد بواسطة', 'Assigned by')}</dt><dd>${esc(r.assignedByName || '—')}</dd>
-            <dt>${L('المحدد', 'Allotted')}</dt><dd class="num"><b>${num(allot, 2)}</b> ${L('ساعة', 'h')}</dd>
-            <dt>${L('الفعلي', 'Taken')}</dt><dd class="num"><b>${num(actual, 2)}</b> ${L('ساعة', 'h')}</dd>
+            <dt>${L('المحدد', 'Allotted')}</dt><dd class="num"><b>${esc(fmtHMS(allotMs))}</b></dd>
+            <dt>${L('الفعلي', 'Taken')}</dt><dd class="num"><b>${esc(fmtHMS(actualMs))}</b></dd>
           </dl>
-          <label class="row gap-8"><input type="radio" name="how" value="allot" ${allot > 0 ? 'checked' : ''} ${allot > 0 ? '' : 'disabled'}> <span>${L(`المحدد بس (${num(first, 2)} ساعة)`, `Allotted only (${num(first, 2)} h)`)}</span></label>
-          <label class="row gap-8"><input type="radio" name="how" value="all" ${allot > 0 ? '' : 'checked'}> <span>${L(`كل الوقت الفعلي (${num(actual, 2)} ساعة)`, `All the time taken (${num(actual, 2)} h)`)}</span></label>
-          <label class="row gap-8"><input type="radio" name="how" value="custom"> <span>${L('عدد ساعات تانية:', 'Another number of hours:')}</span><input class="input num" type="number" name="custom" min="0.25" max="${actual}" step="0.25" value="${esc(first)}" style="width:110px"></label>
-          <div class="alert info" id="oamt"><i class="fas fa-circle-info"></i><span>${L('المبلغ بيتحسب من قيمة ساعة الموظف العادية لما توافق.', "The amount is worked out from the employee's normal hour value when you approve.")}</span></div>
+          <label class="row gap-8"><input type="radio" name="how" value="allot" ${allotMs > 0 ? 'checked' : 'disabled'}> <span>${L('المحدد بس', 'Allotted only')} (${esc(fmtHMS(firstMs))})</span></label>
+          <label class="row gap-8"><input type="radio" name="how" value="all" ${allotMs > 0 ? '' : 'checked'}> <span>${L('كل الوقت الفعلي', 'All the time taken')} (${esc(fmtHMS(actualMs))})</span></label>
+          <label class="row gap-8"><input type="radio" name="how" value="custom"> <span>${L('وقت تاني:', 'Another time:')}</span></label>
+          <div class="row gap-8" style="align-items:center"><input class="input num" type="number" name="ch" min="0" step="1" value="${cur.h}" style="width:80px"><span class="muted small">${L('ساعة', 'h')}</span>
+            <input class="input num" type="number" name="cm" min="0" max="59" step="1" value="${cur.m}" style="width:80px"><span class="muted small">${L('دقيقة', 'min')}</span>
+            <input class="input num" type="number" name="cs" min="0" max="59" step="1" value="${cur.s}" style="width:80px"><span class="muted small">${L('ثانية', 'sec')}</span></div>
+          <div class="alert info"><i class="fas fa-circle-info"></i><span>${L('المبلغ بيتحسب من قيمة ساعة الموظف العادية على الوقت اللي تعتمده، وبينزل في مرتب الشهر.', "The amount is the employee's normal hour value × the time you approve, and goes to that month's salary.")}</span></div>
         </form>`,
       foot: `<button class="btn" data-close>${L('إلغاء', 'Cancel')}</button><button class="btn btn-ok" id="ook"><i class="fas fa-check"></i> ${L('اعتماد', 'Approve')}</button>`
     });
     const f = m.$('#of');
-    const hours = () => { const how = (f.how.value || 'allot'); return how === 'all' ? actual : (how === 'custom' ? Number(f.custom.value) : first); };
-    f.addEventListener('input', () => { if (document.activeElement === f.custom) f.how.value = 'custom'; });
+    const pickMs = () => { const how = f.how.value || 'all'; return how === 'all' ? actualMs : (how === 'allot' ? firstMs : ((Number(f.ch.value) || 0) * 3600 + (Number(f.cm.value) || 0) * 60 + (Number(f.cs.value) || 0)) * 1000); };
+    f.addEventListener('input', (e) => { if (/^c[hms]$/.test(e.target.name)) f.how.value = 'custom'; });
     m.$('#ook').onclick = (e) => busy(e.currentTarget, async () => {
-      const h = hours();
-      if (!(h > 0)) { f.custom.focus(); return; }
-      try { await decide(r.id, 'approve', '', { hours: h }); play('approved'); m.close(); toast(L('تم اعتماد الأوفر تايم', 'Overtime approved'), `${r.name} — ${num(h, 2)} ${L('ساعة', 'h')}`); } catch (ex) { toastErr(ex); }
+      const ms = pickMs();
+      if (!(ms >= 1000)) { f.ch.focus(); return; }
+      try { await decide(r.id, 'approve', '', { ms }); play('approved'); m.close(); toast(L('تم اعتماد الأوفر تايم', 'Overtime approved'), `${r.name} — ${fmtHMS(ms)}`); } catch (ex) { toastErr(ex); }
     });
-  }
-  bindActions(root, {
+  }  bindActions(root, {
     details: ({ id }) => { const r = find(id); if (r) showRequestDetails(r); },
     approve: async ({ id }, btn) => {
       const r = find(id); if (!r) return;
@@ -164,6 +173,8 @@ export default async function render(root) {
   });
   root.querySelector('#emp-f').onchange = (e) => { empF = e.target.value; draw(); };
   root.querySelector('#type-f').onchange = (e) => { typeF = e.target.value; draw(); };
+  startTasks();
+  const unsubTasks = onTasks(() => { if (tab === 'inbox') draw(); });
   const unsub = watchInbox(rows => { inbox = rows; if (tab === 'inbox') draw(); });
-  return () => { unsub && unsub(); histUnsub && histUnsub(); };
+  return () => { unsub && unsub(); unsubTasks && unsubTasks(); histUnsub && histUnsub(); };
 }

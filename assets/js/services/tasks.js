@@ -188,7 +188,14 @@ export async function moveTask(t, to, note = '') {
   if (to === 'hold') upd.holdReason = n;
   if (needsReason(t, to) && to !== 'hold') upd.returnReason = n;
   if (to === 'review') upd.reviewAt = serverTimestamp();
+  // overtime task: sent back → the employee works on it again; finished by the leader → the admin gets the request to approve
+  const otDone = !!t.ot && to === 'done' && ['submitted', 'accepted'].includes(t.ot.state);
+  if (t.ot) {
+    if (to === 'in_progress' && ['submitted', 'done'].includes(t.ot.state)) upd['ot.state'] = 'accepted';
+    if (otDone) { upd['ot.state'] = 'done'; upd['ot.doneAt'] = now(); }
+  }
   await updateDoc(doc(db, 'tasks', t.id), upd);
+  if (otDone) notifyMany(activePeople().filter(p => p.role === 'admin').map(p => p.email).filter(e => e !== session.email), L(`أوفر تايم جاهز للاعتماد: ${nameOf(t.assignee)}`, `Overtime ready for approval: ${nameOf(t.assignee)}`), t.title, '#/approvals', 'request');
   const who = nameOf(session.email);
   const msg = {
     in_progress: t.status === 'hold' ? L(`${who} رجّع #${t.num} للشغل`, `${who} resumed #${t.num}`) : (needsReason(t, to) ? L(`#${t.num} رجع In progress`, `#${t.num} sent back`) : L(`${who} بدأ #${t.num}`, `${who} started #${t.num}`)),

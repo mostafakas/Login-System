@@ -15,7 +15,7 @@ import { notify, notifyMany } from './notify.js';
 import { activePeople, person, nameOf } from './directory.js';
 import { correctDay } from './attendance.js';
 import { track } from './activity.js';
-import { hourValue, overtimeAmount, msToHours, otMultiplier } from './overtime.js';
+import { hourValue, overtimeAmount, msToHours, otMultiplier, fmtHMS } from './overtime.js';
 
 // ---------- balances ----------
 export const balanceId = (email, year) => `${email}_${year}`;
@@ -291,12 +291,13 @@ export async function decide(id, action, note = '', edits = null) {
     }
   }
   // the admin decides how many hours of an overtime task are paid: the allotted ones, all the time taken, or anything in between
-  if (action === 'approve' && r.type === 'overtime' && edits && edits.hours != null) {
-    const actual = Number(r.actualHours) || msToHours(r.workMs), hours = Math.round((Number(edits.hours) || 0) * 100) / 100;
-    if (!(hours > 0) || hours > actual + 0.005) throw userError(`اكتب عدد ساعات من 0 لـ ${actual}.`, `Enter hours between 0 and ${actual}.`);
-    if (hours !== Number(r.hours)) {
-      await updateDoc(doc(db, 'requests', id), { hours, updatedAt: serverTimestamp(), history: arrayUnion({ at: now(), by: session.email, byName: (session.profile || {}).name || session.email, action: 'edited', note: L(`اعتمد ${hours} ساعة من ${actual} (المحدد ${r.allotHours || 0})`, `approved ${hours} h of ${actual} (allotted ${r.allotHours || 0})`) }) });
-      r = { ...r, hours };
+  if (action === 'approve' && r.type === 'overtime' && edits && edits.ms != null) {
+    const actualMs = Number(r.actualMs) || Number(r.workMs) || 0, payMs = Math.round((Number(edits.ms) || 0) / 1000) * 1000;
+    if (!(payMs >= 1000) || payMs > actualMs + 1000) throw userError(`اكتب وقت من ثانية لـ ${fmtHMS(actualMs)}.`, `Enter a time between 1 s and ${fmtHMS(actualMs)}.`);
+    if (payMs !== Number(r.payMs)) {
+      const hours = msToHours(payMs);
+      await updateDoc(doc(db, 'requests', id), { payMs, hours, updatedAt: serverTimestamp(), history: arrayUnion({ at: now(), by: session.email, byName: (session.profile || {}).name || session.email, action: 'edited', note: L(`اعتمد ${fmtHMS(payMs)} من ${fmtHMS(actualMs)} (المحدد ${fmtHMS(r.allotMs || 0)})`, `approved ${fmtHMS(payMs)} of ${fmtHMS(actualMs)} (allotted ${fmtHMS(r.allotMs || 0)})`) }) });
+      r = { ...r, payMs, hours };
     }
   }
   const stage = r.status.replace('pending_', '');
@@ -435,7 +436,7 @@ export async function applyApproval(id, entry) {
   const fin = r0.type === 'advance' ? await read('requests', id).catch(() => r0) : r0;
   const body = r0.type === 'excuse' && ['late', 'early'].includes(r0.excuseKind || 'late')
     ? ((r0.excuseKind || 'late') === 'late' ? L(`ميعاد حضورك يوم ${r0.startDate} بقى ${r0.toTime}`, `Your start time on ${r0.startDate} is now ${r0.toTime}`) : L(`ميعاد انصرافك يوم ${r0.startDate} بقى ${r0.fromTime}`, `Your end time on ${r0.startDate} is now ${r0.fromTime}`))
-    : r0.type === 'overtime' ? L(`${ot.hours} ساعة يوم ${r0.startDate}${ot.amount != null ? ` = ${ot.amount} ج.م هتنزل على مرتب الشهر` : ''}`, `${ot.hours} h on ${r0.startDate}${ot.amount != null ? ` = ${ot.amount} EGP added to this month's salary` : ''}`)
+    : r0.type === 'overtime' ? L(`${fmtHMS(ot.hours * 3600000)} يوم ${r0.startDate}${ot.amount != null ? ` = ${ot.amount} ج.م هتنزل على مرتب الشهر` : ''}`, `${fmtHMS(ot.hours * 3600000)} on ${r0.startDate}${ot.amount != null ? ` = ${ot.amount} EGP added to this month's salary` : ''}`)
     : r0.type === 'advance' ? L(`${fin.amount} ج.م على ${fin.installments} قسط (${fin.perMonth} شهرياً) من ${fin.startMonth} لـ ${fin.endMonth}`, `${fin.amount} EGP in ${fin.installments} installments (${fin.perMonth}/month), ${fin.startMonth} → ${fin.endMonth}`) : (r0.startDate || '');
   notify(email, L(`تم اعتماد طلبك: ${requestLabel(r0)}`, `Request approved: ${requestLabel(r0)}`), body, '#/requests', 'approved');
 }

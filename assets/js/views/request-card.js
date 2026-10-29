@@ -6,7 +6,7 @@ import { toMs } from '../core/fb.js';
 import { person, nameOf } from '../services/directory.js';
 import { getAttachment } from '../services/requests.js';
 import { read } from '../core/fb.js';
-import { hourValue, overtimeAmount, msToHours, otMultiplier } from '../services/overtime.js';
+import { hourValue, overtimeAmount, msToHours, otMultiplier, fmtHMS, dayMs } from '../services/overtime.js';
 
 const STAGE_NAME = { leader: { ar: 'المدير المباشر', en: 'Manager' }, hr: { ar: 'HR', en: 'HR' }, finance: { ar: 'المالية', en: 'Finance' }, admin: { ar: 'الأدمن', en: 'Admin' } };
 const ACTION_TXT = {
@@ -22,11 +22,14 @@ export function requestTitle(r) {
   if (r.type === 'letter') return ({ employment: L('خطاب إثبات عمل', 'Employment letter'), salary: L('شهادة مرتب', 'Salary certificate'), experience: L('شهادة خبرة', 'Experience letter') })[r.letterKind] || typeLabel('letter');
   return requestLabel(r);
 }
+const otAllot = (r) => Number(r.allotMs) || Math.round((Number(r.allotHours) || 0) * 3600000);
+const otActual = (r) => Number(r.actualMs) || Number(r.workMs) || 0;
+const otPay = (r) => Number(r.payMs) || Math.round((Number(r.hours) || 0) * 3600000);
 export function requestWhen(r) {
   if (r.type === 'excuse') return `${fmtDate(r.startDate)} · ${r.fromTime}–${r.toTime} (${fmtMin(r.minutes)})`;
   if (r.type === 'advance') return `${money(r.amount)} · ${num(r.installments)} ${L('قسط', 'installments')}${r.perMonth ? ` × ${money(r.perMonth, false)}` : ''}${r.startMonth ? ` · ${fmtMonth(r.startMonth)}${r.endMonth && r.endMonth !== r.startMonth ? ` ← ${fmtMonth(r.endMonth)}` : ''}` : ''}`;
   if (r.type === 'correction') return `${fmtDate(r.startDate)}${r.correction ? ` · ${r.correction.checkIn || '—'} → ${r.correction.checkOut || '—'}` : ''}`;
-  if (r.type === 'overtime') return `${r.taskTitle ? `${r.taskTitle} · ` : ''}${L('المحدد', 'Allotted')} ${num(Number(r.allotHours) || 0, 2)} ${L('س', 'h')} · ${L('الفعلي', 'Taken')} ${num(Number(r.actualHours) || msToHours(r.workMs), 2)} ${L('س', 'h')}${r.amount != null ? ` = ${money(r.amount)}` : ''}`;
+  if (r.type === 'overtime') return `${r.taskTitle ? `${r.taskTitle} · ` : ''}${L('المحدد', 'Allotted')} ${fmtHMS(otAllot(r))} · ${L('الفعلي', 'Taken')} ${fmtHMS(otActual(r))}${r.amount != null ? ` = ${money(r.amount)}` : ''}`;
   if (r.type === 'letter') return r.addressedTo ? `${L('إلى:', 'To:')} ${r.addressedTo}` : fmtDate(r.startDate);
   if (!r.startDate) return '';
   return `${fmtDate(r.startDate)}${r.endDate && r.endDate !== r.startDate ? ' → ' + fmtDate(r.endDate) : ''}${r.days ? ` · ${num(r.days)} ${L('يوم عمل', 'working days')}` : ''}`;
@@ -75,7 +78,7 @@ export function requestCard(r, { showPerson = false, actions = '' } = {}) {
 /** hours × the hour's value (× multiplier) = amount, with how the hour's value was found */
 function otCalcHTML(o, hv) {
   const mult = Number(o.multiplier) || 1;
-  return `<b class="num">${esc(money(o.amount))}</b> <span class="xs muted num">= ${num(o.hours, 2)} ${L('ساعة', 'h')} × ${esc(money(o.hourlyRate, false))}${mult !== 1 ? ` × ${mult}` : ''}</span>
+  return `<b class="num">${esc(money(o.amount))}</b> <span class="xs muted num">= ${fmtHMS(o.hours * 3600000)} × ${esc(money(o.hourlyRate, false))}${mult !== 1 ? ` × ${mult}` : ''}</span>
     ${o.dayHours ? `<div class="xs muted">${L(`قيمة الساعة = ${hv ? `المرتب ${money(hv.monthly, false)} ÷ ${hv.divisor} يوم` : 'المرتب ÷ أيام الشهر'} ÷ ${o.dayHours} ساعة شغل في اليوم`, `Hour value = ${hv ? `salary ${money(hv.monthly, false)} ÷ ${hv.divisor} days` : 'salary ÷ days'} ÷ ${o.dayHours} work hours a day`)}</div>` : ''}`;
 }
 export async function showRequestDetails(r) {
@@ -89,9 +92,9 @@ export async function showRequestDetails(r) {
         <dt>${L('التفاصيل', 'Details')}</dt><dd>${esc(requestWhen(r))}</dd>
         ${r.type === 'overtime' ? `<dt>${L('التاسك', 'Task')}</dt><dd>${esc(r.taskTitle || '—')}${r.taskNum ? ` <span class="xs muted num">#${esc(r.taskNum)}</span>` : ''}</dd>
           <dt>${L('اتحدد بواسطة', 'Assigned by')}</dt><dd>${esc(r.assignedByName || nameOf(r.assignedBy) || '—')}</dd>
-          <dt>${L('الساعات المحددة', 'Allotted hours')}</dt><dd class="num"><b>${num(Number(r.allotHours) || 0, 2)}</b> ${L('ساعة', 'h')}${(r.plan || []).length ? ` <span class="xs muted">${esc((r.plan || []).map(d => `${fmtDate(d.date)} (${d.hours})`).join(' · '))}</span>` : ''}</dd>
-          <dt>${L('الوقت الفعلي', 'Time taken')}</dt><dd class="num"><b>${num(Number(r.actualHours) || msToHours(r.workMs), 2)}</b> ${L('ساعة', 'h')} <span class="xs muted">${L('شغل + اجتماعات، من غير الاستراحة', 'work + meetings, breaks excluded')}</span>${(r.days || []).length ? `<div class="xs muted">${esc((r.days || []).map(d => `${fmtDate(d.date)}: ${num(msToHours(d.workMs), 2)}${d.autoClosed ? ` (${L('اتقفل تلقائياً', 'auto-closed')})` : ''}`).join(' · '))}</div>` : ''}</dd>
-          <dt>${L('الساعات اللي هتتحاسب', 'Hours to pay')}</dt><dd class="num"><b>${num(Number(r.hours) || 0, 2)}</b> ${L('ساعة', 'h')}</dd>
+          <dt>${L('الوقت المحدد', 'Allotted time')}</dt><dd class="num"><b>${esc(fmtHMS(otAllot(r)))}</b>${(r.plan || []).length ? `<div class="xs muted">${esc((r.plan || []).map(d => `${fmtDate(d.date)} (${fmtHMS(dayMs(d))})`).join(' · '))}</div>` : ''}</dd>
+          <dt>${L('الوقت الفعلي', 'Time taken')}</dt><dd class="num"><b>${esc(fmtHMS(otActual(r)))}</b> <span class="xs muted">${L('شغل + اجتماعات، من غير الاستراحة', 'work + meetings, breaks excluded')}</span>${(r.days || []).length ? `<div class="xs muted">${esc((r.days || []).map(d => `${fmtDate(d.date)}: ${fmtHMS(d.workMs)}${d.autoClosed ? ` (${L('اتقفل تلقائياً', 'auto-closed')})` : ''}`).join(' · '))}</div>` : ''}</dd>
+          <dt>${L('الوقت اللي هيتحاسب', 'Time to pay')}</dt><dd class="num"><b>${esc(fmtHMS(otPay(r)))}</b></dd>
           <dt>${L('قيمة الأوفر تايم', 'Overtime pay')}</dt><dd id="ot-calc">${r.amount != null ? otCalcHTML(r) : `<span class="muted">—</span>`}</dd>` : ''}
         ${r.correction && r.correction.mode ? `<dt>${L('مكان العمل', 'Location')}</dt><dd>${esc(modeLabel(r.correction.mode))}</dd>` : ''}
         ${r.leaderEmail ? `<dt>${L('المدير المباشر', 'Manager')}</dt><dd>${esc(nameOf(r.leaderEmail))}</dd>` : ''}

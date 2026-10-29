@@ -26,7 +26,9 @@ import { track } from './activity.js';
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 /** the request of an overtime task (one per task and employee) */
 export const overtimeId = (email, taskId) => `ot_${email}_${taskId}`;
-export const msToHours = (ms) => r2((Number(ms) || 0) / 3600000);
+const r4 = (n) => Math.round((Number(n) || 0) * 10000) / 10000;
+export const msToHours = (ms) => r4((Number(ms) || 0) / 3600000);
+/** 3 725 000 ms → \
 export const otMultiplier = () => Number(policy.overtimeMultiplier) > 0 ? Number(policy.overtimeMultiplier) : 1;
 
 /** The value of one working hour from the salary: { rate, dayHours, monthly, divisor } */
@@ -44,10 +46,14 @@ export const isOTTask = (t) => !!t && !!t.ot && typeof t.ot === 'object';
 export const OT_STATE = {
   offered: { ar: 'مستني ردك', en: 'Waiting for a reply', cls: 'warn' },
   accepted: { ar: 'شغال', en: 'Accepted', cls: 'ok' },
+  submitted: { ar: 'عند الليدر للمراجعة', en: 'With the leader for review', cls: 'info' },
   declined: { ar: 'اتعذر', en: 'Declined', cls: 'bad' },
   done: { ar: 'خلص', en: 'Done', cls: 'info' }
 };
-export const otPlanHours = (plan) => r2((plan || []).reduce((s, d) => s + (Number(d.hours) || 0), 0));
+/** the time allotted to a planned day (ms; older plans had hours) */
+export const dayMs = (d) => (Number(d && d.ms) > 0 ? Number(d.ms) : Math.round((Number(d && d.hours) || 0) * 3600000));
+export const otPlanMs = (plan) => (plan || []).reduce((s, d) => s + dayMs(d), 0);
+export const otPlanHours = (plan) => msToHours(otPlanMs(plan));
 const planDay = (t, date) => ((t && t.ot && t.ot.plan) || []).find(d => d.date === date) || null;
 export const otPlanDay = planDay;
 
@@ -58,17 +64,17 @@ export const otPlanDay = planDay;
 export async function createOvertimeTask(fields, assignee, plan) {
   const days = [];
   (plan || []).forEach(d => {
-    const hours = r2(d && d.hours);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(String(d && d.date)) && hours > 0 && hours <= 16 && !days.some(x => x.date === d.date)) days.push({ date: d.date, hours });
+    const ms = Math.round(dayMs(d) / 1000) * 1000;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(d && d.date)) && ms >= 1000 && ms <= 16 * 3600000 && !days.some(x => x.date === d.date)) days.push({ date: d.date, ms, hours: msToHours(ms) });
   });
   if (!days.length) throw userError('حدد يوم واحد على الأقل وعدد ساعاته.', 'Add at least one day with its hours.');
   if (days.length > 31) throw userError('أقصى حاجة 31 يوم.', 'At most 31 days.');
   days.sort((a, b) => a.date.localeCompare(b.date));
-  const ot = { state: 'offered', plan: days, totalHours: otPlanHours(days), offeredBy: session.email, offeredAt: now() };
+  const ot = { state: 'offered', plan: days, totalMs: otPlanMs(days), totalHours: otPlanHours(days), offeredBy: session.email, offeredAt: now() };
   const made = await createTasks({ ...fields, due: (fields && fields.due) || days[days.length - 1].date }, [assignee], { ot });
   const t = made[0];
-  notify(assignee, L(`طلب أوفر تايم: ${t.title}`, `Overtime request: ${t.title}`), L(`${ot.totalHours} ساعة على ${days.length} يوم · من ${nameOf(session.email)} · وافق عليه من الداشبورد`, `${ot.totalHours} h over ${days.length} day(s) · from ${nameOf(session.email)} · accept it on your dashboard`), taskLink(t.id), 'request');
-  track('overtime.offer', { target: t.title, detail: `${nameOf(assignee)} · ${ot.totalHours}h` });
+  notify(assignee, L(`طلب أوفر تايم: ${t.title}`, `Overtime request: ${t.title}`), L(`${fmtHMS(ot.totalMs)} على ${days.length} يوم · من ${nameOf(session.email)} · وافق عليه من الداشبورد`, `${fmtHMS(ot.totalMs)} over ${days.length} day(s) · from ${nameOf(session.email)} · accept it on your dashboard`), taskLink(t.id), 'request');
+  track('overtime.offer', { target: t.title, detail: `${nameOf(assignee)} · ${fmtHMS(ot.totalMs)}` });
   return t;
 }
 
@@ -120,7 +126,7 @@ export async function startOT(task, date) {
     ? { status: 'Online', lastChangeMs: at, endMs: null, closed: false, autoClosed: false, updatedAt: serverTimestamp() }
     : {
       email, name: me.name || email, date, leaderEmail: '', department: me.department || '',
-      kind: 'task', taskId: task.id, taskNum: task.num || 0, taskTitle: String(task.title || '').slice(0, 200), allotMs: Math.round(day.hours * 3600000),
+      kind: 'task', taskId: task.id, taskNum: task.num || 0, taskTitle: String(task.title || '').slice(0, 200), allotMs: dayMs(day),
       status: 'Online', bank: zeroBank(), lastChangeMs: at, startMs: at, endMs: null, closed: false, autoClosed: false, requestId: '', updatedAt: serverTimestamp()
     };
   await settle(setDoc(ref, data, { merge: true }));
@@ -163,16 +169,17 @@ export async function finishOTTask(task, sessions) {
     .sort((a, b) => a.date.localeCompare(b.date));
   const workMs = rows.reduce((s, d) => s + (Number((d.bank || {}).Online) || 0) + (Number((d.bank || {}).Meeting) || 0), 0);
   if (!(workMs > 0)) throw userError('لسه ما اشتغلتش على التاسك ده.', 'You have not worked on this task yet.');
-  const allot = Number(task.ot.totalHours) || 0, actual = msToHours(workMs);
+  const allotMs = Number(task.ot.totalMs) || otPlanMs(task.ot.plan), actualMs = Math.round(workMs);
+  const payMs = allotMs > 0 ? Math.min(actualMs, allotMs) : actualMs;      // the default: what was allotted; the admin decides
   const facts = {
-    workMs: Math.round(workMs), actualHours: actual, allotHours: allot, hours: allot > 0 ? Math.min(actual, allot) : actual,
+    workMs: actualMs, actualMs, allotMs, payMs, actualHours: msToHours(actualMs), allotHours: msToHours(allotMs), hours: msToHours(payMs),
     days: rows.map(d => ({ date: d.date, workMs: Math.round((Number((d.bank || {}).Online) || 0) + (Number((d.bank || {}).Meeting) || 0)), breakMs: Math.round(Number((d.bank || {}).Break) || 0), allotMs: d.allotMs || 0, autoClosed: !!d.autoClosed })),
     startDate: rows[0].date, endDate: rows[rows.length - 1].date, checkInMs: rows[0].startMs || null, checkOutMs: rows[rows.length - 1].endMs || null
   };
   const id = overtimeId(email, task.id);
   const cur = await list(query(col('requests'), where('email', '==', email))).then(r => r.find(x => x.id === id)).catch(() => null);
   if (cur && cur.status !== 'pending_admin') throw userError('طلب الأوفر تايم للتاسك ده اتقرر بالفعل.', 'The overtime request of this task was already decided.');
-  if (cur) await settle(updateDoc(doc(db, 'requests', id), { ...facts, updatedAt: serverTimestamp(), history: arrayUnion({ at: now(), by: email, byName: me.name || email, action: 'updated', note: L(`${actual} ساعة`, `${actual} h`) }) }));
+  if (cur) await settle(updateDoc(doc(db, 'requests', id), { ...facts, updatedAt: serverTimestamp(), history: arrayUnion({ at: now(), by: email, byName: me.name || email, action: 'updated', note: L(`سلّم تاني: ${fmtHMS(actualMs)}`, `handed in again: ${fmtHMS(actualMs)}`) }) }));
   else {
     const req = {
       email, name: me.name || email, leaderEmail: '', department: me.department || '',
@@ -184,13 +191,14 @@ export async function finishOTTask(task, sessions) {
       history: [{ at: now(), by: email, byName: me.name || email, action: 'submitted', note: '' }]
     };
     await settle(setDoc(doc(db, 'requests', id), req));
-    notifyMany(approversFor('admin', req), L(`طلب أوفر تايم: ${req.name}`, `Overtime request: ${req.name}`), L(`${task.title} · المحدد ${allot} س · الفعلي ${actual} س`, `${task.title} · allotted ${allot} h · taken ${actual} h`), '#/approvals', 'request');
   }
-  // the task goes to review (the assignee may do that from "In progress")
-  const upd = { 'ot.state': 'done', 'ot.doneAt': now(), updatedAt: serverTimestamp(), history: arrayUnion({ by: email, from: task.status, to: task.status === 'in_progress' ? 'review' : task.status, at: now(), note: L(`خلّص الأوفر تايم: ${actual} ساعة`, `finished the overtime: ${actual} h`) }) };
+  // the task goes to the leader's review (the assignee may do that from "In progress"). The admin only sees the request
+  // once the leader finishes the task (moveTask in services/tasks.js); until then the leader may comment or send it back.
+  const upd = { 'ot.state': 'submitted', 'ot.submittedAt': now(), updatedAt: serverTimestamp(), history: arrayUnion({ by: email, from: task.status, to: task.status === 'in_progress' ? 'review' : task.status, at: now(), note: L(`سلّم الأوفر تايم: ${fmtHMS(actualMs)}`, `handed in the overtime: ${fmtHMS(actualMs)}`) }) };
   if (task.status === 'in_progress') { upd.status = 'review'; upd.reviewAt = serverTimestamp(); }
   await settle(updateDoc(doc(db, 'tasks', task.id), upd));
-  track('request.submit', { target: id, detail: `overtime task #${task.num} ${actual}h` });
+  notifyMany([task.leader, task.createdBy].filter((e, i, a) => e && e !== email && a.indexOf(e) === i), L(`✓ ${me.name || email} سلّم تاسك أوفر تايم`, `✓ ${me.name || email} handed in an overtime task`), L(`${task.title} · المحدد ${fmtHMS(allotMs)} · الفعلي ${fmtHMS(actualMs)}`, `${task.title} · allotted ${fmtHMS(allotMs)} · taken ${fmtHMS(actualMs)}`), taskLink(task.id), 'progress');
+  track('request.submit', { target: id, detail: `overtime task #${task.num} ${fmtHMS(actualMs)}` });
 }
 
 /** Overtime lines of a month for payroll, from the approved requests: { date, hours, rate, amount, requestId } */

@@ -305,7 +305,7 @@ service cloud.firestore {
         && firstStatusOk(request.resource.data));
       // overtime: the requester brings the hours of a still-pending request up to date (worked more on the task after sending it back)
       allow update: if active() && resource.data.email == me() && resource.data.type == 'overtime' && resource.data.status == 'pending_admin'
-        && request.resource.data.status == 'pending_admin' && onlyChanged(['workMs', 'hours', 'actualHours', 'days', 'startDate', 'endDate', 'checkInMs', 'checkOutMs', 'updatedAt', 'history']);
+        && request.resource.data.status == 'pending_admin' && onlyChanged(['workMs', 'actualMs', 'allotMs', 'payMs', 'hours', 'actualHours', 'allotHours', 'days', 'startDate', 'endDate', 'checkInMs', 'checkOutMs', 'updatedAt', 'history']);
       // requester cancels while pending
       allow update: if active() && resource.data.email == me() && resource.data.status.matches('pending_.*')
         && request.resource.data.status == 'cancelled' && onlyChanged(['status', 'updatedAt', 'history']);
@@ -745,11 +745,11 @@ service cloud.firestore {
           || (resource.data.assignee == me() && request.resource.data.assignee == me() && request.resource.data.get('leader', '') == resource.data.get('leader', '')
               && onlyChanged(['status', 'updatedAt', 'history', 'checklist', 'holdReason', 'reviewAt', 'commentsCount', 'ot'])
               && assigneeMoveOk(resource.data.status, request.resource.data.status)
-              // overtime: the assignee only answers the offer (accept / decline) and hands it in, nothing else in the plan
+              // overtime: the assignee only answers the offer (accept / decline) and hands the work in to the leader, nothing else in the plan
               && (!('ot' in affected()) || (resource.data.get('ot', null) != null
-                  && request.resource.data.ot.diff(resource.data.ot).affectedKeys().hasOnly(['state', 'acceptedAt', 'declineNote', 'doneAt'])
+                  && request.resource.data.ot.diff(resource.data.ot).affectedKeys().hasOnly(['state', 'acceptedAt', 'declineNote', 'submittedAt'])
                   && ((resource.data.ot.state == 'offered' && request.resource.data.ot.state in ['accepted', 'declined'])
-                    || (resource.data.ot.state == 'accepted' && request.resource.data.ot.state == 'done'))))));
+                    || (resource.data.ot.state == 'accepted' && request.resource.data.ot.state == 'submitted'))))));
       allow delete: if active() && (isAdmin() || isPM() || resource.data.get('leader', '') == me()
         || (resource.data.createdBy == me() && resource.data.assignee == me()));
       match /comments/{c} {

@@ -5,7 +5,7 @@ import { session, now } from '../core/session.js';
 import { policy, dayKey, planFor, lateness, modeLabel, MODE_META, typeLabel, statusLabel, REQUEST_STATUS, leaveTypeLabel, isWorkingPlan, withShift, planOfDay, canPickShift, shiftList, shiftLabel, requestChoices, requiredWorkMs } from '../core/policy.js';
 import { toMs, watch, query, col, where } from '../core/fb.js';
 import { startDay, changeStatus, endDay, liveBank, staleDay, closeStaleDay, dayLogs, COUNTED, countFrom, workedMs } from '../services/attendance.js';
-import { startOT, changeOT, endOT, finishOTTask, respondOT, otLive, otWorkMs, otPlanDay, isOTTask, watchMyOT, OT_STATUSES } from '../services/overtime.js';
+import { startOT, changeOT, endOT, finishOTTask, respondOT, otLive, otWorkMs, otPlanDay, isOTTask, watchMyOT, OT_STATUSES, fmtHMS, otPlanMs, dayMs as otDayMs } from '../services/overtime.js';
 import { startTasks, onTasks, allTasks, taskLink } from '../services/tasks.js';
 import { notifyMany } from '../services/notify.js';
 import { approversFor } from '../services/requests.js';
@@ -361,13 +361,13 @@ export default async function render(root) {
   }
 
   // ---- overtime tasks: an offer from a leader / manager / admin to accept, then a card with its own counter per task ----
-  const otTasks = () => allTasks().filter(t => t.assignee === session.email && isOTTask(t) && ['offered', 'accepted'].includes(t.ot.state));
+  const otTasks = () => allTasks().filter(t => t.assignee === session.email && isOTTask(t) && ['offered', 'accepted', 'submitted'].includes(t.ot.state));
   const otSession = (t, date = today()) => otRows.find(r => r.taskId === t.id && r.date === date) || null;
   const otTotalMs = (t) => otRows.filter(r => r.taskId === t.id).reduce((s, r) => s + otWorkMs(r), 0);
   function otBlock(t, ctx) {
-    const days = (t.ot.plan || []).map(d => `<span class="badge xs num">${esc(fmtDate(d.date))} · ${esc(d.hours)}${esc(L(' س', 'h'))}</span>`).join(' ');
+    const days = (t.ot.plan || []).map(d => `<span class="badge xs num">${esc(fmtDate(d.date))} · ${esc(fmtHMS(otDayMs(d)))}</span>`).join(' ');
     const head = `<div class="row between" style="flex-wrap:wrap;gap:8px"><div class="min0"><b>${esc(t.title)}</b> <span class="xs muted num">#${esc(t.num || '')}</span>
-        <div class="xs muted">${L('من', 'From')} ${esc(nameOf(t.createdBy || t.leader))} · ${L('المحدد', 'Allotted')} <b class="num">${esc(t.ot.totalHours || 0)}</b> ${L('ساعة', 'h')}</div></div>
+        <div class="xs muted">${L('من', 'From')} ${esc(nameOf(t.createdBy || t.leader))} · ${L('المحدد', 'Allotted')} <b class="num">${esc(fmtHMS(Number(t.ot.totalMs) || otPlanMs(t.ot.plan)))}</b></div></div>
         <a class="btn btn-sm btn-ghost" href="${esc(taskLink(t.id))}"><i class="fas fa-up-right-from-square"></i> ${L('فتح التاسك', 'Open task')}</a></div>
       ${t.details ? `<div class="reason mt-8" style="white-space:pre-line">${esc(String(t.details).slice(0, 400))}</div>` : ''}
       <div class="row-wrap mt-8">${days}</div>`;
@@ -376,7 +376,12 @@ export default async function render(root) {
         <div class="alert warn mb-8"><i class="fas fa-hourglass-half"></i><span>${L('طلب أوفر تايم مستني ردك', 'An overtime request is waiting for your reply')}</span></div>${head}
         <div class="row gap-8 mt-16"><button class="btn btn-ok" data-ot-acc="${esc(t.id)}"><i class="fas fa-check"></i> ${L('أوافق', 'Accept')}</button><button class="btn btn-danger" data-ot-dec="${esc(t.id)}"><i class="fas fa-xmark"></i> ${L('اعتذر', 'Decline')}</button></div></div>`;
     }
+    if (t.ot.state === 'submitted') {
+      return `<div style="border:1px solid var(--border);border-radius:12px;padding:14px">
+        <div class="alert info mb-8"><i class="fas fa-user-check"></i><span>${L(`سلّمت التاسك (${fmtHMS(otTotalMs(t))}). عند الليدر للمراجعة: ممكن يعلّق أو يرجّعه ليك تكمّل.`, `You handed it in (${fmtHMS(otTotalMs(t))}). The leader reviews it and may comment or send it back to you.`)}</span></div>${head}</div>`;
+    }
     const day = otPlanDay(t, today()), d = otSession(t), open = !!d && !d.closed;
+    const back = t.returnReason ? `<div class="alert warn mt-8"><i class="fas fa-rotate-left"></i><span>${L('الليدر رجّعه ليك:', 'Sent back to you:')} ${esc(t.returnReason)}</span></div>` : '';
     const total = otTotalMs(t);
     const status = open ? `<div class="mt-16"><div class="row between mb-8" style="flex-wrap:wrap;gap:12px">
           <div><div class="muted small" title="${L('العمل + الاجتماعات، من غير الاستراحة', 'Work + meetings, breaks excluded')}">${L('وقت الأوفر تايم النهارده', "Today's overtime")}</div><div class="timer-big" data-ot-work="${esc(t.id)}">00:00:00</div></div>
@@ -384,10 +389,10 @@ export default async function render(root) {
         <div class="status-pad">${OT_STATUSES.map(k => { const s = STATUS_META[k]; return `<button class="status-btn s-${k} ${d.status === k ? 'active' : ''}" data-ot-st="${k}" data-id="${esc(d.id)}"><i class="fas ${s.icon}"></i><span>${esc(L(s.ar, s.en))}</span><span class="num small" data-ot-timer="${esc(d.id)}:${k}">00:00:00</span></button>`; }).join('')}</div>
         <div class="row gap-8 mt-8"><button class="btn btn-sm" data-ot-end="${esc(d.id)}"><i class="fas fa-stop"></i> ${L('إنهاء شغل النهارده', "End today's work")}</button></div></div>`
       : (!day ? `<p class="muted small mt-16">${L('النهارده مش من أيام التاسك ده.', "Today is not one of this task's days.")}</p>`
-        : `<div class="row between mt-16" style="flex-wrap:wrap;gap:12px"><div><b class="small">${L(`النهارده: ${day.hours} ساعة`, `Today: ${day.hours} h`)}</b>
+        : `<div class="row between mt-16" style="flex-wrap:wrap;gap:12px"><div><b class="small">${L(`النهارده: ${fmtHMS(otDayMs(day))}`, `Today: ${fmtHMS(otDayMs(day))}`)}</b>
             <p class="muted small">${ctx.canToday ? L('العداد بيحسب الشغل والاجتماعات بس.', 'The counter counts work and meetings only.') : (started() ? L('أنهي يومك العادي الأول.', 'End your normal day first.') : L('مش متاح في وقت الشيفت. أنهي الشيفت أو استنى بعد ميعاده.', 'Not available during the shift hours. End the shift or wait until it is over.'))}</p></div>
             <button class="btn btn-grad" data-ot-start="${esc(t.id)}" ${ctx.canToday && !ctx.anyOpen ? '' : 'disabled'}><i class="fas fa-play"></i> ${d ? L('كمّل', 'Resume') : L('ابدأ الأوفر تايم', 'Start overtime')}</button></div>`);
-    return `<div style="border:1px solid var(--border);border-radius:12px;padding:14px">${head}
+    return `<div style="border:1px solid var(--border);border-radius:12px;padding:14px">${head}${back}
       <div class="row between mt-16" style="flex-wrap:wrap;gap:8px"><span class="small">${L('اشتغلت لحد دلوقتي', 'Worked so far')}: <b class="num" data-ot-total="${esc(t.id)}">${esc(fmtDur(total))}</b></span>
         <button class="btn btn-sm btn-primary" data-ot-fin="${esc(t.id)}" ${total > 0 || open ? '' : 'disabled'}><i class="fas fa-flag-checkered"></i> ${L('خلّصت التاسك', 'Task finished')}</button></div>${status}</div>`;
   }

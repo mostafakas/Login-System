@@ -9,6 +9,7 @@ import { salaryParts, isFreelancer, rulesOf, violationsFrom, priceViolations, vi
 import { personMonth, STATUS_DAY } from '../services/reports.js';
 import { dayLogs, scopeFor } from '../services/attendance.js';
 import { openRequestForm } from './request-form.js';
+import { fmtHMS } from '../services/overtime.js';
 
 const DOW = () => isAr ? ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'] : ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -34,13 +35,13 @@ export function statTiles(t) {
  */
 export function splitHTML(s) {
   if (!s) return '';
-  const tile = (icon, cls, label, hint, ms) => `<div class="card stat"><div class="label"><span class="icon-tile ${cls}"><i class="fas ${icon}"></i></span>${esc(label)}</div><div class="value">${esc(fmtHours(ms))}</div><div class="hint">${esc(hint)}</div></div>`;
+  const tile = (icon, cls, label, hint, ms) => `<div class="card stat"><div class="label"><span class="icon-tile ${cls}"><i class="fas ${icon}"></i></span>${esc(label)}</div><div class="value">${esc(fmtHMS(ms))}</div><div class="hint">${esc(hint)}</div></div>`;
   const rows = (s.card || []).map(d => {
     const rq = d.request, st = rq ? REQUEST_STATUS[rq.status] || {} : null;
     return `<tr><td class="nowrap num">${esc(d.date)}</td>
       <td>${esc(d.taskTitle || '—')}${d.taskNum ? ` <span class="xs muted num">#${esc(d.taskNum)}</span>` : ''}${d.autoClosed ? ` <span class="badge warn xs" title="${L('نسي ينهي العداد', 'Counter was not ended')}">${L('اتقفل تلقائياً', 'Auto-closed')}</span>` : ''}</td>
       <td class="num nowrap">${d.startMs ? esc(fmtTime(d.startMs)) : '—'}</td><td class="num nowrap">${d.endMs ? esc(fmtTime(d.endMs)) : (d.closed ? '—' : `<span class="badge ok xs">${L('شغال', 'Running')}</span>`)}</td>
-      <td class="num">${d.allotMs ? esc(fmtHours(d.allotMs)) : '—'}</td><td class="num"><b>${esc(fmtHours(d.workMs))}</b></td><td class="num">${esc(fmtHours(d.breakMs))}</td>
+      <td class="num">${d.allotMs ? esc(fmtHMS(d.allotMs)) : '—'}</td><td class="num"><b>${esc(fmtHMS(d.workMs))}</b></td><td class="num">${esc(fmtHMS(d.breakMs))}</td>
       <td>${rq ? `<span class="badge ${st.cls || ''}">${esc(statusLabel(rq.status))}</span>` : '—'}</td>
       <td class="num">${rq && rq.amount != null ? esc(money(rq.amount)) : '—'}</td></tr>`;
   }).join('');

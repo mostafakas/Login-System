@@ -33,7 +33,7 @@ export const DEFAULT_POLICY = {
   absenceDeductDays: 1,
   payrollDayDivisor: 30,
   overtimeMultiplier: 1,          // overtime on a day off: hours × the hour's value × this
-  overtimeDayHours: 0,            // hours in a working day for the hour's value (0 = the person's shift minus the break)
+  overtimeDayHours: 8,            // actual work hours in a day, for the hour's value (day value ÷ this)
   breakMaxMinutes: 60,
   carryOverMax: 0,                // unused annual days carried to next year
   trackingStart: '',              // first day attendance is tracked by this system (set at go-live)
@@ -253,14 +253,10 @@ export function requiredWorkMs(plan) {
   const mins = hmToMin(plan.end) - hmToMin(plan.start) - (Number(policy.breakMaxMinutes) || 0);
   return Math.max(0, mins) * 60000;
 }
-/** Hours in one working day of a person, for the value of an hour: the setting, else their hours (or the first shift) minus the break */
-export function dayWorkHours(who) {
+/** Hours in one working day, for the value of an hour: the setting (Settings → Payroll), else 8 — the day's actual work hours */
+export function dayWorkHours() {
   const set = Number(policy.overtimeDayHours) || 0;
-  if (set > 0) return set;
-  const h = hoursFor(who);
-  const s = h.fixed ? h : (shiftList()[0] || h);
-  const mins = hmToMin(s.end) - hmToMin(s.start) - (Number(policy.breakMaxMinutes) || 0);
-  return mins > 0 ? Math.round(mins / 6) / 10 : 8;
+  return set > 0 ? set : 8;
 }
 
 /** Count working days in a range (excludes weekends & holidays; schedule overrides respected) */

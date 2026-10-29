@@ -34,6 +34,8 @@ export function classifyDay(date, plan, rec, excuses, todayKey, since = '') {
   const guess = !!sh && rec.shift === '';
   plan = withShift(plan, sh, rec && rec.mode);
   const row = { date, plan, rec: rec || null, status: 'none', mode: plan.mode, late: 0, early: 0, workMs: 0, breakMs: 0, meetingMs: 0, flags: guess ? ['shift-guessed'] : [] };
+  // approved permissions (late / early / mid-day) filed for this day: shown next to the day in the reports
+  row.excuses = (excuses || []).filter(e => e.startDate === date).map(e => ({ id: e.id, kind: e.excuseKind || 'late', from: e.fromTime || '', to: e.toTime || '', minutes: e.minutes || 0 }));
   if (rec && rec.status) {
     row.status = rec.status;
   }

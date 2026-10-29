@@ -117,6 +117,7 @@ export function dayTableHTML(rows, filter = 'all') {
       !r.plan.shift && rec.checkInMs && isWorkingPlan(r.plan) && r.plan.start ? `<span class="badge xs num" dir="ltr" title="${L('مواعيد ثابتة (من غير اختيار شيفت)', 'Fixed hours (no shift picked)')}">${esc(r.plan.start)}–${esc(r.plan.end)}</span>` : '',
       ed ? `<span class="badge info xs edited-day" title="${esc(editTitle(ed))}"><i class="fas fa-user-pen"></i>${L('تعديل يدوي', 'Edited')}${ed.by ? ` · ${esc(ed.by)}` : ''}</span>` : '',
       r.flags.includes('forgot') ? `<span class="badge warn xs" title="${L('نسي ينهي اليوم', 'Day not ended')}">${L('اتقفل تلقائياً', 'Auto-closed')}</span>` : '',
+      (r.excuses || []).map(x => `<span class="badge ok xs" title="${L('إذن معتمد، ومتحسبش عليه تأخير في الوقت المغطّى', 'Approved permission: lateness inside it is not counted')}"><i class="fas fa-file-circle-check"></i> ${x.kind === 'early' ? L('إذن انصراف مبكر', 'Early leave') : (x.kind === 'middle' ? L('إذن خروج', 'Mid-day permission') : L('إذن تأخير', 'Late permission'))}${x.from || x.to ? ` <span class="num" dir="ltr">${esc(x.from)}–${esc(x.to)}</span>` : ''}</span>`).join(''),
       r.flags.includes('excused') ? `<span class="badge ok xs">${L('بإذن', 'Excused')}</span>` : '',
       r.flags.includes('remote-pending') ? `<span class="badge warn xs">${L('مستني موافقة', 'Pending')}</span>` : '',
       r.flags.includes('extra-day') ? `<span class="badge ok xs" title="${L('شغل في يوم إجازة', 'Worked on a day off')}">${L('أوفر تايم', 'Overtime')}</span>` : '',

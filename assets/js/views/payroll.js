@@ -11,6 +11,7 @@ import { exportSheet } from './export.js';
 import { exportPayrollReport } from './payroll-report.js';
 import { openManualOvertime } from './overtime-manual.js';
 import { openManualAdvance } from './advance-manual.js';
+import { printPayroll } from './payroll-print.js';
 
 const fmtSize = (n) => n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
 
@@ -54,6 +55,7 @@ export default async function render(root) {
         ${admin ? `<button class="btn" data-action="ot-add"><i class="fas fa-business-time"></i> ${L('تسجيل أوفر تايم', 'Register overtime')}</button>` : ''}
         ${admin ? `<button class="btn" data-action="adv-add"><i class="fas fa-hand-holding-dollar"></i> ${L('إضافة سلفة', 'Add advance')}</button>` : ''}
         ${items.length ? `<button class="btn" data-action="xls"><i class="fas fa-file-excel"></i> Excel</button>` : ''}
+        ${items.length ? `<button class="btn" data-action="print"><i class="fas fa-file-pdf"></i> ${L('كشف رسمي PDF', 'Official PDF')}</button>` : ''}
       </div>`;
     const stale = items.filter(isStale);
     const bar = root.querySelector('#bar');
@@ -222,6 +224,7 @@ export default async function render(root) {
         try { await saveManual(month, i.email, { bonus: Number(f.bonus.value || 0), incentive: Number(f.incentive.value || 0), otherDeductions, note: f.note.value.trim(), kpiMode, kpiValue: kpiMode ? Number(f.kpiValue.value || 0) : null }); m.close(); toast(L('تم الحفظ', 'Saved')); } catch (ex) { toastErr(ex); }
       });
     },
+    print: () => { if (!printPayroll({ month, items, run })) toast(L('مفيش رواتب للشهر ده', 'No payroll for this month'), '', 'warn'); },
     'ot-add': () => openManualOvertime({ month, onDone: () => { subscribe(); } }),
     'adv-add': () => openManualAdvance({ month, onDone: () => { drawAdvances(); subscribe(); } }),
     xls: async () => {

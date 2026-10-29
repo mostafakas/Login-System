@@ -41,11 +41,13 @@ service cloud.firestore {
       return t == 'letter' ? ['hr'] : ((t == 'leave' || t == 'correction') ? ['leader', 'hr'] : (t == 'advance' ? ['leader', 'hr', 'finance'] : ['leader']));
     }
     function wfList(t) { return exists(settingsPath()) ? get(settingsPath()).data.get('workflow', {}).get(t, defaultWf(t)) : defaultWf(t); }
+    // the workflow key of a request: admin-defined types (type 'custom') each have their own, custom_<id>
+    function wfKeyOf(d) { return d.type == 'custom' ? 'custom_' + d.get('customType', '') : d.type; }
     // the first approval stage the requester must go through
     function firstStatusOk(d) {
-      // salary advances go to the admin only
-      return d.type == 'advance' ? d.status == 'pending_admin'
-        : ((prof().get('leaderEmail', '') != '' && wfList(d.type).hasAny(['leader']))
+      // salary advances and overtime go to the admin only
+      return d.type in ['advance', 'overtime'] ? d.status == 'pending_admin'
+        : ((prof().get('leaderEmail', '') != '' && wfList(wfKeyOf(d)).hasAny(['leader']))
           ? d.status == 'pending_leader'
           : d.status == 'pending_hr');
     }
@@ -141,8 +143,8 @@ service cloud.firestore {
         // work location and the "remote without approval" flag are set once, when the day starts
         && (!('workLocation' in affected()) || newDay() || resource.data.get('workLocation', null) == null)
         && (!('remotePending' in affected()) || newDay() || request.resource.data.remotePending == true)
-        // the 10:00 shift is chosen once, when the day starts
-        && (!('shift' in affected()) || (newDay() && request.resource.data.shift in ['', '10']))
+        // the shift (08:00 / 09:00 / 10:00) is chosen once, when the day starts
+        && (!('shift' in affected()) || (newDay() && request.resource.data.shift in ['', '8', '9', '10']))
         && (!('photo' in affected()) || (request.resource.data.photo is string && request.resource.data.photo.size() < 120000))
         && (!('sessionId' in affected()) || (request.resource.data.sessionId is string && request.resource.data.sessionId.size() < 64))
         && meetingOk()
@@ -182,7 +184,7 @@ service cloud.firestore {
         return ['email', 'name', 'date', 'leaderEmail', 'department', 'mode', 'remotePending', 'checkIn', 'checkInMs', 'checkOutMs',
                 'workMs', 'breakMs', 'meetingMs', 'closed', 'closedBy', 'autoClosed', 'corrected', 'updatedAt', 'creditMs', 'shift'];
       }
-      function shiftOk(d) { return d.get('shift', '') in ['', '10']; }
+      function shiftOk(d) { return d.get('shift', '') in ['', '8', '9', '10']; }
       function creditOk(d) { return d.get('creditMs', 0) is number && d.get('creditMs', 0) >= 0 && d.get('creditMs', 0) <= graceMs(); }
       function checkOutOk(d) {
         return d.get('checkOutMs', null) == null
@@ -207,8 +209,9 @@ service cloud.firestore {
         && checkOutOk(request.resource.data);
       // self update (status changes, end of day)
       allow update: if active() && resource.data.email == me() && request.resource.data.email == me()
-        && onlyChanged(['workMs', 'breakMs', 'meetingMs', 'checkOutMs', 'closed', 'closedBy', 'autoClosed', 'updatedAt', 'remotePending'])
+        && onlyChanged(['workMs', 'breakMs', 'meetingMs', 'checkOutMs', 'closed', 'closedBy', 'autoClosed', 'updatedAt', 'remotePending', 'shortfall'])
         && request.resource.data.get('closedBy', '') in ['', 'user', 'auto']
+        && (request.resource.data.get('shortfall', null) == null || (request.resource.data.shortfall is map && request.resource.data.shortfall.get('response', '') in ['accepted', 'refused']))
         && (!('remotePending' in affected()) || request.resource.data.remotePending == true)
         && workSum(request.resource.data) <= nowMs() - resource.data.get('checkInMs', 0) + resource.data.get('creditMs', 0) + 300000
         && checkOutOk(request.resource.data);
@@ -240,7 +243,10 @@ service cloud.firestore {
         && request.resource.data.closedBy == 'leader' && request.resource.data.autoClosed == true
         && checkOutOk(request.resource.data);
     }
-    // ---------- overtime card: the employee's second counter (work / meeting / break); the admin reads all of them ----------
+
+    // ---------- overtime card: the employee's own second counter (work / meeting / break) ----------
+    // overtime_days/{email}_{YYYY-MM-DD}. Only the employee writes it (server clock, counters grow at most by the real
+    // elapsed time); only the employee and the admin read it. Ending it files an admin-only request (see requests).
     match /overtime_days/{id} {
       function otKeys() {
         return ['email', 'name', 'date', 'leaderEmail', 'department', 'kind', 'dayMode', 'dayName', 'leaveType', 'status', 'bank',
@@ -253,7 +259,6 @@ service cloud.firestore {
       allow read: if active() && (resource == null || resource.data.get('email', '') == me() || isAdmin());
       allow create: if active() && request.resource.data.email == me() && id == me() + '_' + request.resource.data.date
         && otOk(request.resource.data) && tbSum(request.resource.data.bank) == 0;
-      // counters grow at most by the real elapsed time since the last change (+2 min tolerance)
       allow update: if active() && resource.data.email == me() && request.resource.data.email == me()
         && otOk(request.resource.data)
         && tbSum(request.resource.data.bank) >= tbSum(resource.data.bank)
@@ -279,19 +284,19 @@ service cloud.firestore {
       function stageFields() { return ['status', 'updatedAt', 'history', 'decidedBy', 'approvedBy', 'approvedAt']; }
       allow read: if active() && (resource.data.email == me() || resource.data.get('leaderEmail', '') == me() || seesAll() || isFinance());
       // HR/admin may file on someone else's behalf (and the migration imports old requests); own requests follow the normal path
+      // overtime (from the employee's overtime card) goes to the admin alone: no leader on it, and no amount until the admin approves
       allow create: if (isHR() && othersOnly()) || (active()
         && request.resource.data.email == me()
-        && request.resource.data.get('leaderEmail', '') == prof().get('leaderEmail', '')
-        && request.resource.data.type in ['leave', 'remote', 'excuse', 'correction', 'advance', 'letter']
-        && firstStatusOk(request.resource.data))
-        // the employee's overtime card files its own request, for the admin alone (no leader on it)
-        || (active() && request.resource.data.email == me() && request.resource.data.type == 'overtime'
-        && id == 'ot_' + me() + '_' + request.resource.data.startDate
-        && request.resource.data.status == 'pending_admin' && request.resource.data.get('leaderEmail', '') == '');
-      // the employee brings their own pending overtime request up to date (hours when the card is resumed)
+        && (request.resource.data.type == 'overtime'
+            ? request.resource.data.get('leaderEmail', '') == ''
+            : request.resource.data.get('leaderEmail', '') == prof().get('leaderEmail', ''))
+        && request.resource.data.type in ['leave', 'remote', 'excuse', 'correction', 'advance', 'letter', 'custom', 'overtime']
+        && (request.resource.data.type != 'overtime' || (id == 'ot_' + me() + '_' + request.resource.data.get('startDate', '') && !('amount' in request.resource.data) && !('hourlyRate' in request.resource.data)))
+        && (request.resource.data.type != 'custom' || (request.resource.data.get('customType', '') is string && request.resource.data.customType.size() > 0 && request.resource.data.customType.size() <= 40))
+        && firstStatusOk(request.resource.data));
+      // overtime: the requester brings the hours of a still-pending request up to date (worked more after resuming the card)
       allow update: if active() && resource.data.email == me() && resource.data.type == 'overtime' && resource.data.status == 'pending_admin'
-        && request.resource.data.status == 'pending_admin'
-        && onlyChanged(['workMs', 'hours', 'checkInMs', 'checkOutMs', 'autoClosed', 'updatedAt', 'history']);
+        && request.resource.data.status == 'pending_admin' && onlyChanged(['workMs', 'hours', 'checkInMs', 'checkOutMs', 'autoClosed', 'updatedAt', 'history']);
       // requester cancels while pending
       allow update: if active() && resource.data.email == me() && resource.data.status.matches('pending_.*')
         && request.resource.data.status == 'cancelled' && onlyChanged(['status', 'updatedAt', 'history']);

@@ -8,6 +8,7 @@ import { buildRun, saveManual, recordAdvancePayout, PAY_ORDER, PAY_STATUS, paySt
 import { openPayslip } from './payslip.js';
 import { payParts } from '../services/salary.js';
 import { exportSheet } from './export.js';
+import { exportPayrollReport } from './payroll-report.js';
 
 const fmtSize = (n) => n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
 
@@ -187,14 +188,18 @@ export default async function render(root) {
         try { await saveManual(month, i.email, { bonus: Number(f.bonus.value || 0), incentive: Number(f.incentive.value || 0), otherDeductions, note: f.note.value.trim(), kpiMode, kpiValue: kpiMode ? Number(f.kpiValue.value || 0) : null }); m.close(); toast(L('تم الحفظ', 'Saved')); } catch (ex) { toastErr(ex); }
       });
     },
-    xls: () => exportSheet(`payroll_${month}`, [{
+    xls: async () => {
+      try { await exportPayrollReport({ month, items, run }); return; }
+      catch (e) { console.warn('[payroll report]', e); toast(L('تعذّر التقرير المنسّق، اتنزل الملف العادي', 'Could not build the formatted report; downloading the plain file'), '', 'warn'); }
+      return exportSheet(`payroll_${month}`, [{
       name: month, rows: items.map(i => ({
         [L('الموظف', 'Employee')]: i.name, [L('الأساسي', 'Basic')]: i.basic, [L('البدلات', 'Allowances')]: i.allowances, [L('الانتظام', 'Regularity')]: i.regularity || 0, KPI: i.kpi || 0, [L('مكافأة', 'Bonus')]: i.bonus, [L('حوافز', 'Incentive')]: i.incentive, [L('ساعات أوفر تايم', 'Overtime hours')]: i.overtimeHours || 0, [L('أوفر تايم', 'Overtime')]: i.overtime || 0,
         [L('الإجمالي', 'Gross')]: i.gross, [L('ثابتة', 'Fixed')]: i.fixed, [L('غياب', 'Absence')]: i.absenceDeduction, [L('بدون أجر', 'Unpaid')]: i.unpaidDeduction, [L('تأخير', 'Late')]: i.lateDeduction,
         [L('أونلاين مرفوض', 'Rejected remote')]: i.remoteDeduction || 0, [L('انصراف مبكر', 'Early leave')]: i.earlyDeduction || 0,
         [L('سلف', 'Advance')]: i.advance, [L('أخرى', 'Other')]: (i.otherDeductions || []).reduce((s, d) => s + d.amount, 0), [L('الصافي', 'Net')]: i.net, [L('الحالة', 'Status')]: payStatusLabel(payStatus(i))
       }))
-    }])
+    }]);
+    }
   });
   root.querySelectorAll('[data-m]').forEach(b => b.onclick = () => { month = addMonths(month, Number(b.dataset.m)); subscribe(); });
   subscribe();

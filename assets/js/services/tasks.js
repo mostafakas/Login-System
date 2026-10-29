@@ -144,7 +144,7 @@ export async function nextNums(n) {
   });
 }
 /** Create a task — one separate copy per chosen person, each with its own number and status */
-export async function createTasks(fields, assignees) {
+export async function createTasks(fields, assignees, extra = {}) {
   const allowed = new Set(assignable().map(p => p.email));
   const who = [...new Set(assignees || [])].filter(e => allowed.has(e));
   if (!who.length) throw userError('اختار الموظف.', 'Pick the employee.');
@@ -157,7 +157,7 @@ export async function createTasks(fields, assignees) {
     const leader = email === session.email ? (p.leaderEmail || '') : (p.leaderEmail === session.email ? session.email : (p.leaderEmail || session.email));
     const ref = doc(col('tasks'));
     const t = { ...base, num: nums[i], assignee: email, leader, supervisor: supervisorOf(leader), createdBy: session.email, status: 'new', createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
-      doneAt: null, doneNote: '', returnReason: '', holdReason: '', commentsCount: 0, history: [{ by: session.email, from: '', to: 'new', at: now(), note: '' }] };
+      doneAt: null, doneNote: '', returnReason: '', holdReason: '', commentsCount: 0, history: [{ by: session.email, from: '', to: 'new', at: now(), note: '' }], ...extra };
     b.set(ref, t);
     return { id: ref.id, ...t };
   });

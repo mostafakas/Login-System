@@ -91,10 +91,40 @@ export default async function render(root) {
       try { await decide(r.id, 'approve', '', v); play('approved'); m.close(); toast(L('تم اعتماد السلفة', 'Advance approved'), `${r.name} — ${money(v.amount)}`); } catch (ex) { toastErr(ex); }
     });
   }
+  /** Admin: an overtime task came back — pay the hours the leader allotted, everything the employee took, or a number in between */
+  function approveOvertime(r) {
+    const actual = Number(r.actualHours) || Math.round((r.workMs || 0) / 36000) / 100, allot = Number(r.allotHours) || 0;
+    const first = allot > 0 ? Math.min(allot, actual) : actual;
+    const m = modal({
+      title: `${L('اعتماد أوفر تايم', 'Approve overtime')} — ${r.name}`, icon: 'fa-business-time', size: 'narrow',
+      body: `<form class="col gap-12" id="of">
+          <dl class="kv">
+            <dt>${L('التاسك', 'Task')}</dt><dd>${esc(r.taskTitle || '—')}${r.taskNum ? ` <span class="xs muted num">#${esc(r.taskNum)}</span>` : ''}</dd>
+            <dt>${L('اتحدد بواسطة', 'Assigned by')}</dt><dd>${esc(r.assignedByName || '—')}</dd>
+            <dt>${L('المحدد', 'Allotted')}</dt><dd class="num"><b>${num(allot, 2)}</b> ${L('ساعة', 'h')}</dd>
+            <dt>${L('الفعلي', 'Taken')}</dt><dd class="num"><b>${num(actual, 2)}</b> ${L('ساعة', 'h')}</dd>
+          </dl>
+          <label class="row gap-8"><input type="radio" name="how" value="allot" ${allot > 0 ? 'checked' : ''} ${allot > 0 ? '' : 'disabled'}> <span>${L(`المحدد بس (${num(first, 2)} ساعة)`, `Allotted only (${num(first, 2)} h)`)}</span></label>
+          <label class="row gap-8"><input type="radio" name="how" value="all" ${allot > 0 ? '' : 'checked'}> <span>${L(`كل الوقت الفعلي (${num(actual, 2)} ساعة)`, `All the time taken (${num(actual, 2)} h)`)}</span></label>
+          <label class="row gap-8"><input type="radio" name="how" value="custom"> <span>${L('عدد ساعات تانية:', 'Another number of hours:')}</span><input class="input num" type="number" name="custom" min="0.25" max="${actual}" step="0.25" value="${esc(first)}" style="width:110px"></label>
+          <div class="alert info" id="oamt"><i class="fas fa-circle-info"></i><span>${L('المبلغ بيتحسب من قيمة ساعة الموظف العادية لما توافق.', "The amount is worked out from the employee's normal hour value when you approve.")}</span></div>
+        </form>`,
+      foot: `<button class="btn" data-close>${L('إلغاء', 'Cancel')}</button><button class="btn btn-ok" id="ook"><i class="fas fa-check"></i> ${L('اعتماد', 'Approve')}</button>`
+    });
+    const f = m.$('#of');
+    const hours = () => { const how = (f.how.value || 'allot'); return how === 'all' ? actual : (how === 'custom' ? Number(f.custom.value) : first); };
+    f.addEventListener('input', () => { if (document.activeElement === f.custom) f.how.value = 'custom'; });
+    m.$('#ook').onclick = (e) => busy(e.currentTarget, async () => {
+      const h = hours();
+      if (!(h > 0)) { f.custom.focus(); return; }
+      try { await decide(r.id, 'approve', '', { hours: h }); play('approved'); m.close(); toast(L('تم اعتماد الأوفر تايم', 'Overtime approved'), `${r.name} — ${num(h, 2)} ${L('ساعة', 'h')}`); } catch (ex) { toastErr(ex); }
+    });
+  }
   bindActions(root, {
     details: ({ id }) => { const r = find(id); if (r) showRequestDetails(r); },
     approve: async ({ id }, btn) => {
       const r = find(id); if (!r) return;
+      if (r.type === 'overtime') { approveOvertime(r); return; }
       if (r.type === 'advance' && r.status === 'pending_admin') { approveAdvance(r); return; }
       let note = '';
       if (r.type === 'letter' && r.status === 'pending_hr') {

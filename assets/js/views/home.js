@@ -5,7 +5,8 @@ import { session, now } from '../core/session.js';
 import { policy, dayKey, planFor, lateness, modeLabel, MODE_META, typeLabel, statusLabel, REQUEST_STATUS, leaveTypeLabel, isWorkingPlan, withShift, planOfDay, canPickShift, shiftList, shiftLabel, requestChoices, requiredWorkMs } from '../core/policy.js';
 import { toMs, watch, query, col, where } from '../core/fb.js';
 import { startDay, changeStatus, endDay, liveBank, staleDay, closeStaleDay, dayLogs, COUNTED, countFrom, workedMs } from '../services/attendance.js';
-import { startOT, changeOT, endOT, otLive, watchMyOT, overtimeId, msToHours, OT_STATUSES } from '../services/overtime.js';
+import { startOT, changeOT, endOT, finishOTTask, respondOT, otLive, otWorkMs, otPlanDay, isOTTask, watchMyOT, OT_STATUSES } from '../services/overtime.js';
+import { startTasks, onTasks, allTasks, taskLink } from '../services/tasks.js';
 import { notifyMany } from '../services/notify.js';
 import { approversFor } from '../services/requests.js';
 import { getSchedule, watchBalance, remaining, watchMyRequests } from '../services/requests.js';
@@ -16,8 +17,7 @@ export default async function render(root) {
   const unsubs = [];
   let schedule = null, balance = null, myReqs = [], otRows = [], otClosing = false;
   const today = () => dayKey(now());
-  const otToday = () => otRows.find(r => r.date === today()) || null;
-  const otOpen = () => { const d = otToday(); return !!d && !d.closed; };
+  const otOpen = () => otRows.some(r => !r.closed);
 
   root.innerHTML = `
     <div class="grid" style="grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);align-items:start" id="home-grid">
@@ -360,54 +360,80 @@ export default async function render(root) {
     watchLogs();
   }
 
-  // ---- the overtime card: opens on a day off, or once the shift is ended; no permission needed ----
+  // ---- overtime tasks: an offer from a leader / manager / admin to accept, then a card with its own counter per task ----
+  const otTasks = () => allTasks().filter(t => t.assignee === session.email && isOTTask(t) && ['offered', 'accepted'].includes(t.ot.state));
+  const otSession = (t, date = today()) => otRows.find(r => r.taskId === t.id && r.date === date) || null;
+  const otTotalMs = (t) => otRows.filter(r => r.taskId === t.id).reduce((s, r) => s + otWorkMs(r), 0);
+  function otBlock(t, ctx) {
+    const days = (t.ot.plan || []).map(d => `<span class="badge xs num">${esc(fmtDate(d.date))} · ${esc(d.hours)}${esc(L(' س', 'h'))}</span>`).join(' ');
+    const head = `<div class="row between" style="flex-wrap:wrap;gap:8px"><div class="min0"><b>${esc(t.title)}</b> <span class="xs muted num">#${esc(t.num || '')}</span>
+        <div class="xs muted">${L('من', 'From')} ${esc(nameOf(t.createdBy || t.leader))} · ${L('المحدد', 'Allotted')} <b class="num">${esc(t.ot.totalHours || 0)}</b> ${L('ساعة', 'h')}</div></div>
+        <a class="btn btn-sm btn-ghost" href="${esc(taskLink(t.id))}"><i class="fas fa-up-right-from-square"></i> ${L('فتح التاسك', 'Open task')}</a></div>
+      ${t.details ? `<div class="reason mt-8" style="white-space:pre-line">${esc(String(t.details).slice(0, 400))}</div>` : ''}
+      <div class="row-wrap mt-8">${days}</div>`;
+    if (t.ot.state === 'offered') {
+      return `<div style="border:1px solid var(--border);border-radius:12px;padding:14px">
+        <div class="alert warn mb-8"><i class="fas fa-hourglass-half"></i><span>${L('طلب أوفر تايم مستني ردك', 'An overtime request is waiting for your reply')}</span></div>${head}
+        <div class="row gap-8 mt-16"><button class="btn btn-ok" data-ot-acc="${esc(t.id)}"><i class="fas fa-check"></i> ${L('أوافق', 'Accept')}</button><button class="btn btn-danger" data-ot-dec="${esc(t.id)}"><i class="fas fa-xmark"></i> ${L('اعتذر', 'Decline')}</button></div></div>`;
+    }
+    const day = otPlanDay(t, today()), d = otSession(t), open = !!d && !d.closed;
+    const total = otTotalMs(t);
+    const status = open ? `<div class="mt-16"><div class="row between mb-8" style="flex-wrap:wrap;gap:12px">
+          <div><div class="muted small" title="${L('العمل + الاجتماعات، من غير الاستراحة', 'Work + meetings, breaks excluded')}">${L('وقت الأوفر تايم النهارده', "Today's overtime")}</div><div class="timer-big" data-ot-work="${esc(t.id)}">00:00:00</div></div>
+          <div><div class="muted small">${L('الاستراحة', 'Break')}</div><div class="timer-big" data-ot-break="${esc(t.id)}" style="font-size:22px">00:00:00</div></div></div>
+        <div class="status-pad">${OT_STATUSES.map(k => { const s = STATUS_META[k]; return `<button class="status-btn s-${k} ${d.status === k ? 'active' : ''}" data-ot-st="${k}" data-id="${esc(d.id)}"><i class="fas ${s.icon}"></i><span>${esc(L(s.ar, s.en))}</span><span class="num small" data-ot-timer="${esc(d.id)}:${k}">00:00:00</span></button>`; }).join('')}</div>
+        <div class="row gap-8 mt-8"><button class="btn btn-sm" data-ot-end="${esc(d.id)}"><i class="fas fa-stop"></i> ${L('إنهاء شغل النهارده', "End today's work")}</button></div></div>`
+      : (!day ? `<p class="muted small mt-16">${L('النهارده مش من أيام التاسك ده.', "Today is not one of this task's days.")}</p>`
+        : `<div class="row between mt-16" style="flex-wrap:wrap;gap:12px"><div><b class="small">${L(`النهارده: ${day.hours} ساعة`, `Today: ${day.hours} h`)}</b>
+            <p class="muted small">${ctx.canToday ? L('العداد بيحسب الشغل والاجتماعات بس.', 'The counter counts work and meetings only.') : (started() ? L('أنهي يومك العادي الأول.', 'End your normal day first.') : L('بيتفتح بعد ما تنهي شيفتك.', 'Opens once your shift is ended.'))}</p></div>
+            <button class="btn btn-grad" data-ot-start="${esc(t.id)}" ${ctx.canToday && !ctx.anyOpen ? '' : 'disabled'}><i class="fas fa-play"></i> ${d ? L('كمّل', 'Resume') : L('ابدأ الأوفر تايم', 'Start overtime')}</button></div>`);
+    return `<div style="border:1px solid var(--border);border-radius:12px;padding:14px">${head}
+      <div class="row between mt-16" style="flex-wrap:wrap;gap:8px"><span class="small">${L('اشتغلت لحد دلوقتي', 'Worked so far')}: <b class="num" data-ot-total="${esc(t.id)}">${esc(fmtDur(total))}</b></span>
+        <button class="btn btn-sm btn-primary" data-ot-fin="${esc(t.id)}" ${total > 0 || open ? '' : 'disabled'}><i class="fas fa-flag-checkered"></i> ${L('خلّصت التاسك', 'Task finished')}</button></div>${status}</div>`;
+  }
   function renderOT() {
     const card = root.querySelector('#ot-card'); if (!card) return;
+    const list = otTasks();
+    card.classList.toggle('hidden', !list.length);
+    if (!list.length) { card.innerHTML = ''; return; }
     const plan = planFor(today(), schedule, session.email);
-    const off = !isWorkingPlan(plan);
-    const d = otToday();
-    const open = !!d && !d.closed;
-    const can = off || endedToday() || open;
-    const head = `<div class="card-head"><h3><i class="fas fa-business-time"></i> ${L('الأوفر تايم', 'Overtime')}</h3>${open ? `<button class="btn btn-danger btn-sm" id="ot-end"><i class="fas fa-flag-checkered"></i> ${L('إنهاء الأوفر تايم', 'End overtime')}</button>` : ''}</div>`;
-    if (open) {
-      card.innerHTML = `${head}<div class="card-body">
-        <div class="row between mb-16" style="flex-wrap:wrap;gap:12px">
-          <div><div class="muted small" title="${L('العمل + الاجتماعات، من غير الاستراحة', 'Work + meetings, breaks excluded')}">${L('وقت الأوفر تايم', 'Overtime time')}</div><div class="timer-big" id="ot-work">00:00:00</div></div>
-          <div><div class="muted small">${L('الاستراحة', 'Break')}</div><div class="timer-big" id="ot-break" style="font-size:22px">00:00:00</div></div>
-        </div>
-        <div class="status-pad">${OT_STATUSES.map(k => { const s = STATUS_META[k]; return `<button class="status-btn s-${k} ${d.status === k ? 'active' : ''}" data-ot-st="${k}"><i class="fas ${s.icon}"></i><span>${esc(L(s.ar, s.en))}</span><span class="num small" data-ot-timer="${k}">00:00:00</span></button>`; }).join('')}</div>
-        <p class="xs muted mt-8">${L('بيتحسب الشغل والاجتماعات بس، والاستراحة مش بتتحسب.', 'Only work and meetings are counted; breaks are not.')}</p></div>`;
-      card.querySelectorAll('[data-ot-st]').forEach(b => b.onclick = () => busy(b, async () => { try { await changeOT(d, b.dataset.otSt); } catch (e) { toastErr(e); } }));
-      card.querySelector('#ot-end').onclick = async () => {
-        const ok = await confirmDialog({ title: L('إنهاء الأوفر تايم', 'End overtime'), message: L('هيتحسب الوقت وتتبعت التفاصيل للإدارة. متأكد؟', 'The time is counted and the details are sent to management. Continue?'), okText: L('إنهاء', 'End'), okClass: 'btn-danger' });
-        if (!ok) return;
-        try { await endOT(d); toast(L('اتقفل الأوفر تايم', 'Overtime ended'), L('اتبعت للإدارة', 'Sent to management')); } catch (e) { toastErr(e); }
-      };
-      tickOT(); return;
-    }
-    const req = d ? myReqs.find(r => r.id === overtimeId(session.email, d.date)) : null;
-    const done = d && d.closed ? otLive(d) : null;
-    const canResume = !!done && (!req || req.status === 'pending_admin');
-    card.innerHTML = `${head}<div class="card-body">
-      ${done ? `<div class="alert ok mb-16"><i class="fas fa-circle-check"></i><span>${L(`خلّصت أوفر تايم: ${fmtHours(done.Online + done.Meeting)}. الطلب عند الإدارة.`, `Overtime done: ${fmtHours(done.Online + done.Meeting)}. The request is with management.`)}</span></div>` : ''}
-      <div class="row between" style="flex-wrap:wrap;gap:16px">
-        <div><h3 style="font-size:16px">${can ? (canResume ? L('عايز تكمّل؟', 'Back to work?') : L('جاهز تبدأ أوفر تايم؟', 'Ready to start overtime?')) : L('الأوفر تايم بيتفتح بعد شيفتك', 'Overtime opens after your shift')}</h3>
-        <p class="muted small">${can ? L('العداد بيحسب الشغل والاجتماعات وبيتبعت للإدارة لما تنهيه.', 'The counter counts work and meetings and is sent to management when you end it.') : L('أنهي يومك العادي الأول، وبعدها يتفعّل الكارت ده.', 'End your normal day first, then this card turns on.')}</p></div>
-        ${done && !canResume ? '' : `<button class="btn btn-grad btn-lg" id="ot-start" ${can ? '' : 'disabled'}><i class="fas fa-play"></i> ${canResume ? L('كمّل الأوفر تايم', 'Resume overtime') : L('ابدأ أوفر تايم', 'Start overtime')}</button>`}
-      </div></div>`;
-    const sb = card.querySelector('#ot-start');
-    if (sb) sb.onclick = () => busy(sb, async () => {
-      if (!navigator.onLine) { toast(L('مفيش إنترنت', 'No internet'), '', 'bad'); return; }
-      try { await startOT(today(), off ? 'off' : 'after', plan); } catch (e) { toastErr(e); }
-    });
+    const ctx = { canToday: !started() && (!isWorkingPlan(plan) || endedToday()), anyOpen: otOpen() };
+    card.innerHTML = `<div class="card-head"><h3><i class="fas fa-business-time"></i> ${L('الأوفر تايم', 'Overtime')}</h3></div><div class="card-body col gap-16">${list.map(t => otBlock(t, ctx)).join('')}</div>`;
+    tickOT();
   }
   function tickOT() {
-    const d = otToday(); if (!d || d.closed) return;
-    const b = otLive(d);
-    const w = root.querySelector('#ot-work'); if (w) w.textContent = fmtDur(b.Online + b.Meeting);
-    const br = root.querySelector('#ot-break'); if (br) br.textContent = fmtDur(b.Break);
-    root.querySelectorAll('[data-ot-timer]').forEach(el => { el.textContent = fmtDur(b[el.dataset.otTimer]); });
+    otRows.filter(r => !r.closed).forEach(d => {
+      const b = otLive(d);
+      const w = root.querySelector(`[data-ot-work="${CSS.escape(d.taskId)}"]`); if (w) w.textContent = fmtDur(b.Online + b.Meeting);
+      const br = root.querySelector(`[data-ot-break="${CSS.escape(d.taskId)}"]`); if (br) br.textContent = fmtDur(b.Break);
+      OT_STATUSES.forEach(k => { const el = root.querySelector(`[data-ot-timer="${CSS.escape(d.id + ':' + k)}"]`); if (el) el.textContent = fmtDur(b[k]); });
+    });
+    root.querySelectorAll('[data-ot-total]').forEach(el => { const t = allTasks().find(x => x.id === el.dataset.otTotal); if (t) el.textContent = fmtDur(otTotalMs(t)); });
   }
+  root.querySelector('#ot-card').onclick = async (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    const task = (id) => allTasks().find(t => t.id === id);
+    try {
+      if (b.dataset.otAcc) { const t = task(b.dataset.otAcc); if (t) { await busy(b, () => respondOT(t, true)); toast(L('وافقت على الأوفر تايم', 'Overtime accepted'), L('الكارت ده بيشتغل في الأيام المحددة.', 'This card works on the days set.')); } }
+      else if (b.dataset.otDec) {
+        const t = task(b.dataset.otDec); if (!t) return;
+        const note = await confirmDialog({ title: L('الاعتذار عن الأوفر تايم', 'Decline the overtime'), message: t.title, okText: L('اعتذر', 'Decline'), okClass: 'btn-danger', input: { label: L('السبب (هيوصل للي طلبه)', 'Reason (sent to who asked)'), required: true } });
+        if (note === null) return;
+        await respondOT(t, false, note); toast(L('اتبعت اعتذارك', 'Your reply was sent'));
+      } else if (b.dataset.otStart) {
+        if (!navigator.onLine) { toast(L('مفيش إنترنت', 'No internet'), '', 'bad'); return; }
+        const t = task(b.dataset.otStart); if (t) await busy(b, () => startOT(t, today()));
+      } else if (b.dataset.otSt) { const d = otRows.find(r => r.id === b.dataset.id); if (d) await busy(b, () => changeOT(d, b.dataset.otSt)); }
+      else if (b.dataset.otEnd) { const d = otRows.find(r => r.id === b.dataset.otEnd); if (d) await busy(b, () => endOT(d)); }
+      else if (b.dataset.otFin) {
+        const t = task(b.dataset.otFin); if (!t) return;
+        const ok = await confirmDialog({ title: L('تسليم التاسك', 'Hand in the task'), message: L('هيتحسب الوقت اللي اشتغلته وتتبعت التفاصيل للإدارة للموافقة. متأكد إنك خلّصت؟', 'The time you worked is counted and sent to management for approval. Are you done?'), okText: L('خلّصت', 'Done') });
+        if (!ok) return;
+        await finishOTTask(t, otRows.filter(r => r.taskId === t.id));
+        toast(L('اتبعت للإدارة', 'Sent to management'), L('الأدمن هيراجع الوقت ويعتمد الساعات.', 'The admin reviews the time and approves the hours.'));
+      }
+    } catch (ex) { toastErr(ex); }
+  };
 
   function renderAll() { renderHero(); renderPad(); renderOT(); renderStats(); renderUpcoming(); tick(); }
 
@@ -417,6 +443,7 @@ export default async function render(root) {
   unsubs.push(watch(query(col('schedules'), where('email', '==', session.email)), rows => { schedule = rows.find(r => r.month === today().slice(0, 7)) || null; renderAll(); }));
   unsubs.push(watchBalance(session.email, Number(today().slice(0, 4)), b => { balance = b; renderStats(); }));
   unsubs.push(watchMyRequests(rows => { myReqs = rows; renderStats(); renderUpcoming(); renderOT(); }));
+  startTasks(); unsubs.push(onTasks(() => renderOT()));
   unsubs.push(watchMyOT(rows => {
     otRows = rows; renderOT(); if (!started()) renderPad();
     // an overtime counter forgotten on an earlier day is closed (and sent to the admin as "auto-closed")

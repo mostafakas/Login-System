@@ -124,7 +124,7 @@ export async function personMonth(email, ym, leaderScope) {
   // the month in 3 parts: the shift's actual hours · overtime run on the shift counter (unpaid) · the overtime card (paid once approved)
   const card = otDays.map(d => {
     const b = d.bank || {}, work = (b.Online || 0) + (b.Meeting || 0);
-    const rq = reqs.find(r => r.type === 'overtime' && r.startDate === d.date) || null;
+    const rq = reqs.find(r => r.type === 'overtime' && r.taskId === d.taskId) || null;
     return { ...d, workMs: work, breakMs: b.Break || 0, request: rq };
   });
   const totals = summarize(rows);

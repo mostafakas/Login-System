@@ -244,23 +244,32 @@ service cloud.firestore {
         && checkOutOk(request.resource.data);
     }
 
-    // ---------- overtime card: the employee's own second counter (work / meeting / break) ----------
-    // overtime_days/{email}_{YYYY-MM-DD}. Only the employee writes it (server clock, counters grow at most by the real
-    // elapsed time); only the employee and the admin read it. Ending it files an admin-only request (see requests).
+    // ---------- overtime tasks: the employee's counter on a task a leader / manager / admin gave them ----------
+    // overtime_days/{email}_{taskId}_{YYYY-MM-DD}: work / meeting / break counters of ONE accepted overtime task on one of
+    // its planned days. Only the employee writes it (server clock; counters grow at most by the real elapsed time) and
+    // only the employee and the admin read it. Finishing the task files an admin-only request (see requests).
     match /overtime_days/{id} {
       function otKeys() {
-        return ['email', 'name', 'date', 'leaderEmail', 'department', 'kind', 'dayMode', 'dayName', 'leaveType', 'status', 'bank',
+        return ['email', 'name', 'date', 'leaderEmail', 'department', 'kind', 'taskId', 'taskNum', 'taskTitle', 'allotMs', 'status', 'bank',
                 'lastChangeMs', 'startMs', 'endMs', 'closed', 'autoClosed', 'requestId', 'updatedAt'];
       }
       function otOk(d) {
         return d.keys().hasOnly(otKeys()) && d.status in ['Online', 'Break', 'Meeting', 'Offline']
-          && d.kind in ['off', 'after'] && near(d.lastChangeMs);
+          && d.kind == 'task' && near(d.lastChangeMs);
+      }
+      // the task is mine and I accepted it
+      function otTaskOk(taskId) {
+        let t = get(/databases/$(database)/documents/tasks/$(taskId)).data;
+        return t.get('assignee', '') == me() && t.get('ot', {}).get('state', '') == 'accepted';
       }
       allow read: if active() && (resource == null || resource.data.get('email', '') == me() || isAdmin());
-      allow create: if active() && request.resource.data.email == me() && id == me() + '_' + request.resource.data.date
-        && otOk(request.resource.data) && tbSum(request.resource.data.bank) == 0;
+      allow create: if active() && request.resource.data.email == me()
+        && id == me() + '_' + request.resource.data.taskId + '_' + request.resource.data.date
+        && otOk(request.resource.data) && tbSum(request.resource.data.bank) == 0
+        && otTaskOk(request.resource.data.taskId);
       allow update: if active() && resource.data.email == me() && request.resource.data.email == me()
         && otOk(request.resource.data)
+        && request.resource.data.taskId == resource.data.taskId && request.resource.data.date == resource.data.date
         && tbSum(request.resource.data.bank) >= tbSum(resource.data.bank)
         && tbSum(request.resource.data.bank) <= tbSum(resource.data.bank) + (nowMs() - resource.data.lastChangeMs) + 120000;
       allow write: if isAdmin();
@@ -291,12 +300,12 @@ service cloud.firestore {
             ? request.resource.data.get('leaderEmail', '') == ''
             : request.resource.data.get('leaderEmail', '') == prof().get('leaderEmail', ''))
         && request.resource.data.type in ['leave', 'remote', 'excuse', 'correction', 'advance', 'letter', 'custom', 'overtime']
-        && (request.resource.data.type != 'overtime' || (id == 'ot_' + me() + '_' + request.resource.data.get('startDate', '') && !('amount' in request.resource.data) && !('hourlyRate' in request.resource.data)))
+        && (request.resource.data.type != 'overtime' || (id == 'ot_' + me() + '_' + request.resource.data.get('taskId', '') && !('amount' in request.resource.data) && !('hourlyRate' in request.resource.data)))
         && (request.resource.data.type != 'custom' || (request.resource.data.get('customType', '') is string && request.resource.data.customType.size() > 0 && request.resource.data.customType.size() <= 40))
         && firstStatusOk(request.resource.data));
-      // overtime: the requester brings the hours of a still-pending request up to date (worked more after resuming the card)
+      // overtime: the requester brings the hours of a still-pending request up to date (worked more on the task after sending it back)
       allow update: if active() && resource.data.email == me() && resource.data.type == 'overtime' && resource.data.status == 'pending_admin'
-        && request.resource.data.status == 'pending_admin' && onlyChanged(['workMs', 'hours', 'checkInMs', 'checkOutMs', 'autoClosed', 'updatedAt', 'history']);
+        && request.resource.data.status == 'pending_admin' && onlyChanged(['workMs', 'hours', 'actualHours', 'days', 'startDate', 'endDate', 'checkInMs', 'checkOutMs', 'updatedAt', 'history']);
       // requester cancels while pending
       allow update: if active() && resource.data.email == me() && resource.data.status.matches('pending_.*')
         && request.resource.data.status == 'cancelled' && onlyChanged(['status', 'updatedAt', 'history']);
@@ -719,6 +728,8 @@ service cloud.firestore {
       allow read: if seesTask(resource.data);
       allow create: if active() && taskTextOk(request.resource.data) && request.resource.data.createdBy == me()
         && (request.resource.data.status == 'new' || isAdmin() || isPM()) && request.resource.data.num is int   // imports keep their status
+        // an overtime task is an offer from someone else: never for myself, and it starts as 'offered'
+        && (!('ot' in request.resource.data) || (request.resource.data.assignee != me() && request.resource.data.ot.get('state', '') == 'offered'))
         && (isAdmin() || isPM()
           || (request.resource.data.leader == me() && leads(request.resource.data.assignee))
           || (request.resource.data.assignee == me() && prof().get('selfTasks', false) == true && request.resource.data.leader == prof().get('leaderEmail', '')));
@@ -732,8 +743,13 @@ service cloud.firestore {
           || (resource.data.createdBy == me() && resource.data.assignee == me() && request.resource.data.assignee == me() && request.resource.data.leader == resource.data.get('leader', ''))
           // the assignee: status (limited moves), checklist ticks, comment counter
           || (resource.data.assignee == me() && request.resource.data.assignee == me() && request.resource.data.get('leader', '') == resource.data.get('leader', '')
-              && onlyChanged(['status', 'updatedAt', 'history', 'checklist', 'holdReason', 'reviewAt', 'commentsCount'])
-              && assigneeMoveOk(resource.data.status, request.resource.data.status)));
+              && onlyChanged(['status', 'updatedAt', 'history', 'checklist', 'holdReason', 'reviewAt', 'commentsCount', 'ot'])
+              && assigneeMoveOk(resource.data.status, request.resource.data.status)
+              // overtime: the assignee only answers the offer (accept / decline) and hands it in, nothing else in the plan
+              && (!('ot' in affected()) || (resource.data.get('ot', null) != null
+                  && request.resource.data.ot.diff(resource.data.ot).affectedKeys().hasOnly(['state', 'acceptedAt', 'declineNote', 'doneAt'])
+                  && ((resource.data.ot.state == 'offered' && request.resource.data.ot.state in ['accepted', 'declined'])
+                    || (resource.data.ot.state == 'accepted' && request.resource.data.ot.state == 'done'))))));
       allow delete: if active() && (isAdmin() || isPM() || resource.data.get('leader', '') == me()
         || (resource.data.createdBy == me() && resource.data.assignee == me()));
       match /comments/{c} {

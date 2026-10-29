@@ -12,6 +12,7 @@ import { watchMonth } from '../services/todos.js';
 import { card, move, editor, details, who, statusBadge, periodPicker, monthName } from './task-ui.js';
 import { setTabLabel } from '../tabs.js';
 import { dayKey } from '../core/policy.js';
+import { openOvertimeTaskForm, canOfferOvertime } from './overtime-task.js';
 
 const LS = () => `am_tk_${session.email}`;
 const loadPrefs = () => { try { return JSON.parse(localStorage.getItem(LS()) || '{}'); } catch { return {}; } };
@@ -61,6 +62,7 @@ function tasksTab(body, actions, openId, fixed = {}) {
       ${!isFixed && seesAllTasks() ? `<button class="btn btn-ghost btn-sm" id="notion-imp"><i class="fas fa-file-import"></i> ${L('استيراد من Notion', 'Import from Notion')}</button>` : ''}
       ${!isFixed && isAdmin() && (allTasks().some(t => t.notionKey || t.source === 'notion') || allProjects().some(p => p.notionKey) || allClients().some(c => c.notionKey)) ? `<button class="btn btn-ghost btn-sm" id="notion-wipe" style="color:var(--bad)"><i class="fas fa-trash-can"></i> ${L('مسح بيانات Notion', 'Delete Notion data')}</button>` : ''}
       ${!isFixed && (isLeaderOfAny() || isAdmin()) ? `<button class="btn btn-ghost btn-sm" id="team-perm" title="${L('مين يقدر يعمل تاسكات لنفسه', 'Who may create their own tasks')}"><i class="fas fa-user-gear"></i> ${L('صلاحيات الفريق', 'Team access')}</button>` : ''}
+      ${!isFixed && canOfferOvertime() ? `<button class="btn" id="new-ot"><i class="fas fa-business-time"></i> ${L('تاسك أوفر تايم', 'Overtime task')}</button>` : ''}
       ${canCreate() ? `<button class="btn btn-primary" id="new-task"><i class="fas fa-plus"></i> ${L('تاسك جديد', 'New task')}</button>` : ''}`;
   };
   const filtersHTML = () => {
@@ -170,6 +172,7 @@ function tasksTab(body, actions, openId, fixed = {}) {
   });
   actions.onclick = (e) => {
     const v = e.target.closest('[data-view]'); if (v) { setPref('view', v.dataset.view); return; }
+    if (e.target.closest('#new-ot')) { openOvertimeTaskForm(); return; }
     if (e.target.closest('#new-task')) editor(null, { projectId: fixed.projectId || (prefs.project && prefs.project !== '__none' ? prefs.project : '') });
     if (e.target.closest('#team-perm')) teamAccess();
     if (e.target.closest('#notion-imp')) import('./notion-import.js').then(m => m.openNotionImport());

@@ -5,6 +5,7 @@ import { toast, toastErr, avatar, modal, busy, confirmDialog } from '../core/ui.
 import { session, now } from '../core/session.js';
 import { toMs } from '../core/fb.js';
 import { person, nameOf } from '../services/directory.js';
+import { OT_STATE } from '../services/overtime.js';
 import {
   STATUS, ORDER, PRIORITY, isLate, WEEK_DAYS, lastDayOf, canManage, canEdit, canDelete, canMove, needsReason, assignable, allProjects, projectById, taskById,
   createTasks, editTask, moveTask, toggleCheck, deleteTask, watchComments, addComment, deleteComment, uploadFile, loadFile, MAX_FILE
@@ -42,12 +43,16 @@ export function dueText(t) {
 }
 const checkProgress = (t) => { const c = t.checklist || []; return c.length ? { done: c.filter(x => x.done).length, all: c.length } : null; };
 
+/** overtime task: the hours allotted and where it stands */
+const otBadge = (t) => { const s = OT_STATE[t.ot.state] || {}; return `<span class="badge ${s.cls || ''} xs"><i class="fas fa-business-time"></i>${esc(L('أوفر تايم', 'Overtime'))} ${esc(t.ot.totalHours || 0)}${esc(L(' س', 'h'))} · ${esc(L(s.ar || '', s.en || ''))}</span>`; };
+const otDetails = (t) => `<div class="ct-note ok mb-8"><b><i class="fas fa-business-time"></i> ${L('تاسك أوفر تايم', 'Overtime task')} · ${esc(t.ot.totalHours || 0)} ${L('ساعة', 'h')}</b>${(t.ot.plan || []).map(d => `<div class="xs num">${esc(fmtDate(d.date))} — ${esc(d.hours)} ${L('ساعة', 'h')}</div>`).join('')}${t.ot.declineNote ? `<div class="xs">${esc(t.ot.declineNote)}</div>` : ''}</div>`;
+
 /** a task card (board / lists) */
 export function card(t, { draggable = false } = {}) {
   const cp = checkProgress(t);
   const p = t.projectId ? projectById(t.projectId) : null;
   return `<div class="tk-card ${isLate(t) ? 'late' : ''} pr-${t.priority || 'normal'}" data-open="${esc(t.id)}" ${draggable ? 'draggable="true"' : ''}>
-    <div class="tk-card-top"><span class="tk-num num">#${t.num}</span>${prioBadge(t.priority)}${t.projectName ? `<span class="tk-proj" style="--pc:${esc((p && p.color) || '#1b1bdb')}">${esc(t.projectName)}</span>` : ''}</div>
+    <div class="tk-card-top"><span class="tk-num num">#${t.num}</span>${prioBadge(t.priority)}${t.ot ? otBadge(t) : ''}${t.projectName ? `<span class="tk-proj" style="--pc:${esc((p && p.color) || '#1b1bdb')}">${esc(t.projectName)}</span>` : ''}</div>
     <b class="tk-title">${esc(t.title)}</b>
     ${cp ? `<div class="tk-cl"><div class="tk-bar"><span style="width:${Math.round(cp.done / cp.all * 100)}%"></span></div><small class="num">${cp.done}/${cp.all}</small></div>` : ''}
     <div class="tk-meta">${t.assignee ? `<span class="tk-who">${avatar(who(t.assignee), 'xs')}${esc(first(t.assignee))}</span>` : `<span class="tk-who pending" title="${L('ملوش يوزر لسه', 'No account yet')}"><i class="fas fa-user-clock"></i>${esc(t.pendingAssignee || '—')}</span>`}${dueText(t)}
@@ -152,7 +157,8 @@ export function details(id) {
     const hist = (t.history || []).slice().sort((a, b) => (b.at || 0) - (a.at || 0));
     m.$('#td').innerHTML = `<div class="tk-detail">
       <div class="tk-d-main">
-        <div class="row gap-8 wrap mb-8">${statusBadge(t.status)}${prioBadge(t.priority)}${isLate(t) ? dueText(t) : ''}</div>
+        <div class="row gap-8 wrap mb-8">${statusBadge(t.status)}${prioBadge(t.priority)}${t.ot ? otBadge(t) : ''}${isLate(t) ? dueText(t) : ''}</div>
+        ${t.ot ? otDetails(t) : ''}
         ${t.details ? `<div class="tk-d-text">${linkify(t.details)}</div>` : `<p class="muted small">${L('مفيش تفاصيل.', 'No details.')}</p>`}
         ${t.status === 'done' && t.doneNote ? `<div class="ct-note ok"><b>${L('ملاحظة التسليم', 'Delivery note')}</b>${esc(t.doneNote)}</div>` : ''}
         ${t.status === 'hold' && t.holdReason ? `<div class="ct-note warn"><b>${L('سبب الإيقاف', 'On hold because')}</b>${esc(t.holdReason)}</div>` : ''}

@@ -38,9 +38,9 @@ export function splitHTML(s) {
   const rows = (s.card || []).map(d => {
     const rq = d.request, st = rq ? REQUEST_STATUS[rq.status] || {} : null;
     return `<tr><td class="nowrap num">${esc(d.date)}</td>
-      <td>${d.kind === 'after' ? L('بعد الشيفت', 'After the shift') : L('يوم إجازة', 'Day off')}${d.autoClosed ? ` <span class="badge warn xs" title="${L('نسي ينهي العداد', 'Counter was not ended')}">${L('اتقفل تلقائياً', 'Auto-closed')}</span>` : ''}</td>
+      <td>${esc(d.taskTitle || '—')}${d.taskNum ? ` <span class="xs muted num">#${esc(d.taskNum)}</span>` : ''}${d.autoClosed ? ` <span class="badge warn xs" title="${L('نسي ينهي العداد', 'Counter was not ended')}">${L('اتقفل تلقائياً', 'Auto-closed')}</span>` : ''}</td>
       <td class="num nowrap">${d.startMs ? esc(fmtTime(d.startMs)) : '—'}</td><td class="num nowrap">${d.endMs ? esc(fmtTime(d.endMs)) : (d.closed ? '—' : `<span class="badge ok xs">${L('شغال', 'Running')}</span>`)}</td>
-      <td class="num"><b>${esc(fmtHours(d.workMs))}</b></td><td class="num">${esc(fmtHours(d.breakMs))}</td>
+      <td class="num">${d.allotMs ? esc(fmtHours(d.allotMs)) : '—'}</td><td class="num"><b>${esc(fmtHours(d.workMs))}</b></td><td class="num">${esc(fmtHours(d.breakMs))}</td>
       <td>${rq ? `<span class="badge ${st.cls || ''}">${esc(statusLabel(rq.status))}</span>` : '—'}</td>
       <td class="num">${rq && rq.amount != null ? esc(money(rq.amount)) : '—'}</td></tr>`;
   }).join('');
@@ -48,9 +48,9 @@ export function splitHTML(s) {
     <div class="card-body"><div class="grid g-3 keep-2">
       ${tile('fa-briefcase', 'ok', L('وقت الشيفت الفعلي', "Shift's actual time"), L('الشغل الفعلي داخل ساعات الشيفت', 'Real work within the shift hours'), s.regularMs)}
       ${tile('fa-hourglass-end', 'warn', L('أوفر تايم على عداد الشيفت', 'Overtime on the shift counter'), L('استكمل بعد الشيفت من غير ما يقفل العداد · بدون مقابل', 'Kept the shift counter running · unpaid'), s.afterMs)}
-      ${tile('fa-business-time', 'info', L('أوفر تايم كارت الأوفر تايم', 'Overtime card'), L('قفل الشيفت وشغّل الكارت · بيتحاسب بعد موافقتك', 'Closed the shift and ran the card · paid once approved'), s.cardMs)}
+      ${tile('fa-business-time', 'info', L('أوفر تايم التاسكات', 'Overtime tasks'), L('تاسكات اتحدد لها وقت · بتتحاسب بعد موافقتك', 'Tasks with allotted time · paid once you approve'), s.cardMs)}
     </div>
-    ${rows ? `<div class="table-wrap mt-16"><table class="table"><thead><tr><th>${L('اليوم', 'Day')}</th><th>${L('النوع', 'Kind')}</th><th class="num">${L('بدأ', 'Start')}</th><th class="num">${L('انتهى', 'End')}</th><th class="num">${L('الشغل + الاجتماع', 'Work + meetings')}</th><th class="num">${L('الاستراحة', 'Break')}</th><th>${L('الطلب', 'Request')}</th><th class="num">${L('المبلغ', 'Amount')}</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}</div></div>`;
+    ${rows ? `<div class="table-wrap mt-16"><table class="table"><thead><tr><th>${L('اليوم', 'Day')}</th><th>${L('التاسك', 'Task')}</th><th class="num">${L('بدأ', 'Start')}</th><th class="num">${L('انتهى', 'End')}</th><th class="num">${L('المحدد', 'Allotted')}</th><th class="num">${L('الشغل + الاجتماع', 'Work + meetings')}</th><th class="num">${L('الاستراحة', 'Break')}</th><th>${L('الطلب', 'Request')}</th><th class="num">${L('المبلغ', 'Amount')}</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}</div></div>`;
 }
 
 /** Day-type filters over the month table: office, remote, leave and absence days */

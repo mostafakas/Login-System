@@ -1,22 +1,31 @@
-// Overtime. Paid overtime comes from the employee's own "overtime card" on the dashboard (no permission needed):
-//  - on a day off (weekend, holiday, leave) the normal day is locked and the card is the only way to work;
-//  - on a work day the card opens once the shift is ended.
-// The card has the same Work / Meeting / Break buttons as a normal day (overtime_days/{email}_{date}); only work +
-// meetings count. Ending it files an overtime request for the admin alone; once approved it is paid with that
-// month's salary: hours × the value of one hour × the multiplier (1 = same value as in a normal work day).
+// Overtime = an assigned task with allotted time. Nobody starts overtime on their own:
+//  1. a leader (for their team), the admin or a project manager gives an employee an overtime task: all the task's
+//     details + the days and the hours of each day (createOvertimeTask). It is a normal task (tasks/{id}) with an `ot` map,
+//     so it shows in the Tasks page for the employee, the leader, project managers and the admin.
+//  2. the employee gets it as an offer on the dashboard and accepts or declines it (respondOT).
+//  3. once accepted, the dashboard shows an overtime card for it: Work / Meeting / Break buttons like a normal day, a
+//     counter for work + meetings and another for breaks (overtime_days/{email}_{taskId}_{date}); only work + meetings count.
+//  4. when the employee finishes the task, one request goes to the admin alone (finishOTTask): what the leader allotted
+//     and what the employee really took. The admin approves the allotted hours only, all the time taken, or any number
+//     of hours in between; the amount then goes to that month's salary: hours × the value of one hour × the multiplier
+//     (1 = the same value as in a normal work day).
 // Time worked past the shift on the normal counter is NOT paid: the reports split it out for the admin (services/reports.js).
 // The value of an hour = full monthly salary ÷ payroll day divisor (30) ÷ hours in a working day.
 import { db, doc, col, setDoc, updateDoc, getDoc, watch, list, query, where, serverTimestamp, arrayUnion, settle } from '../core/fb.js';
 import { session, now } from '../core/session.js';
-import { policy, isWorkingPlan, dayWorkHours, modeLabel, leaveTypeLabel } from '../core/policy.js';
+import { policy, isWorkingPlan, dayWorkHours } from '../core/policy.js';
 import { L, cairoMs } from '../core/utils.js';
+import { userError } from '../core/ui.js';
 import { salaryParts } from './salary.js';
-import { notifyMany } from './notify.js';
+import { notify, notifyMany } from './notify.js';
 import { approversFor } from './requests.js';
+import { createTasks, taskLink } from './tasks.js';
+import { nameOf } from './directory.js';
 import { track } from './activity.js';
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
-export const overtimeId = (email, date) => `ot_${email}_${date}`;
+/** the request of an overtime task (one per task and employee) */
+export const overtimeId = (email, taskId) => `ot_${email}_${taskId}`;
 export const msToHours = (ms) => r2((Number(ms) || 0) / 3600000);
 export const otMultiplier = () => Number(policy.overtimeMultiplier) > 0 ? Number(policy.overtimeMultiplier) : 1;
 
@@ -30,19 +39,58 @@ export function hourValue(priv, email) {
 /** hours × rate × multiplier */
 export const overtimeAmount = (hours, rate, mult = otMultiplier()) => r2((Number(hours) || 0) * (Number(rate) || 0) * mult);
 
-/** Is this plan a day off, so that work on it is overtime? */
-export const isOffDay = (plan) => !!plan && !isWorkingPlan(plan) && ['off', 'holiday', 'leave'].includes(plan.mode);
-export function offDayLabel(r) {
-  if (r.kind === 'after') return L('بعد الشيفت', 'After the shift');
-  if (r.dayMode === 'leave') return `${modeLabel('leave')}${r.leaveType ? ` (${leaveTypeLabel(r.leaveType)})` : ''}`;
-  if (r.dayMode === 'holiday') return `${modeLabel('holiday')}${r.dayName ? ` — ${r.dayName}` : ''}`;
-  return modeLabel(r.dayMode || 'off');
+// ---------- the overtime task ----------
+export const isOTTask = (t) => !!t && !!t.ot && typeof t.ot === 'object';
+export const OT_STATE = {
+  offered: { ar: 'مستني ردك', en: 'Waiting for a reply', cls: 'warn' },
+  accepted: { ar: 'شغال', en: 'Accepted', cls: 'ok' },
+  declined: { ar: 'اتعذر', en: 'Declined', cls: 'bad' },
+  done: { ar: 'خلص', en: 'Done', cls: 'info' }
+};
+export const otPlanHours = (plan) => r2((plan || []).reduce((s, d) => s + (Number(d.hours) || 0), 0));
+const planDay = (t, date) => ((t && t.ot && t.ot.plan) || []).find(d => d.date === date) || null;
+export const otPlanDay = planDay;
+
+/**
+ * Leader / project manager / admin: give `assignee` an overtime task. plan = [{ date: 'YYYY-MM-DD', hours }] — the days
+ * it is worked on and the hours of each. fields = the usual task fields (title, details, priority, project…).
+ */
+export async function createOvertimeTask(fields, assignee, plan) {
+  const days = [];
+  (plan || []).forEach(d => {
+    const hours = r2(d && d.hours);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(d && d.date)) && hours > 0 && hours <= 16 && !days.some(x => x.date === d.date)) days.push({ date: d.date, hours });
+  });
+  if (!days.length) throw userError('حدد يوم واحد على الأقل وعدد ساعاته.', 'Add at least one day with its hours.');
+  if (days.length > 31) throw userError('أقصى حاجة 31 يوم.', 'At most 31 days.');
+  days.sort((a, b) => a.date.localeCompare(b.date));
+  const ot = { state: 'offered', plan: days, totalHours: otPlanHours(days), offeredBy: session.email, offeredAt: now() };
+  const made = await createTasks({ ...fields, due: (fields && fields.due) || days[days.length - 1].date }, [assignee], { ot });
+  const t = made[0];
+  notify(assignee, L(`طلب أوفر تايم: ${t.title}`, `Overtime request: ${t.title}`), L(`${ot.totalHours} ساعة على ${days.length} يوم · من ${nameOf(session.email)} · وافق عليه من الداشبورد`, `${ot.totalHours} h over ${days.length} day(s) · from ${nameOf(session.email)} · accept it on your dashboard`), taskLink(t.id), 'request');
+  track('overtime.offer', { target: t.title, detail: `${nameOf(assignee)} · ${ot.totalHours}h` });
+  return t;
 }
 
-// ---------- the overtime card: a second counter next to the normal day (overtime_days/{email}_{date}) ----------
+/** The employee accepts or declines an offered overtime task */
+export async function respondOT(t, accept, note = '') {
+  if (!isOTTask(t) || t.assignee !== session.email || t.ot.state !== 'offered') throw userError('الطلب ده مش متاح.', 'This offer is not available.');
+  const n = String(note || '').trim().slice(0, 500);
+  const to = accept ? 'in_progress' : 'hold';
+  const upd = accept
+    ? { 'ot.state': 'accepted', 'ot.acceptedAt': now(), status: to }
+    : { 'ot.state': 'declined', 'ot.declineNote': n, status: to, holdReason: n || L('رفض الأوفر تايم', 'Declined the overtime') };
+  upd.updatedAt = serverTimestamp();
+  upd.history = arrayUnion({ by: session.email, from: t.status, to, at: now(), note: accept ? L('وافق على الأوفر تايم', 'accepted the overtime') : L(`رفض الأوفر تايم${n ? ` — ${n}` : ''}`, `declined the overtime${n ? ` — ${n}` : ''}`) });
+  await updateDoc(doc(db, 'tasks', t.id), upd);
+  const who = nameOf(session.email);
+  notifyMany([t.leader, t.createdBy].filter(e => e && e !== session.email), accept ? L(`✓ ${who} وافق على الأوفر تايم`, `✓ ${who} accepted the overtime`) : L(`${who} رفض الأوفر تايم`, `${who} declined the overtime`), `${t.title}${n ? ` — ${n}` : ''}`, taskLink(t.id), 'progress');
+}
+
+// ---------- the overtime card: one counter per task and day (overtime_days/{email}_{taskId}_{date}) ----------
 export const OT_STATUSES = ['Online', 'Meeting', 'Break'];
 const zeroBank = () => ({ Online: 0, Break: 0, Meeting: 0 });
-export const otDocId = (email, date) => `${email}_${date}`;
+export const otDocId = (email, taskId, date) => `${email}_${taskId}_${date}`;
 /** the card's counters at `at`: the saved bank + the time since the last change of a running status */
 export function otLive(d, at = now()) {
   const bank = { ...zeroBank(), ...((d && d.bank) || {}) };
@@ -52,24 +100,27 @@ export function otLive(d, at = now()) {
 /** counted overtime: work + meetings, breaks excluded */
 export const otWorkMs = (d, at = now()) => { const b = otLive(d, at); return b.Online + b.Meeting; };
 
-/** Watch my own overtime days (a handful per month) */
+/** Watch my own overtime sessions (a handful per month) */
 export const watchMyOT = (cb) => watch(query(col('overtime_days'), where('email', '==', session.email)), cb);
-/** Admin: a person's overtime days of a month */
+/** Admin: a person's overtime sessions of a month */
 export const monthOT = (email, ym) => list(query(col('overtime_days'), where('email', '==', email)))
   .then(rows => rows.filter(d => (d.date || '').slice(0, 7) === ym).sort((a, b) => a.date.localeCompare(b.date)));
 
-/** Start (or resume) today's overtime. kind: 'off' = a day off, 'after' = after the shift of a work day */
-export async function startOT(date, kind, plan) {
+/** Start (or resume) today's session of an accepted overtime task */
+export async function startOT(task, date) {
   window.dispatchEvent(new Event('am:data-changed'));
+  if (!isOTTask(task) || task.assignee !== session.email || task.ot.state !== 'accepted') throw userError('التاسك ده مش متاح للأوفر تايم.', 'This task is not open for overtime.');
+  const day = planDay(task, date);
+  if (!day) throw userError('النهارده مش من الأيام المحددة للتاسك ده.', 'Today is not one of the days set for this task.');
   const email = session.email, me = session.profile || {};
-  const ref = doc(db, 'overtime_days', otDocId(email, date));
+  const ref = doc(db, 'overtime_days', otDocId(email, task.id, date));
   const cur = await getDoc(ref).then(s => (s.exists() ? s.data() : null)).catch(() => null);
   const at = now();
   const data = cur
     ? { status: 'Online', lastChangeMs: at, endMs: null, closed: false, autoClosed: false, updatedAt: serverTimestamp() }
     : {
-      email, name: me.name || email, date, leaderEmail: me.leaderEmail || '', department: me.department || '',
-      kind, dayMode: (plan && plan.mode) || 'off', dayName: (plan && plan.name) || '', leaveType: (plan && plan.leaveType) || '',
+      email, name: me.name || email, date, leaderEmail: '', department: me.department || '',
+      kind: 'task', taskId: task.id, taskNum: task.num || 0, taskTitle: String(task.title || '').slice(0, 200), allotMs: Math.round(day.hours * 3600000),
       status: 'Online', bank: zeroBank(), lastChangeMs: at, startMs: at, endMs: null, closed: false, autoClosed: false, requestId: '', updatedAt: serverTimestamp()
     };
   await settle(setDoc(ref, data, { merge: true }));
@@ -80,58 +131,66 @@ export async function changeOT(d, status) {
   if (!d || d.closed || d.status === status || !OT_STATUSES.includes(status)) return;
   const at = now();
   const bank = otLive(d, at);                 // closes the running segment into the bank
-  await settle(updateDoc(doc(db, 'overtime_days', d.id || otDocId(d.email, d.date)), { status, bank, lastChangeMs: at, updatedAt: serverTimestamp() }));
+  await settle(updateDoc(doc(db, 'overtime_days', d.id), { status, bank, lastChangeMs: at, updatedAt: serverTimestamp() }));
 }
 
 /**
- * End the card and file the overtime request for the admin. auto = a forgotten one (from an earlier day):
- * the running segment is counted only up to the end of its day, and the admin sees that it was closed automatically.
+ * End a session (the task stays open: the employee may come back on another planned day).
+ * auto = a forgotten one from an earlier day: the running segment is counted only up to the end of its day.
  */
 export async function endOT(d, { auto = false } = {}) {
-  if (!d || d.closed) return null;
+  if (!d || d.closed) return;
   window.dispatchEvent(new Event('am:data-changed'));
   const at = now();
   const cap = auto ? Math.min(at, cairoMs(d.date, '23:59')) : at;
   const bank = { ...zeroBank(), ...(d.bank || {}) };
   if (OT_STATUSES.includes(d.status)) bank[d.status] += Math.max(0, cap - (Number(d.lastChangeMs) || cap));
   const endMs = Math.max(cap, Number(d.startMs) || 0);
-  await settle(updateDoc(doc(db, 'overtime_days', d.id || otDocId(d.email, d.date)), { status: 'Offline', bank, lastChangeMs: at, endMs, closed: true, autoClosed: !!auto, requestId: overtimeId(d.email, d.date), updatedAt: serverTimestamp() }));
-  return fileOvertime({
-    date: d.date, kind: d.kind, plan: { mode: d.dayMode || 'off', name: d.dayName, leaveType: d.leaveType },
-    checkInMs: d.startMs, checkOutMs: endMs, workMs: bank.Online + bank.Meeting, autoClosed: !!auto
-  });
+  await settle(updateDoc(doc(db, 'overtime_days', d.id), { status: 'Offline', bank, lastChangeMs: at, endMs, closed: true, autoClosed: !!auto, updatedAt: serverTimestamp() }));
 }
 
 /**
- * File (or bring up to date) the overtime request when the employee ended the overtime card.
- * day = { date, kind, plan, checkInMs, checkOutMs, workMs, autoClosed }. Returns the request, or null when nothing was worked.
- * The request goes to the admin alone (no leader on it). A request that was already decided is left as it is.
+ * The employee finished the task: close any open session and send ONE request to the admin with what the leader
+ * allotted and what was really taken. The task goes to "Review" for the leader.
  */
-export async function fileOvertime(day) {
-  if (!day || !(day.workMs > 0)) return null;
+export async function finishOTTask(task, sessions) {
+  if (!isOTTask(task) || task.assignee !== session.email || task.ot.state !== 'accepted') throw userError('التاسك ده مش متاح.', 'This task is not available.');
+  window.dispatchEvent(new Event('am:data-changed'));
   const email = session.email, me = session.profile || {};
-  const id = overtimeId(email, day.date);
-  const mine = await list(query(col('requests'), where('email', '==', email))).catch(() => []);
-  const cur = mine.find(r => r.id === id);
-  const hours = msToHours(day.workMs);
-  const facts = { workMs: Math.round(day.workMs), hours, checkInMs: day.checkInMs || null, checkOutMs: day.checkOutMs || null, autoClosed: !!day.autoClosed };
-  if (cur) {
-    if (cur.status !== 'pending_admin') return cur;
-    await settle(updateDoc(doc(db, 'requests', id), { ...facts, updatedAt: serverTimestamp(), history: arrayUnion({ at: now(), by: email, byName: me.name || email, action: 'updated', note: L(`${hours} ساعة`, `${hours} h`) }) }));
-    return { ...cur, ...facts };
-  }
-  const req = {
-    email, name: me.name || email, leaderEmail: '', department: me.department || '',
-    type: 'overtime', kind: day.kind || 'off', startDate: day.date, endDate: day.date, dayMode: day.plan.mode, dayName: day.plan.name || '', leaveType: day.plan.leaveType || '',
-    ...facts, multiplier: otMultiplier(),
-    reason: day.kind === 'after' ? L('اتقدّم تلقائياً: أوفر تايم بعد الشيفت', 'Filed automatically: overtime after the shift') : L('اتقدّم تلقائياً: أوفر تايم في يوم إجازة', 'Filed automatically: overtime on a day off'),
-    status: 'pending_admin', stages: ['admin'], createdMs: now(), createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
-    history: [{ at: now(), by: email, byName: me.name || email, action: 'submitted', note: '' }]
+  for (const d of sessions.filter(x => !x.closed)) await endOT(d);
+  // read the saved sessions back (the ones just closed included)
+  const rows = (await list(query(col('overtime_days'), where('email', '==', email), where('taskId', '==', task.id))).catch(() => sessions))
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const workMs = rows.reduce((s, d) => s + (Number((d.bank || {}).Online) || 0) + (Number((d.bank || {}).Meeting) || 0), 0);
+  if (!(workMs > 0)) throw userError('لسه ما اشتغلتش على التاسك ده.', 'You have not worked on this task yet.');
+  const allot = Number(task.ot.totalHours) || 0, actual = msToHours(workMs);
+  const facts = {
+    workMs: Math.round(workMs), actualHours: actual, allotHours: allot, hours: allot > 0 ? Math.min(actual, allot) : actual,
+    days: rows.map(d => ({ date: d.date, workMs: Math.round((Number((d.bank || {}).Online) || 0) + (Number((d.bank || {}).Meeting) || 0)), breakMs: Math.round(Number((d.bank || {}).Break) || 0), allotMs: d.allotMs || 0, autoClosed: !!d.autoClosed })),
+    startDate: rows[0].date, endDate: rows[rows.length - 1].date, checkInMs: rows[0].startMs || null, checkOutMs: rows[rows.length - 1].endMs || null
   };
-  await settle(setDoc(doc(db, 'requests', id), req));
-  track('request.submit', { target: id, detail: `overtime ${day.date} ${hours}h` });
-  notifyMany(approversFor('admin', req), L(`طلب أوفر تايم: ${req.name}`, `Overtime request: ${req.name}`), L(`${hours} ساعة يوم ${day.date}`, `${hours} h on ${day.date}`), '#/approvals', 'request');
-  return { id, ...req };
+  const id = overtimeId(email, task.id);
+  const cur = await list(query(col('requests'), where('email', '==', email))).then(r => r.find(x => x.id === id)).catch(() => null);
+  if (cur && cur.status !== 'pending_admin') throw userError('طلب الأوفر تايم للتاسك ده اتقرر بالفعل.', 'The overtime request of this task was already decided.');
+  if (cur) await settle(updateDoc(doc(db, 'requests', id), { ...facts, updatedAt: serverTimestamp(), history: arrayUnion({ at: now(), by: email, byName: me.name || email, action: 'updated', note: L(`${actual} ساعة`, `${actual} h`) }) }));
+  else {
+    const req = {
+      email, name: me.name || email, leaderEmail: '', department: me.department || '',
+      type: 'overtime', kind: 'task', taskId: task.id, taskNum: task.num || 0, taskTitle: String(task.title || '').slice(0, 200),
+      assignedBy: task.createdBy || task.leader || '', assignedByName: nameOf(task.createdBy || task.leader || ''), plan: task.ot.plan || [],
+      ...facts, multiplier: otMultiplier(),
+      reason: L(`أوفر تايم على تاسك #${task.num || ''}: ${task.title}`, `Overtime on task #${task.num || ''}: ${task.title}`),
+      status: 'pending_admin', stages: ['admin'], createdMs: now(), createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+      history: [{ at: now(), by: email, byName: me.name || email, action: 'submitted', note: '' }]
+    };
+    await settle(setDoc(doc(db, 'requests', id), req));
+    notifyMany(approversFor('admin', req), L(`طلب أوفر تايم: ${req.name}`, `Overtime request: ${req.name}`), L(`${task.title} · المحدد ${allot} س · الفعلي ${actual} س`, `${task.title} · allotted ${allot} h · taken ${actual} h`), '#/approvals', 'request');
+  }
+  // the task goes to review (the assignee may do that from "In progress")
+  const upd = { 'ot.state': 'done', 'ot.doneAt': now(), updatedAt: serverTimestamp(), history: arrayUnion({ by: email, from: task.status, to: task.status === 'in_progress' ? 'review' : task.status, at: now(), note: L(`خلّص الأوفر تايم: ${actual} ساعة`, `finished the overtime: ${actual} h`) }) };
+  if (task.status === 'in_progress') { upd.status = 'review'; upd.reviewAt = serverTimestamp(); }
+  await settle(updateDoc(doc(db, 'tasks', task.id), upd));
+  track('request.submit', { target: id, detail: `overtime task #${task.num} ${actual}h` });
 }
 
 /** Overtime lines of a month for payroll, from the approved requests: { date, hours, rate, amount, requestId } */

@@ -290,6 +290,15 @@ export async function decide(id, action, note = '', edits = null) {
       r = { ...r, ...plan };
     }
   }
+  // the admin decides how many hours of an overtime task are paid: the allotted ones, all the time taken, or anything in between
+  if (action === 'approve' && r.type === 'overtime' && edits && edits.hours != null) {
+    const actual = Number(r.actualHours) || msToHours(r.workMs), hours = Math.round((Number(edits.hours) || 0) * 100) / 100;
+    if (!(hours > 0) || hours > actual + 0.005) throw userError(`اكتب عدد ساعات من 0 لـ ${actual}.`, `Enter hours between 0 and ${actual}.`);
+    if (hours !== Number(r.hours)) {
+      await updateDoc(doc(db, 'requests', id), { hours, updatedAt: serverTimestamp(), history: arrayUnion({ at: now(), by: session.email, byName: (session.profile || {}).name || session.email, action: 'edited', note: L(`اعتمد ${hours} ساعة من ${actual} (المحدد ${r.allotHours || 0})`, `approved ${hours} h of ${actual} (allotted ${r.allotHours || 0})`) }) });
+      r = { ...r, hours };
+    }
+  }
   const stage = r.status.replace('pending_', '');
   const entry = { at: now(), by: session.email, byName: (session.profile || {}).name || session.email, action: action === 'approve' ? `approved_${stage}` : `rejected_${stage}`, note };
   track(action === 'approve' ? 'request.approve' : 'request.reject', { target: r.email, detail: `${requestLabel(r)} — ${r.name || r.email}` });

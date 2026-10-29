@@ -326,6 +326,7 @@ export async function updateAdvance(adv, f) {
     await updateDoc(doc(db, 'treasury', `advance_${adv.id}`), t).catch(e => console.warn('[advance treasury]', e && e.message));
   }
   track('advance.edit', { target: adv.email || adv.name, detail: changes.join(' · ') });
+  await refreshAdvanceItems(adv.email, [adv.startMonth, plan.startMonth, ymd(now()).slice(0, 7)].filter(m => m && m >= (plan.startMonth < (adv.startMonth || plan.startMonth) ? plan.startMonth : (adv.startMonth || plan.startMonth)))).catch(e => console.warn('[advance refresh]', e && e.message));
   return true;
 }
 
@@ -383,4 +384,58 @@ export async function removeManualOvertime(r) {
   const state = await refreshItemOvertime((r.startDate || '').slice(0, 7), r.email);
   track('overtime.manual.delete', { target: r.email, detail: `${r.startDate} ${fmtHMS(r.workMs)}` });
   return state;
+}
+
+// ---------- advances the admin adds by hand ----------
+/** Re-price the salaries of one employee for these months with the advances as they are now (frozen ones — transferred / sent — are left alone) */
+async function refreshAdvanceItems(email, months) {
+  const out = [];
+  for (const month of [...new Set(months)].filter(m => /^\d{4}-\d{2}$/.test(m || '')).sort()) {
+    const it = await read('payroll_items', itemId(month, email)).catch(() => null);
+    if (!it) continue;
+    if (['paid', 'sent'].includes(payStatus(it))) { out.push({ month, state: 'frozen' }); continue; }
+    const [advs, priv] = await Promise.all([activeAdvances(month), read('employees_private', email).catch(() => null)]);
+    const p = person(email) || { email, name: it.name };
+    const next = computeItem({ person: p, priv: priv || {}, totals: it.att || null, violations: (it.att && it.att.violations) || [], advances: advs.filter(a => a.email === email), manual: it, overtime: it.overtimeLines || [] });
+    await updateDoc(doc(db, 'payroll_items', itemId(month, email)), { ...next, kpiFromReview: !!it.kpiFromReview, updatedAt: serverTimestamp(), editedBy: session.email });
+    out.push({ month, state: 'updated' });
+  }
+  return out;
+}
+/**
+ * Admin: give an employee an advance { email, amount, installments, startMonth, payoutDate, paidOut, repaid, note }.
+ * It is an approved advance request (the employee sees it in "My requests") + the advance itself (installments come off
+ * the salaries from the first month) + optionally the treasury payout on `payoutDate`.
+ */
+export async function addManualAdvance(f) {
+  if (!isAdmin()) throw userError('إضافة السلف للأدمن بس.', 'Only admins can add advances.');
+  const p = person(f.email);
+  if (!p) throw userError('اختار الموظف.', 'Pick the employee.');
+  const plan = advancePlan(f.amount, Math.min(60, Number(f.installments) || 1), f.startMonth);
+  const repaid = r2(f.repaid);
+  if (!(plan.amount > 0)) throw userError('اكتب مبلغ صحيح.', 'Enter a valid amount.');
+  if (!/^\d{4}-\d{2}$/.test(plan.startMonth || '')) throw userError('اختار أول شهر خصم.', 'Pick the first deduction month.');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(f.payoutDate || ''))) throw userError('اختار تاريخ صرف السلفة.', 'Pick the payout date.');
+  if (repaid < 0 || repaid >= plan.amount) throw userError('المسدّد لازم يكون أقل من مبلغ السلفة.', 'Repaid must be less than the advance amount.');
+  const note = String(f.note || '').trim().slice(0, 500);
+  const id = `adv_${f.email}_${Date.now().toString(36)}`;
+  const by = (session.profile && session.profile.name) || session.email;
+  const b = writeBatch(db);
+  b.set(doc(db, 'requests', id), {
+    email: f.email, name: p.name || f.email, leaderEmail: '', department: p.department || '', type: 'advance', kind: 'manual',
+    ...plan, startDate: f.payoutDate, endDate: f.payoutDate, reason: note || L('سلفة سجّلها الأدمن', 'Advance registered by the admin'),
+    status: 'approved', stages: ['admin'], approvedBy: session.email, approvedAt: serverTimestamp(), decidedBy: session.email, createdMs: now(), createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    history: [{ at: now(), by: session.email, byName: by, action: 'approved_admin', note: L('سجّلها الأدمن واعتمدها', 'Registered and approved by the admin') }]
+  });
+  b.set(doc(db, 'advances', id), {
+    email: f.email, name: p.name || f.email, amount: plan.amount, installments: plan.installments, perMonth: plan.perMonth,
+    startMonth: plan.startMonth, endMonth: plan.endMonth, paid: repaid, status: 'active', kind: 'manual', note,
+    paidOut: !!f.paidOut, payoutDate: f.payoutDate, createdBy: session.email, createdAt: serverTimestamp()
+  });
+  if (f.paidOut) b.set(doc(db, 'treasury', `advance_${id}`), { type: 'advance', amount: plan.amount, title: `سلفة — ${p.name || f.email}`, email: f.email, month: f.payoutDate.slice(0, 7), date: f.payoutDate, by: session.email, at: serverTimestamp() });
+  await b.commit();
+  const states = await refreshAdvanceItems(f.email, [plan.startMonth, ymd(now()).slice(0, 7)].filter(m => m >= plan.startMonth));
+  notify(f.email, L('اتسجّلت لك سلفة', 'An advance was registered for you'), `${plan.amount} ${L('ج.م', 'EGP')} · ${plan.installments} ${L('قسط', 'installments')} · ${L('من', 'from')} ${plan.startMonth}`, '#/requests', 'approved');
+  track('advance.manual', { target: f.email, detail: `${plan.amount} / ${plan.installments} from ${plan.startMonth}` });
+  return { id, plan, states };
 }

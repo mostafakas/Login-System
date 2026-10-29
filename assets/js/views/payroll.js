@@ -10,6 +10,7 @@ import { payParts } from '../services/salary.js';
 import { exportSheet } from './export.js';
 import { exportPayrollReport } from './payroll-report.js';
 import { openManualOvertime } from './overtime-manual.js';
+import { openManualAdvance } from './advance-manual.js';
 
 const fmtSize = (n) => n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
 
@@ -51,6 +52,7 @@ export default async function render(root) {
       <div class="row-wrap gap-8">
         ${admin && !(run && run.status === 'closed') ? `<button class="btn btn-primary" data-action="build"><i class="fas fa-calculator"></i> ${items.length ? L('إعادة الحساب من الحضور', 'Recalculate from attendance') : L('إنشاء رواتب الشهر', 'Create this month\'s payroll')}</button>` : ''}
         ${admin ? `<button class="btn" data-action="ot-add"><i class="fas fa-business-time"></i> ${L('تسجيل أوفر تايم', 'Register overtime')}</button>` : ''}
+        ${admin ? `<button class="btn" data-action="adv-add"><i class="fas fa-hand-holding-dollar"></i> ${L('إضافة سلفة', 'Add advance')}</button>` : ''}
         ${items.length ? `<button class="btn" data-action="xls"><i class="fas fa-file-excel"></i> Excel</button>` : ''}
       </div>`;
     const stale = items.filter(isStale);
@@ -168,7 +170,7 @@ export default async function render(root) {
       try {
         const changed = await updateAdvance(a, { amount: f.amount.value, installments: f.installments.value, startMonth: f.startMonth.value, paid: f.paid.value, payoutDate: f.payoutDate.value });
         m.close(); drawAdvances();
-        toast(changed ? L('اتعدّلت السلفة', 'Advance updated') : L('مفيش تغيير', 'No change'), changed ? L('الرواتب المعلّقة تتحدّث بعد «إعادة الحساب».', 'Pending salaries update after "Recalculate".') : '');
+        toast(changed ? L('اتعدّلت السلفة', 'Advance updated') : L('مفيش تغيير', 'No change'), changed ? L('الرواتب اللي لسه ما اتحوّلتش اتحدّثت.', 'Salaries not yet transferred were updated.') : '');
       } catch (ex) { toastErr(ex); }
     });
   }  async function drawAdvances() {
@@ -221,6 +223,7 @@ export default async function render(root) {
       });
     },
     'ot-add': () => openManualOvertime({ month, onDone: () => { subscribe(); } }),
+    'adv-add': () => openManualAdvance({ month, onDone: () => { drawAdvances(); subscribe(); } }),
     xls: async () => {
       try { await exportPayrollReport({ month, items, run }); return; }
       catch (e) { console.warn('[payroll report]', e); toast(L('تعذّر التقرير المنسّق، اتنزل الملف العادي', 'Could not build the formatted report; downloading the plain file'), '', 'warn'); }

@@ -141,7 +141,7 @@ export default async function render(root, { params = [] }) {
 
   root.innerHTML = `<div class="st-page">
     <div class="page-head">${personHead(p, own)}
-      <div class="row gap-8 wrap">${tabsBar(own ? 'me' : '')}${people.length ? `<select class="select" id="who" style="min-width:200px"><option value="${esc(session.email)}">${L('أنا', 'Me')}</option>${people.slice().sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ar')).map(x => `<option value="${esc(x.email)}" ${x.email === email ? 'selected' : ''}>${esc(x.name || x.email)}</option>`).join('')}</select>` : ''}<span id="period"></span></div></div>
+      <div class="row gap-8 wrap">${tabsBar(own ? 'me' : '')}${people.length ? `<select class="select" id="who" data-people style="min-width:200px"><option value="${esc(session.email)}">${L('أنا', 'Me')}</option>${people.slice().sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ar')).map(x => `<option value="${esc(x.email)}" ${x.email === email ? 'selected' : ''}>${esc(x.name || x.email)}</option>`).join('')}</select>` : ''}<span id="period"></span></div></div>
     <div id="pf-top"></div><div id="pf-review"></div>
     <h3 class="pf-h"><i class="fas fa-chart-line"></i> ${L('الأرقام بالتفصيل', 'The numbers in detail')}</h3>
     <div id="st">${loader()}</div></div>`;

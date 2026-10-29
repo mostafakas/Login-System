@@ -14,7 +14,7 @@ export default async function render(root) {
     <div class="filters">
       <div class="tabs" id="tabs"><button class="tab active" data-t="inbox">${L('مستنية قرارك', 'Waiting for me')} <span class="num" id="n-inbox"></span></button>
         <button class="tab" data-t="history">${L('السجل (آخر 90 يوم)', 'History (90 days)')}</button></div>
-      <select class="select" id="emp-f"><option value="">${L('كل الموظفين', 'All employees')}</option></select>
+      <select class="select" id="emp-f" data-people><option value="">${L('كل الموظفين', 'All employees')}</option></select>
       <select class="select" id="type-f"><option value="">${L('كل الأنواع', 'All types')}</option>${Object.keys(REQUEST_TYPES).map(k => `<option value="${k}">${esc(typeLabel(k))}</option>`).join('')}</select>
     </div>
     <div class="grid g-auto" id="list"></div>`;

@@ -79,7 +79,7 @@ export default async function render(root) {
   }
   function drawPerson(body) {
     const list = people();
-    body.innerHTML = `<div class="card card-pad mb-16 no-print"><div class="field" style="max-width:360px"><label>${L('اختار موظف', 'Choose an employee')}</label><select class="select" id="pp"><option value="">—</option>${list.map(x => `<option value="${esc(x.person.email)}">${esc(x.person.name)}</option>`).join('')}</select></div></div><div id="pv"></div>`;
+    body.innerHTML = `<div class="card card-pad mb-16 no-print"><div class="field" style="max-width:360px"><label>${L('اختار موظف', 'Choose an employee')}</label><select class="select" id="pp" data-people><option value="">—</option>${list.map(x => `<option value="${esc(x.person.email)}">${esc(x.person.name)}</option>`).join('')}</select></div></div><div id="pv"></div>`;
     body.querySelector('#pp').onchange = (e) => {
       const email = e.target.value; const pv = body.querySelector('#pv');
       if (!email) { pv.innerHTML = ''; return; }

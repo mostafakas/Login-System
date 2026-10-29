@@ -89,7 +89,7 @@ export default async function render(root, { params }) {
     <div class="page-head"><div><h2>${L('سجل النشاط', 'Activity log')}</h2><p>${L('كل اللي حصل على السيستم: الدخول، الحضور، الطلبات، الموافقات، تعديلات الموظفين، الإعدادات والرواتب.', 'Everything that happened: sign-ins, attendance, requests, approvals, employee edits, settings and payroll.')}</p></div></div>
     <div class="card mb-16"><div class="card-body col gap-12">
       <div class="filters" style="margin:0">
-        <select class="select" id="who"><option value="">${L('كل المستخدمين', 'All users')}</option>${allPeople().slice().sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ar')).map(p => `<option value="${esc(p.email)}" ${p.email === who ? 'selected' : ''}>${esc(p.name || p.email)}</option>`).join('')}</select>
+        <select class="select" id="who" data-people><option value="">${L('كل المستخدمين', 'All users')}</option>${allPeople().slice().sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ar')).map(p => `<option value="${esc(p.email)}" ${p.email === who ? 'selected' : ''}>${esc(p.name || p.email)}</option>`).join('')}</select>
         <div class="seg" id="range">
           <button data-r="0" class="on">${L('النهارده', 'Today')}</button><button data-r="1">${L('امبارح', 'Yesterday')}</button><button data-r="7">${L('آخر 7 أيام', 'Last 7 days')}</button><button data-r="30">${L('آخر 30 يوم', 'Last 30 days')}</button>
         </div>

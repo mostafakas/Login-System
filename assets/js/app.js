@@ -9,6 +9,8 @@ import { startNotifications, onNotifications, unreadCount } from './services/not
 import { watchInbox } from './services/requests.js';
 import { auth, updatePassword, updateDoc, ref, read, isQuotaError, toMs } from './core/fb.js';
 import { initTabs, enterTab, restoreScroll } from './tabs.js';
+import { initPeopleSelects } from './core/people-select.js';
+initPeopleSelects();
 
 const ROUTES = [
   { id: 'home', group: 'me', icon: 'fa-house', ar: 'يومي', en: 'My day', load: () => import('./views/home.js'), bottom: true },

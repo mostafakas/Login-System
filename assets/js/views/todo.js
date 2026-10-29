@@ -24,7 +24,7 @@ export default async function render(root, { params = [] }) {
 
   root.innerHTML = `<div class="td-page">
     <div class="page-head"><div class="row gap-12">${avatar(p, 'lg')}<div><h2>${own ? 'To-Do List' : `To-Do — ${esc(p.name || email)}`}</h2><p>${own ? L('خطة يومك، مربوطة بتاسكاتك', 'Your day plan, linked to your tasks') : `${esc(p.title || '')}${p.department ? ' · ' + esc(p.department) : ''}`}</p></div></div>
-      ${viewable().length > 1 ? `<select class="select" id="who" style="min-width:220px">${viewable().sort((a, b) => (a.email === session.email ? -1 : b.email === session.email ? 1 : (a.name || '').localeCompare(b.name || '', 'ar'))).map(x => `<option value="${esc(x.email)}" ${x.email === email ? 'selected' : ''}>${esc(x.email === session.email ? L('أنا', 'Me') : (x.name || x.email))}</option>`).join('')}</select>` : ''}</div>
+      ${viewable().length > 1 ? `<select class="select" id="who" data-people style="min-width:220px">${viewable().sort((a, b) => (a.email === session.email ? -1 : b.email === session.email ? 1 : (a.name || '').localeCompare(b.name || '', 'ar'))).map(x => `<option value="${esc(x.email)}" ${x.email === email ? 'selected' : ''}>${esc(x.email === session.email ? L('أنا', 'Me') : (x.name || x.email))}</option>`).join('')}</select>` : ''}</div>
     <div class="grid g-4 keep-2 mb-16" id="stats"></div>
     <div class="row gap-8 wrap mb-8" id="period"></div>
     <div class="td-week card mb-16" id="week"></div>

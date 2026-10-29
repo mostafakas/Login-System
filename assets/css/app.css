@@ -1700,3 +1700,27 @@ html[dir="rtl"] .nav-item.active::before { border-radius: 4px 0 0 4px; }
   body.nav-open .scrim { opacity: 1; pointer-events: auto; }
 }
 @media (prefers-reduced-motion: reduce) { .sidebar, .nav-item, .nav-item i, .nav-item span, .scrim { transition: none !important; } }
+
+/* ---------- people dropdown with photos (core/people-select.js) ---------- */
+.psel-native { display: none !important; }
+.psel { display: inline-block; position: relative; vertical-align: middle; max-width: 100%; }
+.field .psel, .form-grid .psel, .pp-row .psel { display: block; width: 100%; }
+.psel-btn { display: flex; align-items: center; gap: 8px; width: 100%; padding-inline: 6px 10px; cursor: pointer; text-align: start; }
+.filters .psel-btn, .tk-filters .psel-btn { min-width: 190px; }
+.psel-sm .psel-btn { height: 32px; font-size: 12.5px; min-width: 150px; }
+.psel-btn:disabled { cursor: not-allowed; }
+.psel-txt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.psel-caret { font-size: 10px; color: var(--muted); flex-shrink: 0; }
+.psel .avatar.sm, .psel-pop .avatar.sm { width: 26px; height: 26px; font-size: 10px; }
+.psel-ico { background: var(--surface-2); color: var(--muted); font-size: 11px; }
+.psel-pop { position: fixed; z-index: 2000; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,.18); padding: 6px; max-width: min(360px, calc(100vw - 16px)); }
+.psel-search { display: flex; align-items: center; gap: 8px; padding: 4px 8px 6px; color: var(--muted); }
+.psel-search input { flex: 1; min-width: 0; border: 0; border-bottom: 1px solid var(--border); background: transparent; color: var(--text); font: inherit; font-size: 13px; padding: 6px 2px; outline: none; }
+.psel-search input:focus { border-bottom-color: var(--brand); }
+.psel-list { max-height: 300px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.psel-opt { display: flex; align-items: center; gap: 10px; width: 100%; padding: 6px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font: inherit; font-size: 13.5px; text-align: start; cursor: pointer; }
+.psel-opt[hidden] { display: none; }
+.psel-opt:hover, .psel-opt:focus-visible { background: var(--brand-soft); outline: none; }
+.psel-opt.on { font-weight: 700; }
+.psel-tick { color: var(--brand); font-size: 11px; }
+.psel-none { padding: 12px; text-align: center; color: var(--muted); font-size: 12.5px; }

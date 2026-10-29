@@ -240,6 +240,26 @@ service cloud.firestore {
         && request.resource.data.closedBy == 'leader' && request.resource.data.autoClosed == true
         && checkOutOk(request.resource.data);
     }
+    // ---------- overtime card: the employee's second counter (work / meeting / break); the admin reads all of them ----------
+    match /overtime_days/{id} {
+      function otKeys() {
+        return ['email', 'name', 'date', 'leaderEmail', 'department', 'kind', 'dayMode', 'dayName', 'leaveType', 'status', 'bank',
+                'lastChangeMs', 'startMs', 'endMs', 'closed', 'autoClosed', 'requestId', 'updatedAt'];
+      }
+      function otOk(d) {
+        return d.keys().hasOnly(otKeys()) && d.status in ['Online', 'Break', 'Meeting', 'Offline']
+          && d.kind in ['off', 'after'] && near(d.lastChangeMs);
+      }
+      allow read: if active() && (resource == null || resource.data.get('email', '') == me() || isAdmin());
+      allow create: if active() && request.resource.data.email == me() && id == me() + '_' + request.resource.data.date
+        && otOk(request.resource.data) && tbSum(request.resource.data.bank) == 0;
+      // counters grow at most by the real elapsed time since the last change (+2 min tolerance)
+      allow update: if active() && resource.data.email == me() && request.resource.data.email == me()
+        && otOk(request.resource.data)
+        && tbSum(request.resource.data.bank) >= tbSum(resource.data.bank)
+        && tbSum(request.resource.data.bank) <= tbSum(resource.data.bank) + (nowMs() - resource.data.lastChangeMs) + 120000;
+      allow write: if isAdmin();
+    }
     match /logs/{id} {
       allow read: if active() && (resource.data.user == me() || seesAll() || resource.data.get('leaderEmail', '') == me());
       allow create: if active() && (request.resource.data.user == me() || isHR() || leads(request.resource.data.user)) && request.resource.data.timestamp == request.time;
@@ -263,7 +283,15 @@ service cloud.firestore {
         && request.resource.data.email == me()
         && request.resource.data.get('leaderEmail', '') == prof().get('leaderEmail', '')
         && request.resource.data.type in ['leave', 'remote', 'excuse', 'correction', 'advance', 'letter']
-        && firstStatusOk(request.resource.data));
+        && firstStatusOk(request.resource.data))
+        // the employee's overtime card files its own request, for the admin alone (no leader on it)
+        || (active() && request.resource.data.email == me() && request.resource.data.type == 'overtime'
+        && id == 'ot_' + me() + '_' + request.resource.data.startDate
+        && request.resource.data.status == 'pending_admin' && request.resource.data.get('leaderEmail', '') == '');
+      // the employee brings their own pending overtime request up to date (hours when the card is resumed)
+      allow update: if active() && resource.data.email == me() && resource.data.type == 'overtime' && resource.data.status == 'pending_admin'
+        && request.resource.data.status == 'pending_admin'
+        && onlyChanged(['workMs', 'hours', 'checkInMs', 'checkOutMs', 'autoClosed', 'updatedAt', 'history']);
       // requester cancels while pending
       allow update: if active() && resource.data.email == me() && resource.data.status.matches('pending_.*')
         && request.resource.data.status == 'cancelled' && onlyChanged(['status', 'updatedAt', 'history']);

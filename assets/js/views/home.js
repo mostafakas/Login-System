@@ -5,7 +5,7 @@ import { session, now } from '../core/session.js';
 import { policy, dayKey, planFor, lateness, modeLabel, MODE_META, typeLabel, statusLabel, REQUEST_STATUS, leaveTypeLabel, isWorkingPlan, withShift, planOfDay, canPickShift, shiftList, shiftLabel, requestChoices, requiredWorkMs } from '../core/policy.js';
 import { toMs, watch, query, col, where } from '../core/fb.js';
 import { startDay, changeStatus, endDay, liveBank, staleDay, closeStaleDay, dayLogs, COUNTED, countFrom, workedMs } from '../services/attendance.js';
-import { isOffDay, fileOvertime, msToHours } from '../services/overtime.js';
+import { startOT, changeOT, endOT, otLive, watchMyOT, overtimeId, msToHours, OT_STATUSES } from '../services/overtime.js';
 import { notifyMany } from '../services/notify.js';
 import { approversFor } from '../services/requests.js';
 import { getSchedule, watchBalance, remaining, watchMyRequests } from '../services/requests.js';
@@ -14,8 +14,10 @@ import { meetingLine, nameOf } from '../services/directory.js';
 
 export default async function render(root) {
   const unsubs = [];
-  let schedule = null, balance = null, myReqs = [];
+  let schedule = null, balance = null, myReqs = [], otRows = [], otClosing = false;
   const today = () => dayKey(now());
+  const otToday = () => otRows.find(r => r.date === today()) || null;
+  const otOpen = () => { const d = otToday(); return !!d && !d.closed; };
 
   root.innerHTML = `
     <div class="grid" style="grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);align-items:start" id="home-grid">
@@ -23,6 +25,7 @@ export default async function render(root) {
         <a class="ann-banner hidden" id="ann-banner" href="#/announcements"></a>
         <section class="hero" id="hero"></section>
         <section class="card" id="pad-card"></section>
+        <section class="card" id="ot-card"></section>
         <section class="grid g-3 keep-2" id="stats"></section>
       </div>
       <div class="col gap-16">
@@ -94,15 +97,17 @@ export default async function render(root) {
       const stale = staleDay(p);
       const note = plan.mode === 'leave' ? `<div class="alert warn mb-16"><i class="fas fa-umbrella-beach"></i><span>${L('النهارده إجازة معتمدة ليك', 'You have approved leave today')}${plan.leaveType ? ` (${esc(leaveTypeLabel(plan.leaveType))})` : ''}.</span></div>`
         : (plan.mode === 'off' || plan.mode === 'holiday') ? `<div class="alert info mb-16"><i class="fas fa-bed"></i><span>${plan.mode === 'holiday' ? esc(L('عطلة رسمية', 'Public holiday')) + (plan.name ? ` — ${esc(plan.name)}` : '') : L('النهارده يوم راحة.', 'Today is a day off.')}</span></div>` : '';
-      const otNote = isOffDay(plan) ? `<div class="alert ok mb-16" id="ot-note"><i class="fas fa-business-time"></i><span>${L('لو اشتغلت النهارده، ساعات شغلك هتتحسب أوفر تايم: لما تنهي اليوم بيتبعت طلب للإدارة، ولو اتوافق عليه المبلغ بينزل على مرتبك.', 'If you work today, your hours count as overtime: ending the day sends a request to management, and once approved the amount is added to your salary.')}</span></div>` : '';
+      // a day off: the normal day is locked, the overtime card below is the way to work
+      const locked = !isWorkingPlan(plan);
+      const otNote = locked ? `<div class="alert info mb-16" id="ot-note"><i class="fas fa-business-time"></i><span>${L('النهارده إجازة، فزرار اليوم العادي مقفول. لو هتشتغل استخدم كارت «الأوفر تايم» تحت.', 'Today is a day off, so the normal day is locked. To work, use the "Overtime" card below.')}</span></div>` : '';
       card.innerHTML = `<div class="card-body">
         ${note}${otNote}
         ${stale ? `<div class="alert warn mb-16"><i class="fas fa-triangle-exclamation"></i><span>${L(`يوم ${fmtDate(stale)} ما اتقفلش. هيتقفل تلقائياً على ميعاد الانصراف لما تبدأ النهارده، ولو فيه خطأ قدّم طلب تصحيح.`, `Your day on ${fmtDate(stale)} was not ended. It will be closed at the planned end time when you start today; request a correction if needed.`)}</span></div>` : ''}
         <div class="row between" style="flex-wrap:wrap;gap:16px">
           <div><h3 style="font-size:17px">${endedToday() ? L('خلّصت يومك', 'Your day is ended') : L('جاهز تبدأ؟', 'Ready to start?')}</h3>
           <p class="muted small">${endedToday() ? L('لو رجعت تشتغل تاني تقدر تكمل نفس اليوم.', 'If you are back to work you can resume today.') : L('اختار هتشتغل منين النهارده.', 'Choose where you are working from today.')}</p></div>
-          <button class="btn btn-grad btn-lg" id="start-btn"><i class="fas fa-play"></i> ${endedToday() ? L('كمّل اليوم', 'Resume day') : L('ابدأ يومك', 'Start your day')}</button>
-        </div></div>`;
+          <button class="btn btn-grad btn-lg" id="start-btn" ${locked || otOpen() ? 'disabled' : ''}><i class="fas fa-play"></i> ${endedToday() ? L('كمّل اليوم', 'Resume day') : L('ابدأ يومك', 'Start your day')}</button>
+        </div>${otOpen() && !locked ? `<p class="small muted mt-8">${L('كارت الأوفر تايم شغال، أنهيه الأول لو عايز تكمّل اليوم العادي.', 'The overtime card is running; end it first to resume the normal day.')}</p>` : ''}</div>`;
       card.querySelector('#start-btn').onclick = openStart;
       return;
     }
@@ -147,12 +152,6 @@ export default async function render(root) {
       const p = u(), fo = toMs(p.firstOnlineAt);
       await endDay(extra);
       toast(L('يومك اتقفل. شكراً على مجهودك!', 'Day ended. Thanks for your work!'));
-      if (isOffDay(plan)) {
-        try {
-          const r = await fileOvertime({ date: today(), plan, checkInMs: fo, checkOutMs: now(), workMs: worked });
-          if (r) livePop({ icon: 'fa-business-time', cls: 'ok', title: L('اتبعت طلب أوفر تايم', 'Overtime request sent'), text: r.status === 'pending_admin' ? L(`${msToHours(worked)} ساعة شغل في يوم إجازة. الطلب عند الإدارة، ولو اتوافق عليه المبلغ هينزل على مرتبك.`, `${msToHours(worked)} h worked on a day off. The request is with management; once approved the amount is added to your salary.`) : L('طلب الأوفر تايم بتاع النهارده اتقرر بالفعل.', "Today's overtime request was already decided."), ttl: 15000 });
-        } catch (e) { console.warn(e); toast(L('مقدرتش أبعت طلب الأوفر تايم', 'Could not send the overtime request'), e.userMessage || '', 'warn'); }
-      }
     };
     // short of the day's actual hours: tell the employee, who accepts it or objects (both are kept on the day)
     if (isWorkingPlan(plan) && required > 0 && worked < required) {
@@ -194,7 +193,7 @@ export default async function render(root) {
       m.$('#short-refuse').onclick = answer('refused');
       return;
     }
-    const ok = await confirmDialog({ title: L('إنهاء اليوم', 'End day'), message: isOffDay(plan) ? L(`النهارده يوم إجازة: اشتغلت ${fmtHours(worked)}. لما تنهي اليوم هيتبعت طلب أوفر تايم للإدارة.`, `Today is a day off: you worked ${fmtHours(worked)}. Ending the day sends an overtime request to management.`) : L('هيتسجل وقت انصرافك دلوقتي. متأكد؟', 'Your check-out will be recorded now. Continue?'), okText: L('إنهاء اليوم', 'End day'), okClass: 'btn-danger' });
+    const ok = await confirmDialog({ title: L('إنهاء اليوم', 'End day'), message: L('هيتسجل وقت انصرافك دلوقتي. متأكد؟', 'Your check-out will be recorded now. Continue?'), okText: L('إنهاء اليوم', 'End day'), okClass: 'btn-danger' });
     if (!ok) return;
     try { await finish({ shortfall: null }); } catch (ex) { toastErr(ex); }
   }
@@ -357,17 +356,73 @@ export default async function render(root) {
     const bw = root.querySelector('#break-warn');
     if (bw) bw.classList.toggle('hidden', !(bank.Break > (policy.breakMaxMinutes || 0) * 60000 && policy.breakMaxMinutes));
     const ow = root.querySelector('#offline-warn'); if (ow) ow.classList.toggle('hidden', navigator.onLine);
+    tickOT();
     watchLogs();
   }
 
-  function renderAll() { renderHero(); renderPad(); renderStats(); renderUpcoming(); tick(); }
+  // ---- the overtime card: opens on a day off, or once the shift is ended; no permission needed ----
+  function renderOT() {
+    const card = root.querySelector('#ot-card'); if (!card) return;
+    const plan = planFor(today(), schedule, session.email);
+    const off = !isWorkingPlan(plan);
+    const d = otToday();
+    const open = !!d && !d.closed;
+    const can = off || endedToday() || open;
+    const head = `<div class="card-head"><h3><i class="fas fa-business-time"></i> ${L('الأوفر تايم', 'Overtime')}</h3>${open ? `<button class="btn btn-danger btn-sm" id="ot-end"><i class="fas fa-flag-checkered"></i> ${L('إنهاء الأوفر تايم', 'End overtime')}</button>` : ''}</div>`;
+    if (open) {
+      card.innerHTML = `${head}<div class="card-body">
+        <div class="row between mb-16" style="flex-wrap:wrap;gap:12px">
+          <div><div class="muted small" title="${L('العمل + الاجتماعات، من غير الاستراحة', 'Work + meetings, breaks excluded')}">${L('وقت الأوفر تايم', 'Overtime time')}</div><div class="timer-big" id="ot-work">00:00:00</div></div>
+          <div><div class="muted small">${L('الاستراحة', 'Break')}</div><div class="timer-big" id="ot-break" style="font-size:22px">00:00:00</div></div>
+        </div>
+        <div class="status-pad">${OT_STATUSES.map(k => { const s = STATUS_META[k]; return `<button class="status-btn s-${k} ${d.status === k ? 'active' : ''}" data-ot-st="${k}"><i class="fas ${s.icon}"></i><span>${esc(L(s.ar, s.en))}</span><span class="num small" data-ot-timer="${k}">00:00:00</span></button>`; }).join('')}</div>
+        <p class="xs muted mt-8">${L('بيتحسب الشغل والاجتماعات بس، والاستراحة مش بتتحسب.', 'Only work and meetings are counted; breaks are not.')}</p></div>`;
+      card.querySelectorAll('[data-ot-st]').forEach(b => b.onclick = () => busy(b, async () => { try { await changeOT(d, b.dataset.otSt); } catch (e) { toastErr(e); } }));
+      card.querySelector('#ot-end').onclick = async () => {
+        const ok = await confirmDialog({ title: L('إنهاء الأوفر تايم', 'End overtime'), message: L('هيتحسب الوقت وتتبعت التفاصيل للإدارة. متأكد؟', 'The time is counted and the details are sent to management. Continue?'), okText: L('إنهاء', 'End'), okClass: 'btn-danger' });
+        if (!ok) return;
+        try { await endOT(d); toast(L('اتقفل الأوفر تايم', 'Overtime ended'), L('اتبعت للإدارة', 'Sent to management')); } catch (e) { toastErr(e); }
+      };
+      tickOT(); return;
+    }
+    const req = d ? myReqs.find(r => r.id === overtimeId(session.email, d.date)) : null;
+    const done = d && d.closed ? otLive(d) : null;
+    const canResume = !!done && (!req || req.status === 'pending_admin');
+    card.innerHTML = `${head}<div class="card-body">
+      ${done ? `<div class="alert ok mb-16"><i class="fas fa-circle-check"></i><span>${L(`خلّصت أوفر تايم: ${fmtHours(done.Online + done.Meeting)}. الطلب عند الإدارة.`, `Overtime done: ${fmtHours(done.Online + done.Meeting)}. The request is with management.`)}</span></div>` : ''}
+      <div class="row between" style="flex-wrap:wrap;gap:16px">
+        <div><h3 style="font-size:16px">${can ? (canResume ? L('عايز تكمّل؟', 'Back to work?') : L('جاهز تبدأ أوفر تايم؟', 'Ready to start overtime?')) : L('الأوفر تايم بيتفتح بعد شيفتك', 'Overtime opens after your shift')}</h3>
+        <p class="muted small">${can ? L('العداد بيحسب الشغل والاجتماعات وبيتبعت للإدارة لما تنهيه.', 'The counter counts work and meetings and is sent to management when you end it.') : L('أنهي يومك العادي الأول، وبعدها يتفعّل الكارت ده.', 'End your normal day first, then this card turns on.')}</p></div>
+        ${done && !canResume ? '' : `<button class="btn btn-grad btn-lg" id="ot-start" ${can ? '' : 'disabled'}><i class="fas fa-play"></i> ${canResume ? L('كمّل الأوفر تايم', 'Resume overtime') : L('ابدأ أوفر تايم', 'Start overtime')}</button>`}
+      </div></div>`;
+    const sb = card.querySelector('#ot-start');
+    if (sb) sb.onclick = () => busy(sb, async () => {
+      if (!navigator.onLine) { toast(L('مفيش إنترنت', 'No internet'), '', 'bad'); return; }
+      try { await startOT(today(), off ? 'off' : 'after', plan); } catch (e) { toastErr(e); }
+    });
+  }
+  function tickOT() {
+    const d = otToday(); if (!d || d.closed) return;
+    const b = otLive(d);
+    const w = root.querySelector('#ot-work'); if (w) w.textContent = fmtDur(b.Online + b.Meeting);
+    const br = root.querySelector('#ot-break'); if (br) br.textContent = fmtDur(b.Break);
+    root.querySelectorAll('[data-ot-timer]').forEach(el => { el.textContent = fmtDur(b[el.dataset.otTimer]); });
+  }
+
+  function renderAll() { renderHero(); renderPad(); renderOT(); renderStats(); renderUpcoming(); tick(); }
 
   schedule = await getSchedule(session.email, today().slice(0, 7));
   renderQuick();
   renderAll();
   unsubs.push(watch(query(col('schedules'), where('email', '==', session.email)), rows => { schedule = rows.find(r => r.month === today().slice(0, 7)) || null; renderAll(); }));
   unsubs.push(watchBalance(session.email, Number(today().slice(0, 4)), b => { balance = b; renderStats(); }));
-  unsubs.push(watchMyRequests(rows => { myReqs = rows; renderStats(); renderUpcoming(); }));
+  unsubs.push(watchMyRequests(rows => { myReqs = rows; renderStats(); renderUpcoming(); renderOT(); }));
+  unsubs.push(watchMyOT(rows => {
+    otRows = rows; renderOT(); if (!started()) renderPad();
+    // an overtime counter forgotten on an earlier day is closed (and sent to the admin as "auto-closed")
+    const stale = rows.find(r => !r.closed && r.date < today());
+    if (stale && !otClosing) { otClosing = true; endOT(stale, { auto: true }).catch(e => console.warn(e)).finally(() => { otClosing = false; }); }
+  }));
   const onProf = () => renderAll();
   window.addEventListener('am:profile', onProf); unsubs.push(() => window.removeEventListener('am:profile', onProf));
   const onNet = () => tick();

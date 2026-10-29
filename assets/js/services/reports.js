@@ -1,7 +1,8 @@
 // Monthly calculations shared by "My attendance", monthly reports and payroll.
 import { list, query, col, where, toMs, listF } from '../core/fb.js';
-import { session, now, isHR, seesAll, isFinance } from '../core/session.js';
-import { policy, planFor, lateness, earlyLeave, isWorkingPlan, lateDeductionDays, dayKey, leaveType, trackedSince, withShift, dayShift } from '../core/policy.js';
+import { session, now, isHR, seesAll, isFinance, isAdmin } from '../core/session.js';
+import { monthOT } from './overtime.js';
+import { policy, planFor, lateness, earlyLeave, isWorkingPlan, lateDeductionDays, dayKey, leaveType, trackedSince, withShift, dayShift, requiredWorkMs } from '../core/policy.js';
 import { person } from './directory.js';
 import { monthDates, hmToMin, minutesOfDay, ymd } from '../core/utils.js';
 import { rangeDays, monthDays } from './attendance.js';
@@ -40,6 +41,10 @@ export function classifyDay(date, plan, rec, excuses, todayKey, since = '') {
     row.status = row.status === 'none' ? (rec.mode === 'remote' ? 'remote' : 'present') : row.status;
     row.mode = rec.mode || plan.mode;
     row.workMs = rec.workMs || 0; row.breakMs = rec.breakMs || 0; row.meetingMs = rec.meetingMs || 0;
+    // the shift's actual hours (e.g. 8) are the day's pay; whatever the shift counter ran past them is unpaid extra time
+    const worked = row.workMs + row.meetingMs, need = isWorkingPlan(plan) ? requiredWorkMs(plan) : 0;
+    row.regularMs = isWorkingPlan(plan) ? (need > 0 ? Math.min(worked, need) : worked) : 0;
+    row.afterMs = isWorkingPlan(plan) ? (need > 0 ? Math.max(0, worked - need) : 0) : worked;
     const effPlan = isWorkingPlan(plan) ? plan : { ...plan, mode: 'office', start: null };
     if (isWorkingPlan(plan)) {
       const l = lateness(rec.checkInMs, effPlan).late;
@@ -67,7 +72,7 @@ export function classifyDay(date, plan, rec, excuses, todayKey, since = '') {
 }
 
 export function summarize(rows) {
-  const t = { planned: 0, present: 0, office: 0, remote: 0, mission: 0, absent: 0, leave: 0, leaveByType: {}, unpaidLeave: 0, off: 0, holiday: 0, lateDays: 0, lateMinutes: 0, earlyMinutes: 0, workMs: 0, breakMs: 0, meetingMs: 0, forgot: 0, lateDeductDays: 0, extraDays: 0, extraMs: 0, shortDays: 0, shortMs: 0, shortRefused: 0 };
+  const t = { planned: 0, present: 0, office: 0, remote: 0, mission: 0, absent: 0, leave: 0, leaveByType: {}, unpaidLeave: 0, off: 0, holiday: 0, lateDays: 0, lateMinutes: 0, earlyMinutes: 0, workMs: 0, breakMs: 0, meetingMs: 0, forgot: 0, lateDeductDays: 0, extraDays: 0, extraMs: 0, shortDays: 0, shortMs: 0, shortRefused: 0, regularMs: 0, afterMs: 0 };
   rows.forEach(r => {
     if (r.flags.includes('untracked')) return;
     if (isWorkingPlan(r.plan) || r.plan.mode === 'leave') t.planned++;
@@ -89,6 +94,7 @@ export function summarize(rows) {
     if (r.late) { t.lateDays++; t.lateMinutes += r.late; t.lateDeductDays += lateDeductionDays(r.late); }
     t.earlyMinutes += r.early || 0;
     t.workMs += r.workMs; t.breakMs += r.breakMs; t.meetingMs += r.meetingMs;
+    t.regularMs += r.regularMs || 0; t.afterMs += r.afterMs || 0;
     if (r.flags.includes('forgot')) t.forgot++;
     if (r.flags.includes('extra-day')) { t.extraDays++; t.extraMs += (r.workMs || 0) + (r.meetingMs || 0); }
     if (r.short) { t.shortDays++; t.shortMs += r.short.missingMs || 0; if (r.short.response === 'refused') t.shortRefused++; }
@@ -102,10 +108,12 @@ export function summarize(rows) {
 
 /** One person, one month */
 export async function personMonth(email, ym, leaderScope) {
-  const [days, schedules, reqs] = await cached(`p|${email}|${ym}|${leaderScope || ''}`, ym, () => Promise.all([
+  const [days, schedules, reqs, otDays] = await cached(`p|${email}|${ym}|${leaderScope || ''}|${isAdmin() ? 'a' : ''}`, ym, () => Promise.all([
     monthDays(email, ym, leaderScope),
     list(query(col('schedules'), ...(leaderScope ? [where('leaderEmail', '==', leaderScope)] : []), where('email', '==', email), where('month', '==', ym))).catch(() => []),
-    list(query(col('requests'), ...(leaderScope ? [where('leaderEmail', '==', leaderScope)] : []), where('email', '==', email))).catch(() => [])
+    list(query(col('requests'), ...(leaderScope ? [where('leaderEmail', '==', leaderScope)] : []), where('email', '==', email))).catch(() => []),
+    // the overtime card's sessions: only the admin (and the employee) can read them
+    isAdmin() || email === session.email ? monthOT(email, ym).catch(() => []) : Promise.resolve([])
   ]));
   const schedule = schedules[0] || null;
   const excuses = reqs.filter(r => r.type === 'excuse' && r.status === 'approved');
@@ -113,7 +121,15 @@ export async function personMonth(email, ym, leaderScope) {
   const todayKey = dayKey(now());
   const since = trackedSince(person(email));
   const rows = monthDates(ym).map(d => classifyDay(d, planFor(d, schedule, email), recs[d], excuses, todayKey, since));
-  return { rows, totals: summarize(rows), schedule, requests: reqs };
+  // the month in 3 parts: the shift's actual hours · overtime run on the shift counter (unpaid) · the overtime card (paid once approved)
+  const card = otDays.map(d => {
+    const b = d.bank || {}, work = (b.Online || 0) + (b.Meeting || 0);
+    const rq = reqs.find(r => r.type === 'overtime' && r.startDate === d.date) || null;
+    return { ...d, workMs: work, breakMs: b.Break || 0, request: rq };
+  });
+  const totals = summarize(rows);
+  const split = { regularMs: totals.regularMs, afterMs: totals.afterMs, cardMs: card.reduce((s, d) => s + d.workMs, 0), card };
+  return { rows, totals, schedule, requests: reqs, split };
 }
 
 /** Everyone I manage, one month */

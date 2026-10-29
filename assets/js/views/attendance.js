@@ -1,8 +1,8 @@
 // My attendance — monthly totals, a row per day and day details. `personMonthView` is reused by HR.
 import { L, esc, fmtTime, fmtHours, fmtMin, num, ym as ymOf, addMonths, fmtMonth, weekday, fmtDay, isAr, money } from '../core/utils.js';
 import { modal, empty, loader, STATUS_META } from '../core/ui.js';
-import { session, now } from '../core/session.js';
-import { modeLabel, leaveTypeLabel, dayKey, shiftLabel, isWorkingPlan } from '../core/policy.js';
+import { session, now, isAdmin } from '../core/session.js';
+import { modeLabel, leaveTypeLabel, dayKey, shiftLabel, isWorkingPlan, REQUEST_STATUS, statusLabel } from '../core/policy.js';
 import { person } from '../services/directory.js';
 import { toMs, read } from '../core/fb.js';
 import { salaryParts, isFreelancer, rulesOf, violationsFrom, priceViolations, violationText } from '../services/salary.js';
@@ -26,6 +26,31 @@ export function statTiles(t) {
   </div>${t.shortDays || t.extraDays ? `<div class="row-wrap mt-8" style="gap:6px">
     ${t.shortDays ? `<span class="badge warn"><i class="fas fa-hourglass-half"></i>${L(`${t.shortDays} يوم ساعاته الفعلية ناقصة (${fmtHours(t.shortMs)})`, `${t.shortDays} short day(s) (${fmtHours(t.shortMs)})`)}${t.shortRefused ? ` · ${L(`اعترض على ${t.shortRefused}`, `objected to ${t.shortRefused}`)}` : ''}</span>` : ''}
     ${t.extraDays ? `<span class="badge ok"><i class="fas fa-business-time"></i>${L(`شغل في ${t.extraDays} يوم إجازة (${fmtHours(t.extraMs)})`, `Worked ${t.extraDays} day(s) off (${fmtHours(t.extraMs)})`)}</span>` : ''}</div>` : ''}`;
+}
+
+/**
+ * Admin only: the month in 3 parts — the shift's actual hours, overtime run on the shift counter (unpaid, nothing to approve),
+ * and the overtime card's sessions (paid once the admin approves the request).
+ */
+export function splitHTML(s) {
+  if (!s) return '';
+  const tile = (icon, cls, label, hint, ms) => `<div class="card stat"><div class="label"><span class="icon-tile ${cls}"><i class="fas ${icon}"></i></span>${esc(label)}</div><div class="value">${esc(fmtHours(ms))}</div><div class="hint">${esc(hint)}</div></div>`;
+  const rows = (s.card || []).map(d => {
+    const rq = d.request, st = rq ? REQUEST_STATUS[rq.status] || {} : null;
+    return `<tr><td class="nowrap num">${esc(d.date)}</td>
+      <td>${d.kind === 'after' ? L('بعد الشيفت', 'After the shift') : L('يوم إجازة', 'Day off')}${d.autoClosed ? ` <span class="badge warn xs" title="${L('نسي ينهي العداد', 'Counter was not ended')}">${L('اتقفل تلقائياً', 'Auto-closed')}</span>` : ''}</td>
+      <td class="num nowrap">${d.startMs ? esc(fmtTime(d.startMs)) : '—'}</td><td class="num nowrap">${d.endMs ? esc(fmtTime(d.endMs)) : (d.closed ? '—' : `<span class="badge ok xs">${L('شغال', 'Running')}</span>`)}</td>
+      <td class="num"><b>${esc(fmtHours(d.workMs))}</b></td><td class="num">${esc(fmtHours(d.breakMs))}</td>
+      <td>${rq ? `<span class="badge ${st.cls || ''}">${esc(statusLabel(rq.status))}</span>` : '—'}</td>
+      <td class="num">${rq && rq.amount != null ? esc(money(rq.amount)) : '—'}</td></tr>`;
+  }).join('');
+  return `<div class="card mt-16"><div class="card-head"><h3><i class="fas fa-business-time"></i> ${L('تقسيم وقت الشهر (للأدمن)', 'Month time split (admin)')}</h3></div>
+    <div class="card-body"><div class="grid g-3 keep-2">
+      ${tile('fa-briefcase', 'ok', L('وقت الشيفت الفعلي', "Shift's actual time"), L('الشغل الفعلي داخل ساعات الشيفت', 'Real work within the shift hours'), s.regularMs)}
+      ${tile('fa-hourglass-end', 'warn', L('أوفر تايم على عداد الشيفت', 'Overtime on the shift counter'), L('استكمل بعد الشيفت من غير ما يقفل العداد · بدون مقابل', 'Kept the shift counter running · unpaid'), s.afterMs)}
+      ${tile('fa-business-time', 'info', L('أوفر تايم كارت الأوفر تايم', 'Overtime card'), L('قفل الشيفت وشغّل الكارت · بيتحاسب بعد موافقتك', 'Closed the shift and ran the card · paid once approved'), s.cardMs)}
+    </div>
+    ${rows ? `<div class="table-wrap mt-16"><table class="table"><thead><tr><th>${L('اليوم', 'Day')}</th><th>${L('النوع', 'Kind')}</th><th class="num">${L('بدأ', 'Start')}</th><th class="num">${L('انتهى', 'End')}</th><th class="num">${L('الشغل + الاجتماع', 'Work + meetings')}</th><th class="num">${L('الاستراحة', 'Break')}</th><th>${L('الطلب', 'Request')}</th><th class="num">${L('المبلغ', 'Amount')}</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}</div></div>`;
 }
 
 /** Day-type filters over the month table: office, remote, leave and absence days */
@@ -94,6 +119,7 @@ export function dayTableHTML(rows, filter = 'all') {
       r.flags.includes('excused') ? `<span class="badge ok xs">${L('بإذن', 'Excused')}</span>` : '',
       r.flags.includes('remote-pending') ? `<span class="badge warn xs">${L('مستني موافقة', 'Pending')}</span>` : '',
       r.flags.includes('extra-day') ? `<span class="badge ok xs" title="${L('شغل في يوم إجازة', 'Worked on a day off')}">${L('أوفر تايم', 'Overtime')}</span>` : '',
+      isAdmin() && r.afterMs > 0 && !r.flags.includes('extra-day') ? `<span class="badge warn xs" title="${L('زيادة على ساعات الشيفت الفعلية، على عداد الشيفت (بدون مقابل)', 'Past the shift hours on the shift counter (unpaid)')}">+${esc(fmtHours(r.afterMs))}</span>` : '',
       r.short ? shortBadge(r.short, 'xs') : ''
     ].join('');
     return `<tr data-day="${r.date}" tabindex="0" role="button" style="cursor:pointer;${idle ? 'opacity:.55' : ''}" class="${r.date === todayKey ? 'today-row' : ''}">
@@ -180,7 +206,7 @@ export async function personMonthView(el, email, { initialYm, canRequest = false
     el.querySelector('#pm-body').innerHTML = loader();
     try {
       data = await personMonth(email, ym, scopeFor(email));
-      el.querySelector('#pm-body').innerHTML = `${statTiles(data.totals)}
+      el.querySelector('#pm-body').innerHTML = `${statTiles(data.totals)}${isAdmin() ? splitHTML(data.split) : ''}
         <div class="card mt-16"><div class="card-head" id="pm-filter"></div><div id="pm-table"></div></div>`;
       drawTable();
       onData && onData(data, ym);

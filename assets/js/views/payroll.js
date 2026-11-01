@@ -197,7 +197,7 @@ export default async function render(root) {
   }
   bindActions(root, {
     build: (_, b) => busy(b, async () => { try { await buildRun(month); await loadPrivs(); toast(L('اتحسبت الرواتب', 'Payroll calculated'), L('اللي اتعتمد أو بعده ما اتغيّرش.', 'Approved and later salaries were left unchanged.')); } catch (e) { toastErr(e); } }),
-    slip: ({ id }) => openPayslip(items.find(x => x.id === id)),
+    slip: ({ id }) => openPayslip(items.find(x => x.id === id), { edit: true }),
     edit: ({ id }) => {
       const i = items.find(x => x.id === id);
       const m = modal({

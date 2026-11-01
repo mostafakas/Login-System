@@ -53,6 +53,11 @@ export function computeItem({ person: p, priv, totals, violations = [], advances
   const parts = payParts(priv);
   const rules = rulesOf(priv);
   const divisor = Number(policy.payrollDayDivisor) || 30;
+  // deductions the admin cancelled for this salary (keys: "date|kind" for an attendance violation, "fixed", "unpaid")
+  const waived = Array.isArray(manual.waived) ? manual.waived : [];
+  const waivedKeys = new Set(waived.map(w => w.key));
+  const rawViolations = violations;   // kept on the item so a cancelled deduction can be restored
+  violations = violations.filter(v => !waivedKeys.has(`${v.date}|${v.kind}`));
   const priced = priceViolations(freelancer ? [] : violations, parts, rules, divisor);
   // KPI of the month: admin-set % or amount, otherwise paid in full
   const kpiMode = !freelancer && (manual.kpiMode === 'pct' || manual.kpiMode === 'amt') ? manual.kpiMode : '';
@@ -60,11 +65,11 @@ export function computeItem({ person: p, priv, totals, violations = [], advances
   const kpi = r2(kpiMode === 'pct' ? parts.kpi * kpiValue / 100 : (kpiMode === 'amt' ? kpiValue : parts.kpi));
   // unpaid leave: the day's basic, from what is left of the basic after absences
   const unpaidDays = totals && !freelancer ? totals.unpaidLeave || 0 : 0;
-  const unpaid = r2(Math.min(unpaidDays * parts.basic / divisor, priced.left.basic));
+  const unpaid = waivedKeys.has('unpaid') ? 0 : r2(Math.min(unpaidDays * parts.basic / divisor, priced.left.basic));
   const advance = advances.reduce((s, a) => s + a.installment, 0);
   const other = (manual.otherDeductions || []).reduce((s, d) => s + (Number(d.amount) || 0), 0);
   const bonus = Number(manual.bonus) || 0, incentive = Number(manual.incentive) || 0;
-  const fixed = parts.fixed;
+  const fixed = waivedKeys.has('fixed') ? 0 : parts.fixed;
   const overtimeTotal = r2(overtime.reduce((s, o) => s + (Number(o.amount) || 0), 0));
   const violationTotal = r2(priced.byPart.basic + priced.byPart.allowances + priced.byPart.regularity);
   const gross = r2(parts.basic + parts.allowances + parts.regularity + kpi + bonus + incentive + overtimeTotal);
@@ -84,13 +89,13 @@ export function computeItem({ person: p, priv, totals, violations = [], advances
     advance: r2(advance),
     // enough about each advance to explain the installment on the payslip ("installment 2 of 5 — 6,000 left")
     advanceRefs: advances.map(a => ({ id: a.id, amount: a.installment, total: Number(a.amount) || 0, paidBefore: Number(a.paid) || 0, count: Number(a.installments) || 0, perMonth: Number(a.perMonth) || a.installment, startMonth: a.startMonth || '', endMonth: a.endMonth || '' })),
-    otherDeductions: manual.otherDeductions || [], note: manual.note || '',
+    otherDeductions: manual.otherDeductions || [], waived, note: manual.note || '',
     gross, deductions, net: r2(gross - deductions), dayRate: r2(parts.basic / divisor),
     att: totals ? {
       absent: totals.absent || 0, unpaidLeave: totals.unpaidLeave || 0, lateMinutes: totals.lateMinutes || 0,
       lateDays: totals.lateDays || 0, present: totals.present || 0, office: totals.office || 0, remote: totals.remote || 0, leave: totals.leave || 0,
       planned: totals.planned || 0, workMs: (totals.workMs || 0) + (totals.meetingMs || 0),   // work + meetings, breaks excluded
-      violations // raw, so a later edit (bonus, KPI…) re-prices them with the current salary and rules
+      violations: rawViolations // raw, so a later edit (bonus, KPI…) re-prices them with the current salary and rules
     } : null
   };
 }
@@ -155,10 +160,32 @@ export async function saveManual(month, email, manual) {
   const priv = await read('employees_private', email).catch(() => ({})) || {};
   const totals = it.att || null; // attendance numbers captured when the run was built
   const advances = (it.advanceRefs || []).map(a => ({ id: a.id, installment: a.amount, amount: a.total, paid: a.paidBefore, installments: a.count, perMonth: a.perMonth, startMonth: a.startMonth, endMonth: a.endMonth }));
+  manual = { waived: it.waived || [], ...manual };
   const next = computeItem({ person: p, priv, totals, violations: (it.att && it.att.violations) || [], advances, manual, overtime: it.overtimeLines || [] });
   // a KPI changed by hand is the admin's from now on (no longer follows the review)
   const fromReview = !!it.kpiFromReview && next.kpiMode === it.kpiMode && Number(next.kpiValue) === Number(it.kpiValue);
   await updateDoc(doc(db, 'payroll_items', itemId(month, email)), { ...next, kpiFromReview: fromReview, updatedAt: serverTimestamp(), editedBy: session.email });
+}
+
+/**
+ * Cancel one deduction of a salary (a late/absence line, the fixed deductions, unpaid leave, or one of the manual
+ * "other" deductions). The salary is recalculated at once, so the net and the employee's payslip follow.
+ * `d` = { key, label, amount } as built by the payslip; restoreDeduction(item, key) puts it back.
+ */
+export async function removeDeduction(item, d) {
+  if (!isAdmin()) throw userError('تعديل الراتب للأدمن بس.', 'Only admins can adjust salaries.');
+  const od = String(d.key).startsWith('od:');
+  const manual = { ...item, waived: item.waived || [] };
+  if (od) manual.otherDeductions = (item.otherDeductions || []).filter((_, n) => `od:${n}` !== d.key);
+  else manual.waived = [...manual.waived.filter(w => w.key !== d.key), { key: d.key, label: d.label || '', amount: Number(d.amount) || 0, by: session.email, at: Date.now() }];
+  await saveManual(item.month, item.email, manual);
+  track('payroll.waive', { target: item.email, detail: `${item.month} ${d.key} ${d.amount}` });
+  if (item.published) notify(item.email, L(`تعديل في قسيمة ${fmtMonth(item.month)}`, `Your ${fmtMonth(item.month)} payslip was updated`), L(`اتلغى خصم: ${d.label || ''}`, `A deduction was cancelled: ${d.label || ''}`), '#/payslips', 'approved');
+}
+export async function restoreDeduction(item, key) {
+  if (!isAdmin()) throw userError('تعديل الراتب للأدمن بس.', 'Only admins can adjust salaries.');
+  await saveManual(item.month, item.email, { ...item, waived: (item.waived || []).filter(w => w.key !== key) });
+  track('payroll.unwaive', { target: item.email, detail: `${item.month} ${key}` });
 }
 
 // ---------- transfer receipt (Google Drive through the Apps Script service; Firestore chunks as a fallback) ----------

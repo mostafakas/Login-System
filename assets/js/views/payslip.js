@@ -85,6 +85,7 @@ export function payslipHTML(i) {
         <div class="xs muted num" dir="ltr">${esc(payslipRef(i))}</div>
         <span class="pay-badge ${PAY_STATUS[s].cls} mt-4"><i class="fas ${PAY_STATUS[s].icon}"></i>${esc(payStatusLabel(s))}</span></div></div>
 
+    ${!['paid', 'sent'].includes(s) ? `<div class="alert warn mt-8"><i class="fas fa-circle-info"></i><span>${L('قسيمة مبدئية: الراتب لسه ما اتحوّلش وممكن الأرقام تتعدّل لحد الاعتماد.', 'Preliminary payslip: the salary is not transferred yet and the figures may still change until approval.')}</span></div>` : ''}
     <div class="ps-info">
       ${info(L('الموظف', 'Employee'), i.name)}${info(L('المسمى الوظيفي', 'Job title'), i.title || p.title)}${info(L('القسم', 'Department'), i.department || p.department)}
       ${info(L('تاريخ التعيين', 'Hire date'), hire ? fmtDate(hire) : '')}${info(L('طريقة التحويل', 'Paid to'), i.payTo)}${info(L('تاريخ التحويل', 'Transfer date'), i.paidAt ? fmtDate(toMs(i.paidAt)) : '')}

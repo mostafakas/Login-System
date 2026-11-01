@@ -139,7 +139,7 @@ export async function buildRun(month) {
     }
     const overtime = overtimeLines(pm.requests, priv, p.email);
     const item = computeItem({ person: p, priv, totals: pm.totals, violations, advances: advs.filter(a => a.email === p.email), manual, overtime });
-    b.set(doc(db, 'payroll_items', itemId(month, p.email)), { ...item, kpiFromReview: manual !== old ? manual.kpiMode === 'pct' : !!old.kpiFromReview && !!old.kpiMode, month, status: 'pending', published: false, updatedAt: serverTimestamp() });
+    b.set(doc(db, 'payroll_items', itemId(month, p.email)), { ...item, kpiFromReview: manual !== old ? manual.kpiMode === 'pct' : !!old.kpiFromReview && !!old.kpiMode, month, status: 'pending', published: !!old.published, sentAt: old.published ? (old.sentAt || null) : null, sentBy: old.published ? (old.sentBy || '') : '', updatedAt: serverTimestamp() });
     count++;
   }
   b.set(doc(db, 'payroll_runs', month), { month, status: 'draft', builtBy: session.email, builtAt: serverTimestamp() }, { merge: true });
@@ -276,7 +276,8 @@ export async function setPayStatus(item, target, opts = {}) {
   if (ci < 2 && ti >= 2) await payItem(item, opts);
   if (ci >= 2 && ti < 2) legacyTreasury = await unpayItem(item);
   if (target === 'pending' || target === 'approved') {
-    await updateDoc(ref, { status: target, published: false, ...(target === 'approved' ? { approvedAt: serverTimestamp(), approvedBy: session.email } : {}), updatedAt: serverTimestamp() });
+    // moving forward (pending → approved) keeps a payslip that was already sent; moving back from transferred hides it
+    await updateDoc(ref, { status: target, published: ci >= 2 ? false : !!item.published, ...(target === 'approved' ? { approvedAt: serverTimestamp(), approvedBy: session.email } : {}), updatedAt: serverTimestamp() });
   } else if (target === 'sent') {
     await updateDoc(ref, { status: 'sent', published: true, sentAt: serverTimestamp(), sentBy: session.email, updatedAt: serverTimestamp() });
     notify(item.email, `قسيمة راتب ${fmtMonth(item.month)} وصلت`, `صافي الراتب ${item.net}`, '#/payslips', 'approved');
@@ -438,4 +439,32 @@ export async function addManualAdvance(f) {
   notify(f.email, L('اتسجّلت لك سلفة', 'An advance was registered for you'), `${plan.amount} ${L('ج.م', 'EGP')} · ${plan.installments} ${L('قسط', 'installments')} · ${L('من', 'from')} ${plan.startMonth}`, '#/requests', 'approved');
   track('advance.manual', { target: f.email, detail: `${plan.amount} / ${plan.installments} from ${plan.startMonth}` });
   return { id, plan, states };
+}
+
+/**
+ * Admin: send every payslip of the month to its employee, whatever its status (even before approval / transfer).
+ * The salary keeps its status; a transferred one (with a receipt) becomes "sent" as usual. Payslips already sent are skipped.
+ * Returns { sent, early, skipped } — `early` = how many went out before the salary was transferred (they show as preliminary).
+ */
+export async function publishAllPayslips(month) {
+  if (!isAdmin()) throw userError('إرسال القسايم للأدمن بس.', 'Only admins can send payslips.');
+  const items = await list(query(col('payroll_items'), where('month', '==', month)));
+  const todo = items.filter(i => !i.published);
+  let early = 0;
+  for (let k = 0; k < todo.length; k += 400) {
+    const b = writeBatch(db);
+    todo.slice(k, k + 400).forEach(i => {
+      const s = payStatus(i);
+      if (!['paid', 'sent'].includes(s)) early++;
+      b.update(doc(db, 'payroll_items', i.id), { published: true, ...(s === 'paid' ? { status: 'sent' } : {}), sentAt: serverTimestamp(), sentBy: session.email, updatedAt: serverTimestamp() });
+    });
+    await b.commit();
+  }
+  todo.forEach(i => {
+    const final = ['paid', 'sent'].includes(payStatus(i));
+    notify(i.email, final ? L(`قسيمة راتب ${fmtMonth(month)} وصلت`, `Your ${fmtMonth(month)} payslip is here`) : L(`قسيمة مبدئية لراتب ${fmtMonth(month)}`, `Preliminary payslip for ${fmtMonth(month)}`),
+      final ? `${L('صافي الراتب', 'Net salary')} ${i.net}` : `${L('صافي الراتب', 'Net salary')} ${i.net} — ${L('لسه ما اتحوّلش', 'not transferred yet')}`, '#/payslips', 'approved');
+  });
+  track('payroll.sendAll', { target: month, detail: `${todo.length} (${early} early)` });
+  return { sent: todo.length, early, skipped: items.length - todo.length };
 }

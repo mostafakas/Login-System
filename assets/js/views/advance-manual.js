@@ -6,6 +6,7 @@ import { toast, toastErr, modal, busy } from '../core/ui.js';
 import { now } from '../core/session.js';
 import { activePeople, nameOf } from '../services/directory.js';
 import { addManualAdvance } from '../services/payroll.js';
+import { scheduleEditor } from './advance-schedule.js';
 
 export function openManualAdvance({ month, onDone } = {}) {
   const people = activePeople().filter(p => !p.isSuspended).slice().sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ar'));
@@ -22,12 +23,15 @@ export function openManualAdvance({ month, onDone } = {}) {
         <div class="field"><label>${L('اتسدد منها قبل كده', 'Already repaid')}</label><input class="input num" type="number" min="0" step="0.01" name="repaid" value="0"><span class="help">${L('لو بتسجّل سلفة قديمة اتخصم منها جزء.', 'For an older advance that was partly deducted already.')}</span></div>
         <div class="field"><label>&nbsp;</label><label class="row gap-8" style="align-items:center"><input type="checkbox" name="paidOut" checked> <span>${L('اتصرفت من الخزينة', 'Paid out of the treasury')}</span></label></div>
         <div class="field span-2"><label>${L('السبب / تفاصيل', 'Reason / details')}</label><textarea class="textarea" name="note" maxlength="500" placeholder="${L('مثلاً: ظروف طارئة، اتفاق مع الإدارة…', 'e.g. an emergency, agreed with management…')}"></textarea></div>
+        <div class="span-2" id="masched"></div>
         <div class="span-2 alert info" id="maprev"></div>
       </form>`,
     foot: `<button class="btn" data-close>${L('إلغاء', 'Cancel')}</button><button class="btn btn-primary" id="masave"><i class="fas fa-check"></i> ${L('إضافة السلفة', 'Add the advance')}</button>`
   });
   const f = m.$('#maf');
+  const ed = scheduleEditor(m.$('#masched'));
   const prev = () => {
+    ed.sync({ amount: f.amount.value, installments: f.installments.value, startMonth: f.startMonth.value });
     const n = Math.max(1, Math.min(60, Math.round(Number(f.installments.value) || 1))), amount = Number(f.amount.value) || 0, repaid = Number(f.repaid.value) || 0;
     m.$('#maprev').innerHTML = amount > 0 && f.startMonth.value
       ? `<i class="fas fa-calendar-check"></i><span>${L('القسط الشهري:', 'Monthly installment:')} <b class="num">${esc(money(amount / n, false))}</b> · ${esc(fmtMonth(f.startMonth.value))}${n > 1 ? ` ← ${esc(fmtMonth(addMonths(f.startMonth.value, n - 1)))}` : ''}${repaid > 0 ? ` · ${L('المتبقي', 'left')} <b class="num">${esc(money(Math.max(0, amount - repaid), false))}</b>` : ''}</span>`
@@ -37,8 +41,9 @@ export function openManualAdvance({ month, onDone } = {}) {
   m.$('#masave').onclick = (e) => busy(e.currentTarget, async () => {
     if (!f.who.value) { toast(L('اختار الموظف', 'Pick the employee'), '', 'warn'); return; }
     if (!f.reportValidity()) return;
+    if (!ed.ok()) { toast(L('مجموع الأقساط لازم يساوي مبلغ السلفة', 'The installments must add up to the advance'), '', 'warn'); return; }
     try {
-      const res = await addManualAdvance({ email: f.who.value, amount: f.amount.value, installments: f.installments.value, startMonth: f.startMonth.value, payoutDate: f.payoutDate.value, paidOut: f.paidOut.checked, repaid: f.repaid.value, note: f.note.value });
+      const res = await addManualAdvance({ email: f.who.value, amount: f.amount.value, installments: f.installments.value, startMonth: f.startMonth.value, schedule: ed.get(), payoutDate: f.payoutDate.value, paidOut: f.paidOut.checked, repaid: f.repaid.value, note: f.note.value });
       m.close();
       const frozen = (res.states || []).some(s => s.state === 'frozen');
       toast(L('اتضافت السلفة', 'Advance added'), `${nameOf(f.who.value)} — ${money(res.plan.amount)} · ${res.plan.installments} ${L('قسط', 'installments')}${frozen ? ` · ${L('فيه راتب اتحوّل بالفعل ومتغيّرش', 'one salary was already transferred and was not changed')}` : ''}`, frozen ? 'warn' : 'ok');

@@ -2,7 +2,7 @@
 // Each employee's salary then moves through: pending → approved (admin) → paid (transfer receipt attached,
 // accountant or admin) → sent (payslip published to the employee). Admins may move a salary to any status.
 import { db, doc, col, list, query, where, read, writeBatch, serverTimestamp, setDoc, updateDoc, runTransaction, arrayUnion, deleteDoc } from '../core/fb.js';
-import { session, now, isAdmin } from '../core/session.js';
+import { session, now, isAdmin, isFinance } from '../core/session.js';
 import { policy } from '../core/policy.js';
 import { fmtMonth, ymd, ym, L, imageToDataUrl } from '../core/utils.js';
 import { userError } from '../core/ui.js';
@@ -14,10 +14,13 @@ import { track } from './activity.js';
 import { payParts, isFreelancer, rulesOf, violationsFrom, priceViolations } from './salary.js';
 import { evalSettings, evalId } from './evaluations.js';
 import { overtimeLines, hourValue, overtimeAmount, otMultiplier, msToHours, fmtHMS } from './overtime.js';
-import { advancePlan } from './requests.js';
+import { advancePlan, advanceSchedule } from './requests.js';
 
 export const itemId = (month, email) => `${month}_${email}`;
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+/** The accountant manages everyone's salary but their own (admins may do both) */
+const isOwn = (email) => !isAdmin() && email === session.email;
+const ownGuard = (email) => { if (isOwn(email)) throw userError('مينفعش تعدّل راتبك أو سلفتك بنفسك.', 'You cannot change your own salary or advance.'); };
 
 // ---------- statuses ----------
 export const PAY_ORDER = ['pending', 'approved', 'paid', 'sent'];
@@ -88,7 +91,7 @@ export function computeItem({ person: p, priv, totals, violations = [], advances
     lateDays: violations.filter(v => v.kind === 'late').length, lateMinutes: totals ? totals.lateMinutes : 0, presentDays: totals ? totals.present : 0,
     advance: r2(advance),
     // enough about each advance to explain the installment on the payslip ("installment 2 of 5 — 6,000 left")
-    advanceRefs: advances.map(a => ({ id: a.id, amount: a.installment, total: Number(a.amount) || 0, paidBefore: Number(a.paid) || 0, count: Number(a.installments) || 0, perMonth: Number(a.perMonth) || a.installment, startMonth: a.startMonth || '', endMonth: a.endMonth || '' })),
+    advanceRefs: advances.map(a => ({ id: a.id, amount: a.installment, total: Number(a.amount) || 0, paidBefore: Number(a.paid) || 0, count: Number(a.installments) || 0, perMonth: Number(a.perMonth) || a.installment, startMonth: a.startMonth || '', endMonth: a.endMonth || '', index: a.index || 0 })),
     otherDeductions: manual.otherDeductions || [], waived, note: manual.note || '',
     gross, deductions, net: r2(gross - deductions), dayRate: r2(parts.basic / divisor),
     att: totals ? {
@@ -104,6 +107,16 @@ export async function activeAdvances(month) {
   const all = await list(query(col('advances'), where('status', '==', 'active'))).catch(() => []);
   return all.filter(a => (a.startMonth || '') <= month).map(a => {
     const left = r2((Number(a.amount) || 0) - (Number(a.paid) || 0));
+    // an advance with its own schedule takes that month's amount (never more than what is left); after the last
+    // scheduled month whatever is still left comes off
+    const sch = (Array.isArray(a.schedule) ? a.schedule : []).filter(s => s && /^\d{4}-\d{2}$/.test(s.month || ''));
+    if (sch.length) {
+      const k = sch.findIndex(s => s.month === month);
+      // the part of that month's amount not already covered by what was repaid before (an old advance entered with a repaid amount)
+      const amt = k >= 0 ? Number(sch[k].amount) || 0 : 0, cum = sch.slice(0, k + 1).reduce((s, x) => s + (Number(x.amount) || 0), 0);
+      const due = k >= 0 ? Math.max(0, Math.min(amt, cum - (Number(a.paid) || 0))) : (month > sch[sch.length - 1].month ? left : 0);
+      return { ...a, installment: r2(Math.min(due, left)), index: k >= 0 ? k + 1 : sch.length };
+    }
     const per = Number(a.perMonth) || left;
     // the last installment takes the rounding remainder (1,000 in 3 → 333.33, 333.33, 333.34)
     return { ...a, installment: r2(left - per < 1 ? left : per) };
@@ -112,11 +125,11 @@ export async function activeAdvances(month) {
 
 /** Build (or rebuild) the month. Only salaries still "pending" are recalculated; manual fields are kept. */
 export async function buildRun(month) {
-  if (!isAdmin()) throw userError('إعادة الحساب للأدمن بس.', 'Only admins can recalculate payroll.');
+  if (!isFinance()) throw userError('إعادة الحساب للأدمن والمحاسب بس.', 'Only admins and accountants can recalculate payroll.');
   if (month >= ym(now())) throw userError('الشهر لسه ما خلصش. رواتبه بتتحسب بعد ما يخلص.', 'This month is not over yet. Its payroll is calculated once it ends.');
   const run = await read('payroll_runs', month);
   if (run && run.status === 'closed') throw userError('ده أرشيف رواتب من السيستم القديم ومينفعش يتحسب تاني.', 'This is a legacy payroll archive and cannot be recalculated.');
-  const people = activePeople().filter(p => !p.isSuspended);
+  const people = activePeople().filter(p => !p.isSuspended && !isOwn(p.email));
   const [privs, existing, att, advs] = await Promise.all([
     list(col('employees_private')), list(query(col('payroll_items'), where('month', '==', month))),
     teamMonth(month, { people }), activeAdvances(month)
@@ -154,13 +167,14 @@ export async function buildRun(month) {
 }
 
 export async function saveManual(month, email, manual) {
-  if (!isAdmin()) throw userError('تعديل الراتب للأدمن بس.', 'Only admins can adjust salaries.');
+  if (!isFinance()) throw userError('تعديل الراتب للأدمن والمحاسب بس.', 'Only admins and accountants can adjust salaries.');
+  ownGuard(email);
   const it = await read('payroll_items', itemId(month, email));
   if (['paid', 'sent'].includes(payStatus(it))) throw userError('الراتب ده اتحوّل بالفعل. رجّعه «معتمد» الأول عشان تعدّله.', 'This salary was already transferred. Move it back to "Approved" to edit it.');
   const p = person(email) || { email, name: it.name };
   const priv = await read('employees_private', email).catch(() => ({})) || {};
   const totals = it.att || null; // attendance numbers captured when the run was built
-  const advances = (it.advanceRefs || []).map(a => ({ id: a.id, installment: a.amount, amount: a.total, paid: a.paidBefore, installments: a.count, perMonth: a.perMonth, startMonth: a.startMonth, endMonth: a.endMonth }));
+  const advances = (it.advanceRefs || []).map(a => ({ id: a.id, installment: a.amount, amount: a.total, paid: a.paidBefore, installments: a.count, perMonth: a.perMonth, startMonth: a.startMonth, endMonth: a.endMonth, index: a.index }));
   manual = { waived: it.waived || [], ...manual };
   const next = computeItem({ person: p, priv, totals, violations: (it.att && it.att.violations) || [], advances, manual, overtime: it.overtimeLines || [] });
   // a KPI changed by hand is the admin's from now on (no longer follows the review)
@@ -174,7 +188,7 @@ export async function saveManual(month, email, manual) {
  * `d` = { key, label, amount } as built by the payslip; restoreDeduction(item, key) puts it back.
  */
 export async function removeDeduction(item, d) {
-  if (!isAdmin()) throw userError('تعديل الراتب للأدمن بس.', 'Only admins can adjust salaries.');
+  if (!isFinance()) throw userError('تعديل الراتب للأدمن والمحاسب بس.', 'Only admins and accountants can adjust salaries.');
   const od = String(d.key).startsWith('od:');
   const manual = { ...item, waived: item.waived || [] };
   if (od) manual.otherDeductions = (item.otherDeductions || []).filter((_, n) => `od:${n}` !== d.key);
@@ -184,7 +198,7 @@ export async function removeDeduction(item, d) {
   if (item.published) notify(item.email, L(`تعديل في قسيمة ${fmtMonth(item.month)}`, `Your ${fmtMonth(item.month)} payslip was updated`), L(`اتلغى خصم: ${d.label || ''}`, `A deduction was cancelled: ${d.label || ''}`), '#/payslips', 'approved');
 }
 export async function restoreDeduction(item, key) {
-  if (!isAdmin()) throw userError('تعديل الراتب للأدمن بس.', 'Only admins can adjust salaries.');
+  if (!isFinance()) throw userError('تعديل الراتب للأدمن والمحاسب بس.', 'Only admins and accountants can adjust salaries.');
   await saveManual(item.month, item.email, { ...item, waived: (item.waived || []).filter(w => w.key !== key) });
   track('payroll.unwaive', { target: item.email, detail: `${item.month} ${key}` });
 }
@@ -327,9 +341,26 @@ export async function recordAdvancePayout(adv) {
  * repaid, and (when it was paid out of the treasury) the payout date. The treasury entry follows the new amount / date.
  * Salaries that are still pending pick the new installment up on the next "Recalculate".
  */
+/** The admin's month-by-month amounts → a clean, checked schedule that adds up to the advance (or null when none was given) */
+function cleanSchedule(rows, total) {
+  if (!Array.isArray(rows) || !rows.length) return null;
+  const out = rows.map(s => ({ month: String(s.month || ''), amount: r2(s.amount) }));
+  if (out.length > 60) throw userError('أقصى عدد شهور 60.', 'At most 60 months.');
+  if (out.some(s => !/^\d{4}-\d{2}$/.test(s.month) || s.amount < 0)) throw userError('جدول الأقساط فيه شهر أو مبلغ غلط.', 'The installment schedule has a wrong month or amount.');
+  if (out.some((s, k) => k && s.month <= out[k - 1].month)) throw userError('شهور الأقساط لازم تكون مرتّبة.', 'The installment months must be in order.');
+  const sum = r2(out.reduce((s, x) => s + x.amount, 0));
+  if (Math.abs(sum - total) > 0.01) throw userError(`مجموع الأقساط ${sum} لازم يساوي مبلغ السلفة ${total}.`, `The installments add up to ${sum} but the advance is ${total}.`);
+  return out;
+}
+/** { amount, installments, startMonth, perMonth, endMonth } of a schedule */
+const planOfSchedule = (total, sch) => ({ amount: total, installments: sch.length, startMonth: sch[0].month, endMonth: sch[sch.length - 1].month, perMonth: r2(total / sch.length) });
+
 export async function updateAdvance(adv, f) {
-  if (!isAdmin()) throw userError('تعديل السلف للأدمن بس.', 'Only admins can edit advances.');
-  const plan = advancePlan(f.amount, Math.min(60, Number(f.installments) || 1), f.startMonth);
+  if (!isFinance()) throw userError('تعديل السلف للأدمن والمحاسب بس.', 'Only admins and accountants can edit advances.');
+  ownGuard(adv.email);
+  const sched = cleanSchedule(f.schedule, r2(f.amount));
+  const plan = sched ? planOfSchedule(r2(f.amount), sched) : advancePlan(f.amount, Math.min(60, Number(f.installments) || 1), f.startMonth);
+  const schedule = sched || advanceSchedule(plan.amount, plan.installments, plan.startMonth);
   const paid = r2(f.paid);
   if (!(plan.amount > 0)) throw userError('اكتب مبلغ صحيح.', 'Enter a valid amount.');
   if (!/^\d{4}-\d{2}$/.test(plan.startMonth || '')) throw userError('اختار أول شهر خصم.', 'Pick the first deduction month.');
@@ -340,11 +371,13 @@ export async function updateAdvance(adv, f) {
     plan.installments !== Number(adv.installments) ? L(`الأقساط ${adv.installments} ← ${plan.installments}`, `installments ${adv.installments} → ${plan.installments}`) : '',
     plan.startMonth !== adv.startMonth ? L(`أول شهر ${adv.startMonth || '—'} ← ${plan.startMonth}`, `first month ${adv.startMonth || '—'} → ${plan.startMonth}`) : '',
     paid !== r2(adv.paid) ? L(`المسدد ${r2(adv.paid)} ← ${paid}`, `repaid ${r2(adv.paid)} → ${paid}`) : '',
-    f.payoutDate && f.payoutDate !== (adv.payoutDate || '') ? L(`تاريخ الصرف ${adv.payoutDate || '—'} ← ${f.payoutDate}`, `payout date ${adv.payoutDate || '—'} → ${f.payoutDate}`) : ''
+    f.payoutDate && f.payoutDate !== (adv.payoutDate || '') ? L(`تاريخ الصرف ${adv.payoutDate || '—'} ← ${f.payoutDate}`, `payout date ${adv.payoutDate || '—'} → ${f.payoutDate}`) : '',
+    JSON.stringify(schedule) !== JSON.stringify(adv.schedule && adv.schedule.length ? adv.schedule : advanceSchedule(adv.amount, adv.installments, adv.startMonth))
+      ? L(`جدول الأقساط: ${schedule.map(s => `${s.month} ${s.amount}`).join('، ')}`, `schedule: ${schedule.map(s => `${s.month} ${s.amount}`).join(', ')}`) : ''
   ].filter(Boolean);
   if (!changes.length) return false;
   await updateDoc(doc(db, 'advances', adv.id), {
-    amount: plan.amount, installments: plan.installments, perMonth: plan.perMonth, startMonth: plan.startMonth, endMonth: plan.endMonth, paid,
+    amount: plan.amount, installments: plan.installments, perMonth: plan.perMonth, startMonth: plan.startMonth, endMonth: plan.endMonth, schedule, paid,
     ...(f.payoutDate ? { payoutDate: f.payoutDate } : {}), updatedAt: serverTimestamp(), editedBy: session.email,
     edits: arrayUnion({ at: now(), by: session.email, note: changes.join(' · ') })
   });
@@ -355,17 +388,18 @@ export async function updateAdvance(adv, f) {
     await updateDoc(doc(db, 'treasury', `advance_${adv.id}`), t).catch(e => console.warn('[advance treasury]', e && e.message));
   }
   track('advance.edit', { target: adv.email || adv.name, detail: changes.join(' · ') });
-  await refreshAdvanceItems(adv.email, [adv.startMonth, plan.startMonth, ymd(now()).slice(0, 7)].filter(m => m && m >= (plan.startMonth < (adv.startMonth || plan.startMonth) ? plan.startMonth : (adv.startMonth || plan.startMonth)))).catch(e => console.warn('[advance refresh]', e && e.message));
+  const nowM = ymd(now()).slice(0, 7);
+  await refreshAdvanceItems(adv.email, [adv.startMonth, plan.startMonth, nowM, ...schedule.map(s => s.month).filter(m => m <= nowM)].filter(m => m && m >= (plan.startMonth < (adv.startMonth || plan.startMonth) ? plan.startMonth : (adv.startMonth || plan.startMonth)))).catch(e => console.warn('[advance refresh]', e && e.message));
   return true;
 }
 
 // ---------- overtime the admin registers by hand ----------
 // An approved overtime request (kind 'manual') for the employee: it is paid with that month's salary like any approved
 // overtime, shows on the payslip and in the Excel report, and the employee sees it in "My requests".
-const advRefsOf = (it) => (it.advanceRefs || []).map(a => ({ id: a.id, installment: a.amount, amount: a.total, paid: a.paidBefore, installments: a.count, perMonth: a.perMonth, startMonth: a.startMonth, endMonth: a.endMonth }));
+const advRefsOf = (it) => (it.advanceRefs || []).map(a => ({ id: a.id, installment: a.amount, amount: a.total, paid: a.paidBefore, installments: a.count, perMonth: a.perMonth, startMonth: a.startMonth, endMonth: a.endMonth, index: a.index }));
 /** Re-price this month's salary of one employee with the overtime now approved (frozen salaries — transferred / sent — are left alone) */
 async function refreshItemOvertime(month, email) {
-  const it = await read('payroll_items', itemId(month, email)).catch(() => null);
+  const it = isOwn(email) ? null : await read('payroll_items', itemId(month, email)).catch(() => null);
   if (!it) return 'none';
   if (['paid', 'sent'].includes(payStatus(it))) return 'frozen';
   const [reqs, priv] = await Promise.all([list(query(col('requests'), where('email', '==', email))).catch(() => []), read('employees_private', email).catch(() => null)]);
@@ -377,7 +411,8 @@ async function refreshItemOvertime(month, email) {
 }
 /** Admin: register overtime { email, date, ms, note } → { state: 'updated' | 'none' | 'frozen', amount } */
 export async function addManualOvertime({ email, date, ms, note = '' }) {
-  if (!isAdmin()) throw userError('تسجيل الأوفر تايم للأدمن بس.', 'Only admins can register overtime.');
+  if (!isFinance()) throw userError('تسجيل الأوفر تايم للأدمن والمحاسب بس.', 'Only admins and accountants can register overtime.');
+  ownGuard(email);
   const t = Math.round((Number(ms) || 0) / 1000) * 1000;
   if (!person(email)) throw userError('اختار الموظف.', 'Pick the employee.');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ''))) throw userError('اختار اليوم.', 'Pick the day.');
@@ -407,7 +442,8 @@ export const manualOvertimeOf = (month) => list(query(col('requests'), where('ty
   .then(rows => rows.filter(r => r.kind === 'manual' && (r.startDate || '').slice(0, 7) === month).sort((a, b) => (b.createdMs || 0) - (a.createdMs || 0)));
 /** Admin: delete one of them (a wrong entry) and re-price the salary */
 export async function removeManualOvertime(r) {
-  if (!isAdmin()) throw userError('الحذف للأدمن بس.', 'Only admins can delete this.');
+  if (!isFinance()) throw userError('الحذف للأدمن والمحاسب بس.', 'Only admins and accountants can delete this.');
+  ownGuard(r.email);
   if (r.kind !== 'manual') throw userError('ده مش أوفر تايم مسجّل يدوياً.', 'This is not a manually registered overtime.');
   await deleteDoc(doc(db, 'requests', r.id));
   const state = await refreshItemOvertime((r.startDate || '').slice(0, 7), r.email);
@@ -420,7 +456,7 @@ export async function removeManualOvertime(r) {
 async function refreshAdvanceItems(email, months) {
   const out = [];
   for (const month of [...new Set(months)].filter(m => /^\d{4}-\d{2}$/.test(m || '')).sort()) {
-    const it = await read('payroll_items', itemId(month, email)).catch(() => null);
+    const it = isOwn(email) ? null : await read('payroll_items', itemId(month, email)).catch(() => null);
     if (!it) continue;
     if (['paid', 'sent'].includes(payStatus(it))) { out.push({ month, state: 'frozen' }); continue; }
     const [advs, priv] = await Promise.all([activeAdvances(month), read('employees_private', email).catch(() => null)]);
@@ -437,10 +473,13 @@ async function refreshAdvanceItems(email, months) {
  * the salaries from the first month) + optionally the treasury payout on `payoutDate`.
  */
 export async function addManualAdvance(f) {
-  if (!isAdmin()) throw userError('إضافة السلف للأدمن بس.', 'Only admins can add advances.');
+  if (!isFinance()) throw userError('إضافة السلف للأدمن والمحاسب بس.', 'Only admins and accountants can add advances.');
+  ownGuard(f.email);
   const p = person(f.email);
   if (!p) throw userError('اختار الموظف.', 'Pick the employee.');
-  const plan = advancePlan(f.amount, Math.min(60, Number(f.installments) || 1), f.startMonth);
+  const sched = cleanSchedule(f.schedule, r2(f.amount));
+  const plan = sched ? planOfSchedule(r2(f.amount), sched) : advancePlan(f.amount, Math.min(60, Number(f.installments) || 1), f.startMonth);
+  const schedule = sched || advanceSchedule(plan.amount, plan.installments, plan.startMonth);
   const repaid = r2(f.repaid);
   if (!(plan.amount > 0)) throw userError('اكتب مبلغ صحيح.', 'Enter a valid amount.');
   if (!/^\d{4}-\d{2}$/.test(plan.startMonth || '')) throw userError('اختار أول شهر خصم.', 'Pick the first deduction month.');
@@ -458,7 +497,7 @@ export async function addManualAdvance(f) {
   });
   b.set(doc(db, 'advances', id), {
     email: f.email, name: p.name || f.email, amount: plan.amount, installments: plan.installments, perMonth: plan.perMonth,
-    startMonth: plan.startMonth, endMonth: plan.endMonth, paid: repaid, status: 'active', kind: 'manual', note,
+    startMonth: plan.startMonth, endMonth: plan.endMonth, schedule, paid: repaid, status: 'active', kind: 'manual', note,
     paidOut: !!f.paidOut, payoutDate: f.payoutDate, createdBy: session.email, createdAt: serverTimestamp()
   });
   if (f.paidOut) b.set(doc(db, 'treasury', `advance_${id}`), { type: 'advance', amount: plan.amount, title: `سلفة — ${p.name || f.email}`, email: f.email, month: f.payoutDate.slice(0, 7), date: f.payoutDate, by: session.email, at: serverTimestamp() });
@@ -475,9 +514,9 @@ export async function addManualAdvance(f) {
  * Returns { sent, early, skipped } — `early` = how many went out before the salary was transferred (they show as preliminary).
  */
 export async function publishAllPayslips(month) {
-  if (!isAdmin()) throw userError('إرسال القسايم للأدمن بس.', 'Only admins can send payslips.');
+  if (!isFinance()) throw userError('إرسال القسايم للأدمن والمحاسب بس.', 'Only admins and accountants can send payslips.');
   const items = await list(query(col('payroll_items'), where('month', '==', month)));
-  const todo = items.filter(i => !i.published);
+  const todo = items.filter(i => !i.published && !isOwn(i.email));
   let early = 0;
   for (let k = 0; k < todo.length; k += 400) {
     const b = writeBatch(db);

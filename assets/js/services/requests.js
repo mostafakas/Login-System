@@ -121,6 +121,11 @@ export function approversFor(stage, req) {
 // ---------- salary advance: months ----------
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const addYm = (ym, n) => { const [y, m] = ym.split('-').map(Number); const t = new Date(Date.UTC(y, m - 1 + n, 1)); return `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, '0')}`; };
+/** The equal split of an advance over its months → [{ month, amount }] (the last one takes the rounding remainder) */
+export function advanceSchedule(amount, installments, startMonth) {
+  const n = Math.max(1, Math.round(Number(installments) || 1)), per = r2((Number(amount) || 0) / n);
+  return Array.from({ length: n }, (_, k) => ({ month: startMonth ? addYm(startMonth, k) : '', amount: k === n - 1 ? r2((Number(amount) || 0) - per * (n - 1)) : per }));
+}
 /** { amount, installments, startMonth } → { perMonth, endMonth } (the last installment takes any rounding remainder) */
 export function advancePlan(amount, installments, startMonth) {
   const n = Math.max(1, Math.round(Number(installments) || 1));

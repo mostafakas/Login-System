@@ -2,7 +2,7 @@
 // pending → approved (admin) → transferred (receipt attached) → payslip sent. The accountant only moves statuses.
 import { L, esc, money, fmtMonth, addMonths, ym as ymOf, fmtDate, fmtTime } from '../core/utils.js';
 import { toast, toastErr, modal, avatar, empty, busy, bindActions, confirmDialog, loader } from '../core/ui.js';
-import { now, isAdmin } from '../core/session.js';
+import { now, isAdmin, isFinance, session } from '../core/session.js';
 import { watch, query, col, where, ref, list, toMs } from '../core/fb.js';
 import { buildRun, saveManual, recordAdvancePayout, updateAdvance, publishAllPayslips, PAY_ORDER, PAY_STATUS, payStatus, payStatusLabel, allowedMoves, setPayStatus, MAX_PROOF } from '../services/payroll.js';
 import { openPayslip } from './payslip.js';
@@ -11,12 +11,15 @@ import { exportSheet } from './export.js';
 import { exportPayrollReport } from './payroll-report.js';
 import { openManualOvertime } from './overtime-manual.js';
 import { openManualAdvance } from './advance-manual.js';
+import { scheduleEditor } from './advance-schedule.js';
+import { advanceSchedule } from '../services/requests.js';
 import { printPayroll } from './payroll-print.js';
 
 const fmtSize = (n) => n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
 
 export default async function render(root) {
-  const admin = isAdmin();
+  const admin = isFinance();   // admin or accountant: both calculate and adjust salaries (the accountant never their own)
+  const mine = (i) => !isAdmin() && i && i.email === session.email;
   // a month's payroll opens only once the month is over: the page starts on the previous (finished) month
   const curMonth = ymOf(now());
   let month = addMonths(curMonth, -1), run = null, items = [], unsubs = [], privs = null;
@@ -100,7 +103,7 @@ export default async function render(root) {
       <td>${statusCell(i)}</td>
       <td style="text-align:end;white-space:nowrap">
         <button class="btn btn-sm btn-icon" data-action="slip" data-id="${esc(i.id)}" title="${L('القسيمة', 'Payslip')}"><i class="fas fa-receipt"></i></button>
-        ${admin && ['pending', 'approved'].includes(payStatus(i)) ? `<button class="btn btn-sm btn-icon" data-action="edit" data-id="${esc(i.id)}" title="${L('تعديل', 'Edit')}"><i class="fas fa-pen"></i></button>` : ''}
+        ${admin && !mine(i) && ['pending', 'approved'].includes(payStatus(i)) ? `<button class="btn btn-sm btn-icon" data-action="edit" data-id="${esc(i.id)}" title="${L('تعديل', 'Edit')}"><i class="fas fa-pen"></i></button>` : ''}
       </td></tr>`).join('')
       : `<tr><td colspan="8">${wait ? empty('fa-hourglass-half', L('الشهر لسه ما خلصش', 'This month is not over yet'), L('الرواتب والخصومات والتأخيرات بتتحسب وتظهر هنا أول ما الشهر يخلص.', 'Salaries, deductions and lateness are calculated and shown here once the month ends.')) : empty('fa-money-check-dollar', L('مفيش رواتب للشهر ده لسه', 'No payroll for this month yet'), admin ? L('بيتحسب تلقائي أول ما تفتح الشهر، أو اضغط «إنشاء رواتب الشهر».', 'It is calculated automatically when you open the month, or click "Create this month\'s payroll".') : L('الأدمن لسه ما حسبش رواتب الشهر ده.', 'The admin has not calculated this month yet.'))}</td></tr>`;
   }
@@ -178,20 +181,24 @@ export default async function render(root) {
           <div class="field"><label>${L('أول شهر خصم', 'First month')}</label><input class="input" type="month" name="startMonth" value="${esc(a.startMonth || '')}"></div>
           <div class="field"><label>${L('المسدّد لحد دلوقتي', 'Repaid so far')}</label><input class="input num" type="number" min="0" step="0.01" name="paid" value="${esc(a.paid || 0)}"></div>
           <div class="field"><label>${L('تاريخ صرف السلفة', 'Payout date')}</label><input class="input" type="date" name="payoutDate" value="${esc(a.payoutDate || '')}"></div>
+          <div class="span-2" id="asched"></div>
           <div class="span-2 alert info" id="ap"></div>
           ${a.paidOut ? `<p class="span-2 xs muted">${L('السلفة اتصرفت من الخزينة: حركة الخزينة هتتعدّل بالمبلغ والتاريخ الجديدين.', 'This advance was paid out of the treasury: the treasury entry follows the new amount and date.')}</p>` : ''}
         </form>`,
       foot: `<button class="btn" data-close>${L('إلغاء', 'Cancel')}</button><button class="btn btn-primary" id="asv"><i class="fas fa-floppy-disk"></i> ${L('حفظ', 'Save')}</button>`
     });
     const f = m.$('#af');
+    const ed = scheduleEditor(m.$('#asched'), a.schedule && a.schedule.length ? a.schedule : advanceSchedule(a.amount, a.installments || 1, a.startMonth), { amount: a.amount, installments: a.installments || 1, startMonth: a.startMonth || '' });
     const prev = () => {
+      ed.sync({ amount: f.amount.value, installments: f.installments.value, startMonth: f.startMonth.value });
       const n = Math.max(1, Math.round(Number(f.installments.value) || 1)), amount = Number(f.amount.value) || 0;
       m.$('#ap').innerHTML = amount > 0 && f.startMonth.value ? `<i class="fas fa-calendar-check"></i><span>${L('القسط الشهري:', 'Monthly installment:')} <b class="num">${esc(money(amount / n, false))}</b> · ${esc(fmtMonth(f.startMonth.value))}${n > 1 ? ` ← ${esc(fmtMonth(addMonths(f.startMonth.value, n - 1)))}` : ''}</span>` : `<i class="fas fa-circle-info"></i><span>${L('اكتب المبلغ وأول شهر.', 'Enter the amount and first month.')}</span>`;
     };
     f.addEventListener('input', prev); prev();
     m.$('#asv').onclick = (e) => busy(e.currentTarget, async () => {
+      if (!ed.ok()) { toast(L('مجموع الأقساط لازم يساوي مبلغ السلفة', 'The installments must add up to the advance'), '', 'warn'); return; }
       try {
-        const changed = await updateAdvance(a, { amount: f.amount.value, installments: f.installments.value, startMonth: f.startMonth.value, paid: f.paid.value, payoutDate: f.payoutDate.value });
+        const changed = await updateAdvance(a, { amount: f.amount.value, installments: f.installments.value, startMonth: f.startMonth.value, schedule: ed.get(),paid: f.paid.value, payoutDate: f.payoutDate.value });
         m.close(); drawAdvances();
         toast(changed ? L('اتعدّلت السلفة', 'Advance updated') : L('مفيش تغيير', 'No change'), changed ? L('الرواتب اللي لسه ما اتحوّلتش اتحدّثت.', 'Salaries not yet transferred were updated.') : '');
       } catch (ex) { toastErr(ex); }
@@ -218,7 +225,7 @@ export default async function render(root) {
   }
   bindActions(root, {
     build: (_, b) => busy(b, async () => { try { await buildRun(month); await loadPrivs(); toast(L('اتحسبت الرواتب', 'Payroll calculated'), L('اللي اتعتمد أو بعده ما اتغيّرش.', 'Approved and later salaries were left unchanged.')); } catch (e) { toastErr(e); } }),
-    slip: ({ id }) => openPayslip(items.find(x => x.id === id), { edit: true }),
+    slip: ({ id }) => openPayslip(items.find(x => x.id === id), { edit: admin && !mine(items.find(x => x.id === id)) }),
     edit: ({ id }) => {
       const i = items.find(x => x.id === id);
       const m = modal({

@@ -294,7 +294,10 @@ service cloud.firestore {
       allow read: if active() && (resource.data.email == me() || resource.data.get('leaderEmail', '') == me() || seesAll() || isFinance());
       // HR/admin may file on someone else's behalf (and the migration imports old requests); own requests follow the normal path
       // overtime (from the employee's overtime card) goes to the admin alone: no leader on it, and no amount until the admin approves
-      allow create: if (isHR() && othersOnly()) || (active()
+      // the accountant registers approved overtime / advances for others from Payroll (kind 'manual')
+      allow create: if (isFinance() && request.resource.data.email != me() && request.resource.data.get('kind', '') == 'manual'
+          && request.resource.data.type in ['overtime', 'advance'] && request.resource.data.status == 'approved')
+        || (isHR() && othersOnly()) || (active()
         && request.resource.data.email == me()
         && (request.resource.data.type == 'overtime'
             ? request.resource.data.get('leaderEmail', '') == ''
@@ -319,7 +322,7 @@ service cloud.firestore {
         && request.resource.data.status in ['approved', 'rejected'] && onlyChanged(stageFields());
       // HR: any decision, revoke, response (own requests only for admins)
       allow update: if isHR() && (resource.data.email != me() || isAdmin());
-      allow delete: if isAdmin();
+      allow delete: if isAdmin() || (isFinance() && resource.data.get('kind', '') == 'manual' && resource.data.get('type', '') == 'overtime' && resource.data.email != me());
     }
     match /attachments/{id} {
       allow read: if active() && (resource.data.owner == me() || isHR() || isFinance() || resource.data.get('leaderEmail', '') == me());
@@ -346,13 +349,19 @@ service cloud.firestore {
     }
     match /payroll_runs/{month} {
       allow read: if isHR() || isFinance();
-      allow write: if isAdmin();
+      allow write: if isFinance();
     }
-    // Salaries: the admin calculates, edits and moves them to any status. The accountant (finance) only moves a
-    // salary forward: approved → paid (with a transfer receipt) → sent (payslip published); never their own salary.
+    // Salaries: the admin calculates, edits and moves them to any status. The accountant (finance) calculates and edits
+    // everyone's salary but their own while it is pending / approved (never its status or transfer fields), and moves a
+    // salary forward: approved → paid (with a transfer receipt) → sent (payslip published).
     match /payroll_items/{id} {
       allow read: if isFinance() || isHR() || (active() && resource.data.email == me() && resource.data.published == true);
       allow write: if isAdmin();
+      allow create: if isFinance() && request.resource.data.email != me() && request.resource.data.get('status', 'pending') == 'pending';
+      allow update: if isFinance() && resource.data.email != me() && request.resource.data.email == resource.data.email
+        && resource.data.get('status', 'pending') in ['pending', 'approved']
+        && request.resource.data.get('status', 'pending') == resource.data.get('status', 'pending')
+        && !affected().hasAny(['paidAt', 'paidBy', 'proof', 'treasuryId', 'advancePaid']);
       allow update: if isFinance() && resource.data.email != me() && (
            (resource.data.get('status', '') == 'approved' && request.resource.data.status == 'paid'
               && onlyChanged(['status', 'paidAt', 'paidBy', 'proof', 'treasuryId', 'advancePaid', 'updatedAt'])

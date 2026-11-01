@@ -17,7 +17,26 @@ const fmtSize = (n) => n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.
 
 export default async function render(root) {
   const admin = isAdmin();
-  let month = ymOf(now()), run = null, items = [], unsubs = [], privs = null;
+  // a month's payroll opens only once the month is over: the page starts on the previous (finished) month
+  const curMonth = ymOf(now());
+  let month = addMonths(curMonth, -1), run = null, items = [], unsubs = [], privs = null;
+  const ongoing = () => month >= curMonth;
+  let runLoaded = false, itemsLoaded = false;
+  const autoDone = {};
+  /** Opening a finished month calculates it by itself (late / absence / advances of the month come in), or refreshes a
+   *  salary sheet that was calculated before the month ended. Salaries already approved or later are never touched. */
+  async function autoBuild() {
+    if (!admin || ongoing() || !runLoaded || !itemsLoaded || autoDone[month]) return;
+    if (run && run.status === 'closed') return;
+    const endMs = new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 1).getTime();
+    const built = run && run.builtAt ? toMs(run.builtAt) : 0;
+    if (items.length) {
+      if (month < addMonths(curMonth, -1)) return;                     // older months are only refreshed by hand
+      if (built >= endMs || !items.some(i => payStatus(i) === 'pending')) return;
+    }
+    autoDone[month] = true;
+    try { await buildRun(month); await loadPrivs(); toast(L('اتحسبت رواتب الشهر', 'Month calculated'), L('الخصومات والتأخيرات اتضافت تلقائي.', 'Deductions and lateness were added automatically.')); } catch (e) { toastErr(e); }
+  }
   // salary data changed after the salary was calculated? (only matters while it is still pending)
   const salaryOf = (email) => payParts((privs && privs.find(x => x.id === email)) || {});
   const extrasOf = (x) => Number(x.allowances || 0) + Number(x.regularity || 0) + Number(x.kpiFull ?? x.kpi ?? 0);
@@ -48,10 +67,11 @@ export default async function render(root) {
   function draw() {
     root.querySelector('#ml').textContent = fmtMonth(month);
     const counts = Object.fromEntries(PAY_ORDER.map(s => [s, items.filter(i => payStatus(i) === s).length]));
-    root.querySelector('#bar').innerHTML = `<div class="row-wrap gap-8">${items.length ? PAY_ORDER.map(s => `<span class="pay-badge ${PAY_STATUS[s].cls}">${esc(payStatusLabel(s))} <b class="num">${counts[s]}</b></span>`).join('') : `<span class="badge">${L('لسه متعملش', 'Not started')}</span>`}
-        ${run && run.builtAt ? `<span class="xs muted">${L('آخر حساب:', 'Last calculated:')} ${esc(fmtDate(toMs(run.builtAt)))} ${esc(fmtTime(toMs(run.builtAt)))}</span>` : ''}</div>
+    const wait = ongoing();
+    root.querySelector('#bar').innerHTML = `<div class="row-wrap gap-8">${wait ? `<span class="badge warn"><i class="fas fa-hourglass-half"></i> ${L('الشهر لسه ما خلصش — الحسابات بتتفتح أول ما يخلص', 'This month is not over yet — its payroll opens when it ends')}</span>` : items.length ? PAY_ORDER.map(s => `<span class="pay-badge ${PAY_STATUS[s].cls}">${esc(payStatusLabel(s))} <b class="num">${counts[s]}</b></span>`).join('') : `<span class="badge">${L('جاري الحساب…', 'Calculating…')}</span>`}
+        ${!wait && run && run.builtAt ?`<span class="xs muted">${L('آخر حساب:', 'Last calculated:')} ${esc(fmtDate(toMs(run.builtAt)))} ${esc(fmtTime(toMs(run.builtAt)))}</span>` : ''}</div>
       <div class="row-wrap gap-8">
-        ${admin && !(run && run.status === 'closed') ? `<button class="btn btn-primary" data-action="build"><i class="fas fa-calculator"></i> ${items.length ? L('إعادة الحساب من الحضور', 'Recalculate from attendance') : L('إنشاء رواتب الشهر', 'Create this month\'s payroll')}</button>` : ''}
+        ${admin && !wait && !(run && run.status === 'closed') ? `<button class="btn btn-primary" data-action="build"><i class="fas fa-calculator"></i> ${items.length ? L('إعادة الحساب من الحضور', 'Recalculate from attendance') : L('إنشاء رواتب الشهر', 'Create this month\'s payroll')}</button>` : ''}
         ${admin ? `<button class="btn" data-action="ot-add"><i class="fas fa-business-time"></i> ${L('تسجيل أوفر تايم', 'Register overtime')}</button>` : ''}
         ${admin ? `<button class="btn" data-action="adv-add"><i class="fas fa-hand-holding-dollar"></i> ${L('إضافة سلفة', 'Add advance')}</button>` : ''}
         ${items.length ? `<button class="btn" data-action="xls"><i class="fas fa-file-excel"></i> Excel</button>` : ''}
@@ -82,7 +102,7 @@ export default async function render(root) {
         <button class="btn btn-sm btn-icon" data-action="slip" data-id="${esc(i.id)}" title="${L('القسيمة', 'Payslip')}"><i class="fas fa-receipt"></i></button>
         ${admin && ['pending', 'approved'].includes(payStatus(i)) ? `<button class="btn btn-sm btn-icon" data-action="edit" data-id="${esc(i.id)}" title="${L('تعديل', 'Edit')}"><i class="fas fa-pen"></i></button>` : ''}
       </td></tr>`).join('')
-      : `<tr><td colspan="8">${empty('fa-money-check-dollar', L('مفيش رواتب للشهر ده لسه', 'No payroll for this month yet'), admin ? L('اضغط «إنشاء رواتب الشهر».', 'Click "Create this month\'s payroll".') : L('الأدمن لسه ما حسبش رواتب الشهر ده.', 'The admin has not calculated this month yet.'))}</td></tr>`;
+      : `<tr><td colspan="8">${wait ? empty('fa-hourglass-half', L('الشهر لسه ما خلصش', 'This month is not over yet'), L('الرواتب والخصومات والتأخيرات بتتحسب وتظهر هنا أول ما الشهر يخلص.', 'Salaries, deductions and lateness are calculated and shown here once the month ends.')) : empty('fa-money-check-dollar', L('مفيش رواتب للشهر ده لسه', 'No payroll for this month yet'), admin ? L('بيتحسب تلقائي أول ما تفتح الشهر، أو اضغط «إنشاء رواتب الشهر».', 'It is calculated automatically when you open the month, or click "Create this month\'s payroll".') : L('الأدمن لسه ما حسبش رواتب الشهر ده.', 'The admin has not calculated this month yet.'))}</td></tr>`;
   }
 
   /** Transfer receipt dialog; `onConfirm({ file, note, onProgress })` runs the transfer (the dialog stays open on failure) */
@@ -192,8 +212,9 @@ export default async function render(root) {
   function subscribe() {
     unsubs.forEach(u => u()); unsubs = [];
     root.querySelector('#rows').innerHTML = `<tr><td colspan="8">${loader()}</td></tr>`;
-    unsubs.push(watch(ref('payroll_runs', month), r => { run = r; draw(); }));
-    unsubs.push(watch(query(col('payroll_items'), where('month', '==', month)), rows => { items = rows.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ar')); draw(); }));
+    runLoaded = itemsLoaded = false; run = null; items = [];
+    unsubs.push(watch(ref('payroll_runs', month), r => { run = ongoing() ? null : r; runLoaded = true; draw(); autoBuild(); }));
+    unsubs.push(watch(query(col('payroll_items'), where('month', '==', month)), rows => { items = ongoing() ? [] : rows.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ar')); itemsLoaded = true; draw(); autoBuild(); }));
   }
   bindActions(root, {
     build: (_, b) => busy(b, async () => { try { await buildRun(month); await loadPrivs(); toast(L('اتحسبت الرواتب', 'Payroll calculated'), L('اللي اتعتمد أو بعده ما اتغيّرش.', 'Approved and later salaries were left unchanged.')); } catch (e) { toastErr(e); } }),

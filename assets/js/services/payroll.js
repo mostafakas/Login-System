@@ -4,7 +4,7 @@
 import { db, doc, col, list, query, where, read, writeBatch, serverTimestamp, setDoc, updateDoc, runTransaction, arrayUnion, deleteDoc } from '../core/fb.js';
 import { session, now, isAdmin } from '../core/session.js';
 import { policy } from '../core/policy.js';
-import { fmtMonth, ymd, L, imageToDataUrl } from '../core/utils.js';
+import { fmtMonth, ymd, ym, L, imageToDataUrl } from '../core/utils.js';
 import { userError } from '../core/ui.js';
 import { driveUpload, driveDownload } from './files.js';
 import { activePeople, person } from './directory.js';
@@ -113,6 +113,7 @@ export async function activeAdvances(month) {
 /** Build (or rebuild) the month. Only salaries still "pending" are recalculated; manual fields are kept. */
 export async function buildRun(month) {
   if (!isAdmin()) throw userError('إعادة الحساب للأدمن بس.', 'Only admins can recalculate payroll.');
+  if (month >= ym(now())) throw userError('الشهر لسه ما خلصش. رواتبه بتتحسب بعد ما يخلص.', 'This month is not over yet. Its payroll is calculated once it ends.');
   const run = await read('payroll_runs', month);
   if (run && run.status === 'closed') throw userError('ده أرشيف رواتب من السيستم القديم ومينفعش يتحسب تاني.', 'This is a legacy payroll archive and cannot be recalculated.');
   const people = activePeople().filter(p => !p.isSuspended);

@@ -77,10 +77,13 @@ export default async function render(root) {
     else if (fo) state = 'ended';
     else if (!isWorkingPlan(plan) || plan.mode === 'mission') state = 'away';
     else state = 'notstarted';
+    // check-out: when the day was ended (the status went Offline); null while the day is still running
+    const out0 = fo && !on && u.checkedOut ? (toMs(u.lastChange) || u.lastChangeClient || null) : null;
+    const out = out0 && out0 >= fo ? out0 : null;
     const late = fo ? lateness(fo, plan).late : 0;
     const bank = isToday ? liveBank(u) : { Online: 0, Break: 0, Meeting: 0 };
     return {
-      state, plan, fo, late, bank, on, guessed: isToday && u.shift === '' && !!plan.shift,
+      state, plan, fo, out, late, bank, on, guessed: isToday && u.shift === '' && !!plan.shift,
       stale: staleDay(u),
       remote: isToday && u.workLocation === 'remote',
       pending: isToday && !!u.remotePending,
@@ -173,7 +176,7 @@ export default async function render(root) {
 
   function tableHTML(rows, infos) {
     return `<div class="card"><div class="table-wrap"><table class="table mon-table"><thead><tr>
-        <th>${L('الموظف', 'Employee')}</th><th>${L('الحالة', 'Status')}</th><th>${L('المكان', 'Location')}</th><th>${L('الحضور', 'Check-in')}</th>
+        <th>${L('الموظف', 'Employee')}</th><th>${L('الحالة', 'Status')}</th><th>${L('المكان', 'Location')}</th><th>${L('الحضور', 'Check-in')}</th><th>${L('الانصراف', 'Check-out')}</th>
         <th style="min-width:180px">${L('العمل والاجتماعات', 'Work & meetings')}</th><th>${L('الاستراحة', 'Break')}</th><th></th>
       </tr></thead><tbody>${rows.map(u => {
         const i = infos.get(u.email);
@@ -182,6 +185,7 @@ export default async function render(root) {
           <td class="mon-status">${statusCell(u, i)}</td>
           <td>${where_(u, i)}</td>
           <td class="num">${i.fo ? esc(fmtTime(i.fo)) : '<span class="faint">—</span>'}</td>
+          <td class="num">${i.out ? esc(fmtTime(i.out)) : (i.on ? `<span class="faint">${L('شغال', 'Working')}</span>` : '<span class="faint">—</span>')}</td>
           <td>${i.fo || i.on ? progress(u, i) : '<span class="faint">—</span>'}</td>
           <td>${i.fo || i.on ? `<div class="num mon-sub">${subTimes(u, i)}</div>` : '<span class="faint">—</span>'}</td>
           <td style="text-align:end">${actions(u)}</td></tr>`;
@@ -195,7 +199,7 @@ export default async function render(root) {
         <div class="row between gap-8 mon-card-status"><div class="mon-status">${statusCell(u, i)}</div>${where_(u, i)}</div>
         ${i.fo || i.on ? progress(u, i) : ''}
         <div class="row between xs muted">
-          <span>${i.fo ? `<i class="fas fa-right-to-bracket"></i> <span class="num">${esc(fmtTime(i.fo))}</span>` : L('لسه ما سجّلش حضور', 'Not checked in yet')}</span>
+          <span>${i.fo ? `<span title="${L('الحضور', 'Check-in')}"><i class="fas fa-right-to-bracket"></i> <span class="num">${esc(fmtTime(i.fo))}</span></span> <span title="${L('الانصراف', 'Check-out')}" style="margin-inline-start:10px"><i class="fas fa-right-from-bracket"></i> <span class="num">${i.out ? esc(fmtTime(i.out)) : '—'}</span></span>` : L('لسه ما سجّلش حضور', 'Not checked in yet')}</span>
           ${i.fo || i.on ? `<span class="num mon-sub">${subTimes(u, i)}</span>` : ''}
         </div>
         ${flags(i) ? `<div class="row-wrap gap-4">${flags(i)}</div>` : ''}

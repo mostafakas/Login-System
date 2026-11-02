@@ -257,7 +257,7 @@ export default async function render(root) {
       const m = modal({
         title: L('اختار شيفت النهارده', "Pick today's shift"), icon: 'fa-business-time', size: 'narrow',
         body: `<div class="col gap-12">
-          <p class="muted small">${mode === 'remote' ? L('أونلاين: نفس مواعيد الشيفتات، وفترة السماح أقصر.', 'Remote: the same shift hours, with a shorter grace period.') : L('لو بدأت قبل ميعاد الشيفت، وقت الشغل بيتحسب من ميعاده.', 'If you start before the shift, work time counts from its start.')}</p>
+          <p class="muted small">${mode === 'remote' ? L('أونلاين: نفس مواعيد الشيفتات، وفترة السماح أقصر.', 'Remote: the same shift hours, with a shorter grace period.') : L('لو بدأت قبل ميعاد الشيفت، وقت الشغل بيتحسب من ميعاده. ولو بدأت بعده وجوه فترة السماح، الوقت من ميعاد الشيفت لحد ما بدأت بيتحسب لك شغل.', 'If you start before the shift, work time counts from its start. If you start after it but within the grace period, the time from the shift start to when you started counts as work.')}</p>
           ${rows.map(r => r === best ? r.html.replace('class="btn btn-lg btn-block"', 'class="btn btn-lg btn-block btn-primary"') : r.html).join('')}
         </div>`,
         onClose: () => { if (!done) resolve(null); }

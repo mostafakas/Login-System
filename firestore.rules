@@ -60,9 +60,10 @@ service cloud.firestore {
     function workSum(d) { return d.get('workMs', 0) + d.get('breakMs', 0) + d.get('meetingMs', 0); }
     // grace period (the employee's own, else settings → work hours); a check-in inside it is credited as work
     // from the start of the shift. Only used for the signed-in employee's own check-in.
+    // (without an own grace the cap is the largest grace Settings allow — each shift has its own, up to 120 minutes)
     function graceMs() {
       let own = prof().get('graceMinutes', null);
-      return (own is number ? own : (exists(settingsPath()) ? get(settingsPath()).data.get('graceMinutes', 15) : 15)) * 60000 + 120000;
+      return (own is number ? own : 120) * 60000 + 120000;
     }
     function tbSum(m) { return m.get('Online', 0) + m.get('Break', 0) + m.get('Meeting', 0); }
     // who a meeting is with (users/{email}.meetingWith …): at most 20 colleagues + a short outside party / topic

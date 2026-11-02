@@ -4,7 +4,7 @@ import {
   db, doc, col, writeBatch, serverTimestamp, toMs, read, list, query, where, addDoc, getDoc, setDoc, listF, updateDoc
 } from '../core/fb.js';
 import { session, now, isHR, seesAll, isFinance, syncClock } from '../core/session.js';
-import { policy, dayKey, planFor, withShift, planOfDay, shiftById } from '../core/policy.js';
+import { policy, dayKey, planFor, withShift, planOfDay, shiftById, isWorkingPlan } from '../core/policy.js';
 import { cairoMs, addDays, L } from '../core/utils.js';
 import { userError } from '../core/ui.js';
 
@@ -113,15 +113,25 @@ export async function startDay(mode, { remoteApproved = true, shift = '' } = {})
       b.update(dayRef, { closed: false, closedBy: '', checkOutMs: null, updatedAt: serverTimestamp() });
     } else {
       // the work time counts from the moment the day starts, or from the picked shift's start if that is later
-      // (countFrom); the grace period only spares the lateness
+      // (countFrom). In the office, checking in after the shift started but inside its grace period is not late AND that
+      // time is credited as work from the shift's start (in at 08:27 on the 08:00 shift → the counter starts at 27 min)
+      let credit = 0;
+      if (mode === 'office') {
+        const sched = await read('schedules', `${email}_${key.slice(0, 7)}`).catch(() => null);
+        const plan = withShift(planFor(key, sched, email), sh, mode);
+        if (isWorkingPlan(plan) && plan.start) {
+          const lateMs = at - cairoMs(key, plan.start);
+          if (lateMs > 0 && Math.floor(lateMs / 60000) <= (Number(plan.grace) || 0)) credit = Math.round(lateMs);
+        }
+      }
       b.update(doc(db, 'users', email), {
-        status: 'Online', lastChange: serverTimestamp(), lastChangeClient: Date.now(), timeBank: zeroBank(),
+        status: 'Online', lastChange: serverTimestamp(), lastChangeClient: Date.now(), timeBank: { ...zeroBank(), Online: credit },
         dayKey: key, checkedOut: false, workLocation: mode, remotePending: mode === 'remote' && !remoteApproved, firstOnlineAt: serverTimestamp(), shift: sh, ...NO_MEETING
       });
       b.set(dayRef, {
         email, name: u.name || email, date: key, leaderEmail: u.leaderEmail || '', department: u.department || '',
         mode, remotePending: mode === 'remote' && !remoteApproved, shift: sh,
-        checkIn: serverTimestamp(), checkInMs: at, checkOutMs: null, workMs: 0, breakMs: 0, meetingMs: 0,
+        checkIn: serverTimestamp(), checkInMs: at, checkOutMs: null, workMs: credit, breakMs: 0, meetingMs: 0, creditMs: credit,
         closed: false, closedBy: '', autoClosed: false, corrected: false, updatedAt: serverTimestamp()
       }, { merge: true });
     }

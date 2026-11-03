@@ -26,7 +26,7 @@ export function scheduleEditor(host, initial = null, initialVals = null) {
       : `<span style="color:var(--bad)"><i class="fas fa-triangle-exclamation"></i> ${L('المجموع', 'Total')} <b class="num">${esc(money(sum(), false))}</b> ${L('من', 'of')} <b class="num">${esc(money(total, false))}</b> — ${diff > 0 ? L('ناقص', 'short by') : L('زيادة', 'over by')} <b class="num">${esc(money(Math.abs(diff), false))}</b></span>`;
   }
   function draw() {
-    host.innerHTML = rows.length ? `<div class="label mb-8">${L('جدول الأقساط — عدّل المبلغ بتاع أي شهر', 'Installment schedule — change any month\'s amount')}</div>
+    host.innerHTML = rows.length ? `<div class="label mb-8">${L('جدول الأقساط — عدّل مبلغ أي شهر والباقي بيتوزع بالتساوي على الشهور اللي بعده', 'Installment schedule — change a month and the rest is shared equally by the months after it')}</div>
       <div style="max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:12px;padding:6px 12px">
         ${rows.map((r, i) => `<div class="row between" style="padding:6px 0;gap:12px;${i ? 'border-top:1px solid var(--border)' : ''}"><span>${esc(fmtMonth(r.month))}</span><input class="input num" type="number" min="0" step="0.01" data-i="${i}" value="${r.amount}" style="max-width:150px"></div>`).join('')}
       </div>
@@ -38,7 +38,17 @@ export function scheduleEditor(host, initial = null, initialVals = null) {
   host.addEventListener('input', (e) => {
     const i = e.target && e.target.dataset ? e.target.dataset.i : undefined;
     if (i === undefined) return;
-    rows[Number(i)].amount = r2(e.target.value);
+    const k = Number(i);
+    rows[k].amount = r2(e.target.value);
+    // what is left of the advance after the months up to this one is shared equally by the months after it
+    // (the last one takes the rounding remainder); if nothing is left they become 0 and the footer shows the excess
+    const after = rows.length - k - 1;
+    if (after > 0) {
+      const left = Math.max(0, r2(r2(vals.amount) - rows.slice(0, k + 1).reduce((s, x) => s + x.amount, 0)));
+      const per = r2(left / after);
+      for (let j = k + 1; j < rows.length; j++) rows[j].amount = j === rows.length - 1 ? r2(left - per * (after - 1)) : per;
+      host.querySelectorAll('[data-i]').forEach(inp => { const j = Number(inp.dataset.i); if (j > k) inp.value = rows[j].amount; });
+    }
     foot();
   });
   host.addEventListener('click', (e) => { if (e.target.closest('[data-eq]')) rebuild(); });

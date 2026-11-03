@@ -4,7 +4,7 @@ import { L, esc, money, fmtMonth, addMonths, ym as ymOf, fmtDate, fmtTime } from
 import { toast, toastErr, modal, avatar, empty, busy, bindActions, confirmDialog, loader } from '../core/ui.js';
 import { now, isAdmin, isFinance, session } from '../core/session.js';
 import { watch, query, col, where, ref, list, toMs } from '../core/fb.js';
-import { buildRun, saveManual, recordAdvancePayout, updateAdvance, publishAllPayslips, PAY_ORDER, PAY_STATUS, payStatus, payStatusLabel, allowedMoves, setPayStatus, MAX_PROOF } from '../services/payroll.js';
+import { buildRun, saveManual, recordAdvancePayout, updateAdvance, publishAllPayslips, unpublishAllPayslips, PAY_ORDER, PAY_STATUS, payStatus, payStatusLabel, allowedMoves, setPayStatus, MAX_PROOF } from '../services/payroll.js';
 import { openPayslip } from './payslip.js';
 import { payParts } from '../services/salary.js';
 import { exportSheet } from './export.js';
@@ -79,6 +79,7 @@ export default async function render(root) {
         ${admin ? `<button class="btn" data-action="adv-add"><i class="fas fa-hand-holding-dollar"></i> ${L('إضافة سلفة', 'Add advance')}</button>` : ''}
         ${items.length ? `<button class="btn" data-action="xls"><i class="fas fa-file-excel"></i> Excel</button>` : ''}
         ${admin && items.length ? `<button class="btn" data-action="send-all"><i class="fas fa-paper-plane"></i> ${L('إرسال كل القسايم', 'Send all payslips')}</button>` : ''}
+        ${isAdmin() && items.some(i => i.published) ? `<button class="btn" data-action="unsend-all"><i class="fas fa-rotate-left"></i> ${L('سحب كل القسايم', 'Withdraw all payslips')}</button>` : ''}
         ${items.length ? `<button class="btn" data-action="print"><i class="fas fa-file-pdf"></i> ${L('كشف رسمي PDF', 'Official PDF')}</button>` : ''}
       </div>`;
     const stale = items.filter(isStale);
@@ -251,6 +252,19 @@ export default async function render(root) {
         const otherDeductions = [...od.children].map(r => ({ reason: r.querySelector('[data-r]').value.trim(), amount: Number(r.querySelector('[data-a]').value || 0) })).filter(d => d.amount);
         const kpiMode = f.kpiMode ? f.kpiMode.value : '';
         try { await saveManual(month, i.email, { bonus: Number(f.bonus.value || 0), incentive: Number(f.incentive.value || 0), otherDeductions, note: f.note.value.trim(), kpiMode, kpiValue: kpiMode ? Number(f.kpiValue.value || 0) : null }); m.close(); toast(L('تم الحفظ', 'Saved')); } catch (ex) { toastErr(ex); }
+      });
+    },
+    'unsend-all': async (d, btn) => {
+      const sent = items.filter(i => i.published);
+      if (!sent.length) { toast(L('مفيش قسايم مبعوتة', 'No payslips are sent')); return; }
+      const ok = await confirmDialog({
+        title: L('سحب كل القسايم', 'Withdraw all payslips'),
+        message: L(`${sent.length} قسيمة هتختفي من عند الموظفين، وبيجيلهم إشعار إنها اتسحبت. حالة الراتب والتحويل ما بيتغيّروش (اللي «تم إرسال القسيمة» بيرجع «تم تحويل الراتب»). تقدر تبعتها تاني بعد التعديل.`, `${sent.length} payslip(s) disappear from the employees and they are notified. Salary status and transfers are unchanged ("Payslip sent" goes back to "Salary transferred"). You can send them again after your changes.`),
+        okText: L('اسحب القسايم', 'Withdraw'), okClass: 'btn-danger'
+      });
+      if (!ok) return;
+      await busy(btn, async () => {
+        try { const r = await unpublishAllPayslips(month); toast(L('اتسحبت القسايم', 'Payslips withdrawn'), L(`${r.count} قسيمة`, `${r.count} payslip(s)`)); subscribe(); } catch (ex) { toastErr(ex); }
       });
     },
     'send-all': async (d, btn) => {

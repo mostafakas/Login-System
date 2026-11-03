@@ -509,6 +509,23 @@ export async function addManualAdvance(f) {
 }
 
 /**
+ * Admin: take every sent payslip of the month back from the employees. The salaries keep their status and transfer
+ * (a "payslip sent" one goes back to "salary transferred"); the payslips can be sent again after the changes.
+ */
+export async function unpublishAllPayslips(month) {
+  if (!isAdmin()) throw userError('سحب القسايم للأدمن بس.', 'Only admins can withdraw payslips.');
+  const todo = (await list(query(col('payroll_items'), where('month', '==', month)))).filter(i => i.published);
+  for (let k = 0; k < todo.length; k += 400) {
+    const b = writeBatch(db);
+    todo.slice(k, k + 400).forEach(i => b.update(doc(db, 'payroll_items', i.id), { published: false, ...(payStatus(i) === 'sent' ? { status: 'paid' } : {}), sentAt: null, sentBy: '', updatedAt: serverTimestamp() }));
+    await b.commit();
+  }
+  todo.forEach(i => notify(i.email, L(`اتسحبت قسيمة ${fmtMonth(month)}`, `Your ${fmtMonth(month)} payslip was withdrawn`), L('الإدارة بتراجعها وهتتبعتلك تاني بعد المراجعة.', 'Management is reviewing it and will send it again.'), '#/payslips', 'info'));
+  track('payroll.withdrawAll', { target: month, detail: `${todo.length}` });
+  return { count: todo.length };
+}
+
+/**
  * Admin: send every payslip of the month to its employee, whatever its status (even before approval / transfer).
  * The salary keeps its status; a transferred one (with a receipt) becomes "sent" as usual. Payslips already sent are skipped.
  * Returns { sent, early, skipped } — `early` = how many went out before the salary was transferred (they show as preliminary).
